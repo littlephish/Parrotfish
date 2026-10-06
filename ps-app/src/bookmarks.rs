@@ -25,11 +25,15 @@ fn one_line(value: &str) -> String {
 }
 
 pub fn initials(name: &str) -> String {
-    let words: Vec<&str> = name.split_whitespace().collect();
+    let words: Vec<Vec<char>> = name
+        .split_whitespace()
+        .map(|word| word.chars().filter(|c| c.is_alphanumeric()).collect::<Vec<char>>())
+        .filter(|word| !word.is_empty())
+        .collect();
     let letters: String = match words.as_slice() {
         [] => return "?".to_string(),
-        [single] => single.chars().take(2).collect(),
-        [first, second, ..] => first.chars().take(1).chain(second.chars().take(1)).collect(),
+        [single] => single.iter().take(2).collect(),
+        [first, second, ..] => first.iter().take(1).chain(second.iter().take(1)).collect(),
     };
     letters.to_uppercase()
 }
@@ -180,5 +184,9 @@ mod tests {
         assert_eq!(initials(""), "?");
         assert_eq!(initials("  the   reef "), "TR");
         assert_eq!(initials("ärger über"), "ÄÜ");
+        assert_eq!(initials("TeamSpeak ]I[ Server"), "TI");
+        assert_eq!(initials("--- ***"), "?");
+        assert_eq!(initials("[EU] reef-runners"), "ER");
+        assert_eq!(initials("172.31.183.111"), "17");
     }
 }

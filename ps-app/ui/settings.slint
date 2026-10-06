@@ -83,526 +83,538 @@ export component SettingsWindow inherits Window {
     callback bookmark-removed();
     callback done();
 
-    VerticalLayout {
-        HorizontalLayout {
-            height: 44px;
-            padding-left: 14px;
-            spacing: 2px;
+    forward-focus: keys;
 
-            for label[i] in ["Microphone", "Sound", "Identities", "Bookmarks", "Shortcuts", "About"]: Pressable {
-                min-width: caption.preferred-width + 24px;
-                clicked => {
-                    root.tab = i;
-                }
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.done();
+                return accept;
+            }
+            return reject;
+        }
 
-                caption := Text {
-                    text: label;
-                    color: i == root.tab || parent.hovered ? Theme.foam : Theme.drift;
-                    font-size: Theme.text;
-                    font-weight: i == root.tab ? 600 : 400;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+        VerticalLayout {
+            HorizontalLayout {
+                height: 44px;
+                padding-left: 14px;
+                spacing: 2px;
+
+                for label[i] in ["Microphone", "Sound", "Identities", "Bookmarks", "Shortcuts", "About"]: Pressable {
+                    min-width: caption.preferred-width + 24px;
+                    clicked => {
+                        root.tab = i;
+                    }
+
+                    caption := Text {
+                        text: label;
+                        color: i == root.tab || parent.hovered ? Theme.foam : Theme.drift;
+                        font-size: Theme.text;
+                        font-weight: i == root.tab ? 600 : 400;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle {
+                        x: 10px;
+                        y: parent.height - 2px;
+                        width: parent.width - 20px;
+                        height: 2px;
+                        background: i == root.tab ? Theme.lure : transparent;
+                    }
                 }
 
                 Rectangle {
-                    x: 10px;
-                    y: parent.height - 2px;
-                    width: parent.width - 20px;
-                    height: 2px;
-                    background: i == root.tab ? Theme.lure : transparent;
+                    horizontal-stretch: 1;
                 }
             }
 
             Rectangle {
-                horizontal-stretch: 1;
+                height: 1px;
+                background: Theme.hairline;
             }
-        }
 
-        Rectangle {
-            height: 1px;
-            background: Theme.hairline;
-        }
+            Rectangle {
+                vertical-stretch: 1;
 
-        Rectangle {
-            vertical-stretch: 1;
+                if root.tab == 0: VerticalLayout {
+                    alignment: start;
+                    padding: 20px;
+                    spacing: 12px;
 
-            if root.tab == 0: VerticalLayout {
-                alignment: start;
-                padding: 20px;
-                spacing: 12px;
+                    HorizontalLayout {
+                        spacing: 16px;
 
-                HorizontalLayout {
-                    spacing: 16px;
-
-                    Caption {
-                        text: "Microphone";
-                    }
-
-                    VerticalLayout {
-                        spacing: 5px;
-
-                        Dropdown {
-                            model: root.input-devices;
-                            current-index <=> root.input-index;
-                            selected => {
-                                root.input-device-selected();
-                            }
+                        Caption {
+                            text: "Microphone";
                         }
 
-                        Hint {
-                            text: root.mic-status;
-                        }
-                    }
-                }
+                        VerticalLayout {
+                            spacing: 5px;
 
-                HorizontalLayout {
-                    spacing: 16px;
-
-                    Caption {
-                        text: "Send my voice";
-                    }
-
-                    Segmented {
-                        options: ["When I speak", "While I hold a key", "Always"];
-                        current <=> root.tx-mode;
-                        selected => {
-                            root.audio-changed();
-                        }
-                    }
-
-                    Rectangle {
-                        horizontal-stretch: 1;
-                    }
-                }
-
-                if root.tx-mode == 0: HorizontalLayout {
-                    spacing: 16px;
-
-                    Caption {
-                        text: "Speaking level";
-                    }
-
-                    VerticalLayout {
-                        spacing: 4px;
-
-                        HorizontalLayout {
-                            spacing: 10px;
-
-                            Slide {
-                                minimum: -70;
-                                maximum: 0;
-                                value <=> root.vad-threshold;
-                                level: root.input-level;
-                                level-active: root.transmitting;
-                                changed => {
-                                    root.audio-changed();
+                            Dropdown {
+                                model: root.input-devices;
+                                current-index <=> root.input-index;
+                                selected => {
+                                    root.input-device-selected();
                                 }
                             }
 
-                            Reading {
-                                text: "\{round(root.vad-threshold)} dB";
+                            Hint {
+                                min-height: 32px;
+                                text: root.mic-status;
                             }
                         }
-
-                        Hint {
-                            text: "Talk normally and drag the marker just below where the bar reaches. Quieter sounds are not sent.";
-                        }
-                    }
-                }
-
-                if root.tx-mode == 1: HorizontalLayout {
-                    spacing: 16px;
-
-                    Caption {
-                        text: "";
-                    }
-
-                    Hint {
-                        text: root.ptt-key-index > 0 ? "Hold \{root.ptt-keys[root.ptt-key-index]} to talk. Change the key under Shortcuts." : "No talk key is set yet. Choose one under Shortcuts.";
-                        vertical-alignment: center;
-                    }
-                }
-
-                HorizontalLayout {
-                    spacing: 16px;
-
-                    Caption {
-                        text: "Microphone boost";
-                    }
-
-                    Slide {
-                        minimum: 0;
-                        maximum: 300;
-                        step: 5;
-                        value <=> root.mic-gain;
-                        changed => {
-                            root.audio-changed();
-                        }
-                    }
-
-                    Reading {
-                        text: "\{round(root.mic-gain)}%";
-                    }
-                }
-
-                HorizontalLayout {
-                    spacing: 16px;
-
-                    Caption {
-                        text: "Test";
-                    }
-
-                    Check {
-                        text: "Play my microphone back to me";
-                        checked <=> root.mic-test;
-                        toggled => {
-                            root.audio-changed();
-                        }
-                    }
-                }
-            }
-
-            if root.tab == 1: VerticalLayout {
-                alignment: start;
-                padding: 20px;
-                spacing: 12px;
-
-                HorizontalLayout {
-                    spacing: 16px;
-
-                    Caption {
-                        text: "Speakers";
-                    }
-
-                    VerticalLayout {
-                        spacing: 5px;
-
-                        Dropdown {
-                            model: root.output-devices;
-                            current-index <=> root.output-index;
-                            selected => {
-                                root.output-device-selected();
-                            }
-                        }
-
-                        Hint {
-                            text: root.sound-status;
-                        }
-                    }
-                }
-
-                HorizontalLayout {
-                    spacing: 16px;
-
-                    Caption {
-                        text: "Volume";
-                    }
-
-                    Slide {
-                        minimum: 0;
-                        maximum: 200;
-                        step: 5;
-                        value <=> root.output-volume;
-                        changed => {
-                            root.audio-changed();
-                        }
-                    }
-
-                    Reading {
-                        text: "\{round(root.output-volume)}%";
-                    }
-                }
-            }
-
-            if root.tab == 2: VerticalLayout {
-                alignment: start;
-                padding: 20px;
-                spacing: 8px;
-
-                Hint {
-                    text: "An identity is how a server recognises you. Each bookmark can use a different one.";
-                }
-
-                for identity in root.identities: Rectangle {
-                    height: 44px;
-                    border-radius: 8px;
-                    background: Theme.shoal;
-
-                    HorizontalLayout {
-                        padding-left: 12px;
-                        padding-right: 12px;
-                        spacing: 12px;
-
-                        Text {
-                            text: identity.name;
-                            color: Theme.foam;
-                            font-size: Theme.text;
-                            font-weight: 600;
-                            vertical-alignment: center;
-                        }
-
-                        Text {
-                            text: identity.uid;
-                            color: Theme.drift;
-                            font-size: Theme.small;
-                            vertical-alignment: center;
-                            overflow: elide;
-                            horizontal-stretch: 1;
-                        }
-
-                        Text {
-                            text: identity.detail;
-                            color: Theme.drift;
-                            font-size: Theme.small;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-
-                HorizontalLayout {
-                    padding-top: 6px;
-                    spacing: 8px;
-
-                    Field {
-                        text <=> root.import-path;
-                        placeholder: "path to a TeamSpeak identity file or folder";
-                        accepted => {
-                            root.import-identity();
-                        }
-                    }
-
-                    Btn {
-                        text: "Import";
-                        clicked => {
-                            root.import-identity();
-                        }
-                    }
-
-                    Btn {
-                        text: "Create an identity";
-                        clicked => {
-                            root.new-identity();
-                        }
-                    }
-                }
-
-                if root.identity-note != "": Hint {
-                    text: root.identity-note;
-                }
-            }
-
-            if root.tab == 3: HorizontalLayout {
-                padding: 20px;
-                spacing: 18px;
-
-                VerticalLayout {
-                    width: 236px;
-                    spacing: 4px;
-                    alignment: start;
-
-                    for bookmark[i] in root.bookmarks: Pressable {
-                        height: 44px;
-                        border-radius: 8px;
-                        background: i == root.bm-index || self.hovered ? Theme.current : Theme.shoal;
-                        clicked => {
-                            root.bookmark-picked(i);
-                        }
-
-                        HorizontalLayout {
-                            padding-left: 8px;
-                            padding-right: 10px;
-                            spacing: 10px;
-
-                            VerticalLayout {
-                                alignment: center;
-
-                                Tile {
-                                    size: 30px;
-                                    focusable: false;
-                                    label: bookmark.initials;
-                                    clicked => {
-                                        root.bookmark-picked(i);
-                                    }
-                                }
-                            }
-
-                            Text {
-                                text: bookmark.name;
-                                color: Theme.foam;
-                                font-size: Theme.text;
-                                font-weight: 600;
-                                vertical-alignment: center;
-                                overflow: elide;
-                                horizontal-stretch: 1;
-                            }
-                        }
-                    }
-
-                    if root.bookmarks.length == 0: Hint {
-                        text: "No bookmarks yet. Fill in the form to add one.";
-                    }
-
-                    Rectangle {
-                        height: 6px;
-                    }
-
-                    Btn {
-                        text: "Add a bookmark";
-                        clicked => {
-                            root.bookmark-new();
-                        }
-                    }
-                }
-
-                VerticalLayout {
-                    alignment: start;
-                    spacing: 5px;
-
-                    Heading {
-                        text: root.bm-index >= 0 ? "Edit bookmark" : "New bookmark";
-                    }
-
-                    Hint {
-                        text: "Name";
-                    }
-
-                    Field {
-                        text <=> root.bm-name;
-                        placeholder: "what to call it";
-                    }
-
-                    Hint {
-                        text: "Server address";
-                    }
-
-                    Field {
-                        text <=> root.bm-address;
-                        placeholder: "name or address, with :port if needed";
-                    }
-
-                    Hint {
-                        text: "Nickname";
-                    }
-
-                    Field {
-                        text <=> root.bm-nickname;
-                        placeholder: "the name others see";
-                    }
-
-                    Hint {
-                        text: "Identity";
-                    }
-
-                    Dropdown {
-                        model: root.identity-names;
-                        current-index <=> root.bm-identity;
-                        placeholder: "No identity yet";
-                    }
-
-                    if root.bm-note != "": Hint {
-                        text: root.bm-note;
-                        color: Theme.coral;
                     }
 
                     HorizontalLayout {
-                        alignment: end;
-                        padding-top: 10px;
-                        spacing: 8px;
+                        spacing: 16px;
 
-                        Btn {
-                            text: "Remove";
-                            danger: true;
-                            enabled: root.bm-index >= 0;
-                            clicked => {
-                                root.bookmark-removed();
-                            }
+                        Caption {
+                            text: "Send my voice";
                         }
 
-                        Btn {
-                            text: "Save bookmark";
-                            primary: true;
-                            enabled: root.bm-address != "";
-                            clicked => {
-                                root.bookmark-saved();
-                            }
-                        }
-                    }
-                }
-            }
-
-            if root.tab == 4: VerticalLayout {
-                alignment: start;
-                padding: 20px;
-                spacing: 12px;
-
-                HorizontalLayout {
-                    spacing: 16px;
-
-                    Caption {
-                        text: "Talk key";
-                    }
-
-                    VerticalLayout {
-                        spacing: 6px;
-
-                        Dropdown {
-                            model: root.ptt-keys;
-                            current-index <=> root.ptt-key-index;
+                        Segmented {
+                            options: ["When I speak", "While I hold a key", "Always"];
+                            current <=> root.tx-mode;
                             selected => {
                                 root.audio-changed();
                             }
                         }
 
-                        Hint {
-                            text: "Used when Send my voice is set to While I hold a key. It works while PhishSpeak is in the background, so you can talk from inside a game.";
+                        Rectangle {
+                            horizontal-stretch: 1;
                         }
+                    }
+
+                    if root.tx-mode == 0: HorizontalLayout {
+                        spacing: 16px;
+
+                        Caption {
+                            text: "Speaking level";
+                        }
+
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            HorizontalLayout {
+                                spacing: 10px;
+
+                                Slide {
+                                    minimum: -70;
+                                    maximum: 0;
+                                    value <=> root.vad-threshold;
+                                    level: root.input-level;
+                                    level-active: root.transmitting;
+                                    changed => {
+                                        root.audio-changed();
+                                    }
+                                }
+
+                                Reading {
+                                    text: "\{round(root.vad-threshold)} dB";
+                                }
+                            }
+
+                            Hint {
+                                text: "Talk normally and drag the marker just below where the bar reaches. Quieter sounds are not sent.";
+                            }
+                        }
+                    }
+
+                    if root.tx-mode == 1: HorizontalLayout {
+                        spacing: 16px;
+
+                        Caption {
+                            text: "";
+                        }
+
+                        Hint {
+                            text: root.ptt-key-index > 0 ? "Hold \{root.ptt-keys[root.ptt-key-index]} to talk. Change the key under Shortcuts." : "No talk key is set yet. Choose one under Shortcuts.";
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 16px;
+
+                        Caption {
+                            text: "Microphone boost";
+                        }
+
+                        Slide {
+                            minimum: 0;
+                            maximum: 300;
+                            step: 5;
+                            value <=> root.mic-gain;
+                            changed => {
+                                root.audio-changed();
+                            }
+                        }
+
+                        Reading {
+                            text: "\{round(root.mic-gain)}%";
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 16px;
+
+                        Caption {
+                            text: "Test";
+                        }
+
+                        Check {
+                            text: "Play my microphone back to me";
+                            checked <=> root.mic-test;
+                            toggled => {
+                                root.audio-changed();
+                            }
+                        }
+                    }
+                }
+
+                if root.tab == 1: VerticalLayout {
+                    alignment: start;
+                    padding: 20px;
+                    spacing: 12px;
+
+                    HorizontalLayout {
+                        spacing: 16px;
+
+                        Caption {
+                            text: "Speakers";
+                        }
+
+                        VerticalLayout {
+                            spacing: 5px;
+
+                            Dropdown {
+                                model: root.output-devices;
+                                current-index <=> root.output-index;
+                                selected => {
+                                    root.output-device-selected();
+                                }
+                            }
+
+                            Hint {
+                                text: root.sound-status;
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 16px;
+
+                        Caption {
+                            text: "Volume";
+                        }
+
+                        Slide {
+                            minimum: 0;
+                            maximum: 200;
+                            step: 5;
+                            value <=> root.output-volume;
+                            changed => {
+                                root.audio-changed();
+                            }
+                        }
+
+                        Reading {
+                            text: "\{round(root.output-volume)}%";
+                        }
+                    }
+                }
+
+                if root.tab == 2: VerticalLayout {
+                    alignment: start;
+                    padding: 20px;
+                    spacing: 8px;
+
+                    Hint {
+                        text: "An identity is how a server recognises you. Each bookmark can use a different one.";
+                    }
+
+                    for identity in root.identities: Rectangle {
+                        height: 44px;
+                        border-radius: 8px;
+                        background: Theme.shoal;
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 12px;
+
+                            Text {
+                                text: identity.name;
+                                color: Theme.foam;
+                                font-size: Theme.text;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: identity.uid;
+                                color: Theme.drift;
+                                font-size: Theme.small;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+
+                            Text {
+                                text: identity.detail;
+                                color: Theme.drift;
+                                font-size: Theme.small;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        padding-top: 6px;
+                        spacing: 8px;
+
+                        Field {
+                            text <=> root.import-path;
+                            placeholder: "path to a TeamSpeak identity file or folder";
+                            accepted => {
+                                root.import-identity();
+                            }
+                        }
+
+                        Btn {
+                            text: "Import";
+                            clicked => {
+                                root.import-identity();
+                            }
+                        }
+
+                        Btn {
+                            text: "Create an identity";
+                            clicked => {
+                                root.new-identity();
+                            }
+                        }
+                    }
+
+                    if root.identity-note != "": Hint {
+                        text: root.identity-note;
+                    }
+                }
+
+                if root.tab == 3: HorizontalLayout {
+                    padding: 20px;
+                    spacing: 18px;
+
+                    VerticalLayout {
+                        width: 236px;
+                        spacing: 4px;
+                        alignment: start;
+
+                        for bookmark[i] in root.bookmarks: Pressable {
+                            height: 44px;
+                            border-radius: 8px;
+                            background: i == root.bm-index || self.hovered ? Theme.current : Theme.shoal;
+                            clicked => {
+                                root.bookmark-picked(i);
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 10px;
+                                spacing: 10px;
+
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Tile {
+                                        size: 30px;
+                                        focusable: false;
+                                        label: bookmark.initials;
+                                        clicked => {
+                                            root.bookmark-picked(i);
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    text: bookmark.name;
+                                    color: Theme.foam;
+                                    font-size: Theme.text;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                        }
+
+                        if root.bookmarks.length == 0: Hint {
+                            text: "No bookmarks yet. Fill in the form to add one.";
+                        }
+
+                        Rectangle {
+                            height: 6px;
+                        }
+
+                        Btn {
+                            text: "Add a bookmark";
+                            clicked => {
+                                root.bookmark-new();
+                            }
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: start;
+                        spacing: 5px;
+
+                        Heading {
+                            text: root.bm-index >= 0 ? "Edit bookmark" : "New bookmark";
+                        }
+
+                        Hint {
+                            text: "Name";
+                        }
+
+                        Field {
+                            text <=> root.bm-name;
+                            placeholder: "what to call it";
+                        }
+
+                        Hint {
+                            text: "Server address";
+                        }
+
+                        Field {
+                            text <=> root.bm-address;
+                            placeholder: "name or address, with :port if needed";
+                        }
+
+                        Hint {
+                            text: "Nickname";
+                        }
+
+                        Field {
+                            text <=> root.bm-nickname;
+                            placeholder: "the name others see";
+                        }
+
+                        Hint {
+                            text: "Identity";
+                        }
+
+                        Dropdown {
+                            model: root.identity-names;
+                            current-index <=> root.bm-identity;
+                            placeholder: "No identity yet";
+                        }
+
+                        if root.bm-note != "": Hint {
+                            text: root.bm-note;
+                            color: Theme.coral;
+                        }
+
+                        HorizontalLayout {
+                            alignment: end;
+                            padding-top: 10px;
+                            spacing: 8px;
+
+                            Btn {
+                                text: "Remove";
+                                danger: true;
+                                enabled: root.bm-index >= 0;
+                                clicked => {
+                                    root.bookmark-removed();
+                                }
+                            }
+
+                            Btn {
+                                text: "Save bookmark";
+                                enabled: root.bm-address != "";
+                                clicked => {
+                                    root.bookmark-saved();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.tab == 4: VerticalLayout {
+                    alignment: start;
+                    padding: 20px;
+                    spacing: 12px;
+
+                    HorizontalLayout {
+                        spacing: 16px;
+
+                        Caption {
+                            text: "Talk key";
+                        }
+
+                        VerticalLayout {
+                            spacing: 6px;
+
+                            Dropdown {
+                                model: root.ptt-keys;
+                                current-index <=> root.ptt-key-index;
+                                selected => {
+                                    root.audio-changed();
+                                }
+                            }
+
+                            Hint {
+                                text: "Used when Send my voice is set to While I hold a key. It works while PhishSpeak is in the background, so you can talk from inside a game.";
+                            }
+                        }
+                    }
+                }
+
+                if root.tab == 5: VerticalLayout {
+                    alignment: start;
+                    padding: 20px;
+                    spacing: 10px;
+
+                    Heading {
+                        text: "PhishSpeak \{root.version}";
+                    }
+
+                    Hint {
+                        text: "An unofficial TeamSpeak 3 client. It is not affiliated with or endorsed by TeamSpeak Systems GmbH; TeamSpeak is their trademark.";
+                    }
+
+                    Heading {
+                        text: "Credits";
+                        font-size: 13.5px;
+                    }
+
+                    Hint {
+                        text: "The protocol knowledge comes from the ReSpeak projects tsdeclarations and tsclientlib, from TSLib in Splamy's TS3AudioBot, from Manevolent's ts3j, and from landave's TSIdentityTool.";
+                    }
+
+                    Hint {
+                        text: "Built with Slint, Opus by the Xiph.Org Foundation through unsafe-libopus, cpal, the RustCrypto crates and curve25519-dalek. The README lists every source and its licence.";
                     }
                 }
             }
 
-            if root.tab == 5: VerticalLayout {
-                alignment: start;
-                padding: 20px;
-                spacing: 10px;
-
-                Heading {
-                    text: "PhishSpeak \{root.version}";
-                }
-
-                Hint {
-                    text: "An unofficial TeamSpeak 3 client. It is not affiliated with or endorsed by TeamSpeak Systems GmbH; TeamSpeak is their trademark.";
-                }
-
-                Heading {
-                    text: "Credits";
-                    font-size: 13.5px;
-                }
-
-                Hint {
-                    text: "The protocol knowledge comes from the ReSpeak projects tsdeclarations and tsclientlib, from TSLib in Splamy's TS3AudioBot, from Manevolent's ts3j, and from landave's TSIdentityTool.";
-                }
-
-                Hint {
-                    text: "Built with Slint, Opus by the Xiph.Org Foundation through unsafe-libopus, cpal, the RustCrypto crates and curve25519-dalek. The README lists every source and its licence.";
-                }
+            Rectangle {
+                height: 1px;
+                background: Theme.hairline;
             }
-        }
 
-        Rectangle {
-            height: 1px;
-            background: Theme.hairline;
-        }
+            HorizontalLayout {
+                alignment: end;
+                padding: 12px;
+                padding-right: 18px;
 
-        HorizontalLayout {
-            alignment: end;
-            padding: 12px;
-            padding-right: 18px;
-
-            Btn {
-                text: "Done";
-                primary: true;
-                clicked => {
-                    root.done();
+                Btn {
+                    text: "Done";
+                    primary: true;
+                    clicked => {
+                        root.done();
+                    }
                 }
             }
         }

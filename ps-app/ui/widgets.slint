@@ -153,8 +153,8 @@ export component Tile inherits Pressable {
     height: root.size;
     border-radius: root.size * 0.3;
     background: root.viewed ? Theme.lure : (root.hovered ? Theme.current : Theme.shoal);
-    border-width: root.connected && !root.viewed ? 2px : 0px;
-    border-color: Theme.drift;
+    border-width: root.viewed ? 0px : (root.connected ? 2px : 1px);
+    border-color: root.connected ? Theme.drift : Theme.hairline;
 
     Text {
         text: root.label;
@@ -252,16 +252,16 @@ export component Slide inherits Rectangle {
             y: 0px;
             height: parent.height;
             width: parent.width * (root.level >= 0 ? max(0, min(1, root.level)) : root.fraction);
-            background: root.level >= 0 ? (root.level-active ? Theme.lure : Theme.drift) : Theme.lure;
+            background: root.level >= 0 && root.level-active ? Theme.lure : Theme.drift;
         }
     }
 
     Rectangle {
         x: max(0px, min(parent.width - self.width, parent.width * root.fraction - self.width / 2));
         y: (parent.height - self.height) / 2;
-        width: 14px;
-        height: 14px;
-        border-radius: 7px;
+        width: touch.has-hover || touch.pressed ? 16px : 14px;
+        height: self.width;
+        border-radius: self.width / 2;
         background: Theme.foam;
         border-width: scope.has-focus ? 2px : 0px;
         border-color: Theme.lure;
@@ -342,6 +342,7 @@ export component Check inherits Pressable {
 
     height: 30px;
     border-radius: 6px;
+    background: root.hovered ? Theme.current.with-alpha(0.35) : transparent;
     clicked => {
         root.checked = !root.checked;
         root.toggled();
@@ -359,12 +360,12 @@ export component Check inherits Pressable {
                 height: 18px;
                 border-radius: 5px;
                 border-width: 1.5px;
-                border-color: root.checked ? Theme.lure : Theme.drift;
-                background: root.checked ? Theme.lure : transparent;
+                border-color: root.checked ? Theme.foam : Theme.drift;
+                background: root.checked ? Theme.foam : transparent;
 
                 if root.checked: Icon {
                     source: Icons.check;
-                    tint: Theme.on-lure;
+                    tint: Theme.trench;
                     width: 14px;
                     height: 14px;
                     x: 2px;
@@ -388,7 +389,7 @@ export component Segmented inherits Rectangle {
     in-out property <int> current;
     callback selected();
 
-    height: 32px;
+    height: 34px;
     border-radius: 8px;
     background: Theme.trench;
 
@@ -545,7 +546,24 @@ export component TreeRowView inherits Rectangle {
 
     height: Theme.row;
 
-    if root.entry.kind == 0: HorizontalLayout {
+    if root.entry.kind == 0 && root.entry.align == 3: Rectangle {
+        x: 12px;
+        width: parent.width - 24px;
+        clip: true;
+
+        Text {
+            x: 0px;
+            width: parent.width;
+            text: root.entry.text;
+            color: Theme.drift;
+            font-size: Theme.small;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: clip;
+        }
+    }
+
+    if root.entry.kind == 0 && root.entry.align != 3: HorizontalLayout {
         padding-left: 12px;
         padding-right: 12px;
         spacing: 10px;
@@ -560,7 +578,7 @@ export component TreeRowView inherits Rectangle {
             vertical-alignment: center;
             horizontal-alignment: root.entry.align == 2 ? TextHorizontalAlignment.right : TextHorizontalAlignment.left;
             horizontal-stretch: root.entry.align == 1 ? 0 : 1;
-            overflow: root.entry.align == 3 ? TextOverflow.clip : TextOverflow.elide;
+            overflow: elide;
         }
 
         if root.entry.align == 1: Rule { }

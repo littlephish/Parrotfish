@@ -11,6 +11,12 @@ component Dim inherits Text {
     vertical-alignment: center;
 }
 
+component FieldError inherits Text {
+    color: Theme.coral;
+    font-size: Theme.small;
+    wrap: word-wrap;
+}
+
 component FieldLabel inherits Text {
     height: 24px;
     color: Theme.drift;
@@ -155,6 +161,7 @@ export component PhishSpeakApp inherits Window {
     in-out property <int> dlg-identity;
     in-out property <bool> dlg-save: true;
     in property <string> dlg-error;
+    in property <int> dlg-error-field;
     in property <string> prompt-name;
     in-out property <string> prompt-password;
     in-out property <string> chat-input;
@@ -172,331 +179,71 @@ export component PhishSpeakApp inherits Window {
     callback toggle-sound();
     callback open-settings(tab: int);
 
-    VerticalLayout {
-        Pressable {
-            height: 58px;
-            background: self.hovered ? Theme.shoal : transparent;
-            clicked => {
-                root.menu-open = !root.menu-open;
+    forward-focus: keys;
+    changed menu-open => {
+        if (root.menu-open) {
+            keys.focus();
+        }
+    }
+    changed dialog-open => {
+        if (!root.dialog-open) {
+            keys.focus();
+        }
+    }
+    changed prompt-open => {
+        if (!root.prompt-open) {
+            keys.focus();
+        }
+    }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text != Key.Escape) {
+                return reject;
             }
-
-            HorizontalLayout {
-                padding-left: 12px;
-                padding-right: 12px;
-                spacing: 10px;
-
-                VerticalLayout {
-                    alignment: center;
-
-                    Tile {
-                        focusable: false;
-                        label: root.viewing ? root.server-initials : "";
-                        viewed: root.viewing;
-                        clicked => {
-                            root.menu-open = !root.menu-open;
-                        }
-
-                        if !root.viewing: Icon {
-                            source: Icons.plus;
-                            x: (parent.width - self.width) / 2;
-                            y: (parent.height - self.height) / 2;
-                        }
-                    }
-                }
-
-                VerticalLayout {
-                    alignment: center;
-                    spacing: 1px;
-                    horizontal-stretch: 1;
-
-                    Text {
-                        text: root.viewing ? root.server-name : "PhishSpeak";
-                        color: Theme.foam;
-                        font-size: 15px;
-                        font-weight: 600;
-                        overflow: elide;
-                    }
-
-                    Dim {
-                        text: root.viewing ? root.server-detail : "Choose a server";
-                        overflow: elide;
-                    }
-                }
-
-                for other in root.others: VerticalLayout {
-                    alignment: center;
-
-                    Tile {
-                        size: 30px;
-                        label: other.initials;
-                        connected: true;
-                        talking: other.talking;
-                        clicked => {
-                            root.view-server(other.id);
-                        }
-                    }
-                }
-
-                VerticalLayout {
-                    alignment: center;
-
-                    Icon {
-                        source: Icons.chevron;
-                    }
-                }
+            if (root.prompt-open) {
+                root.prompt-open = false;
+            } else if (root.dialog-open) {
+                root.dialog-open = false;
+            } else if (root.menu-open) {
+                root.menu-open = false;
+            } else if (root.chat-open) {
+                root.chat-open = false;
+            } else {
+                return reject;
             }
+            return accept;
         }
 
-        Rectangle {
-            height: 1px;
-            background: Theme.hairline;
-        }
-
-        if root.notice != "": Rectangle {
-            background: Theme.coral.with-alpha(0.14);
-
-            HorizontalLayout {
-                padding-left: 14px;
-                padding-right: 6px;
-                padding-top: 6px;
-                padding-bottom: 6px;
-                spacing: 8px;
-
-                Text {
-                    text: root.notice;
-                    color: Theme.foam;
-                    font-size: Theme.small;
-                    wrap: word-wrap;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                }
-
-                VerticalLayout {
-                    alignment: center;
-
-                    IconButton {
-                        icon: Icons.close;
-                        width: 28px;
-                        height: 28px;
-                        clicked => {
-                            root.notice = "";
-                        }
-                    }
-                }
-            }
-        }
-
-        Rectangle {
-            vertical-stretch: 1;
-
-            if root.viewing: ListView {
-                x: 6px;
-                y: 6px;
-                width: parent.width - 12px;
-                height: parent.height - 6px;
-
-                for item in root.tree: TreeRowView {
-                    entry: item;
-                    activated => {
-                        root.row-activated(item);
-                    }
-                }
-            }
-
-            if !root.viewing: VerticalLayout {
-                alignment: start;
-                padding: 22px;
-                spacing: 10px;
-
-                Rectangle {
-                    height: 26px;
-                }
-
-                Text {
-                    text: "No server yet";
-                    color: Theme.foam;
-                    font-size: 17px;
-                    font-weight: 600;
-                    horizontal-alignment: center;
-                }
-
-                Text {
-                    text: root.bookmarks.length > 0 ? "Connect to a new server, or pick one of your bookmarks." : "Connect to a server to see its channels. You can bookmark it for next time.";
-                    color: Theme.drift;
-                    font-size: Theme.text;
-                    wrap: word-wrap;
-                    horizontal-alignment: center;
-                }
-
-                HorizontalLayout {
-                    alignment: center;
-                    padding-top: 6px;
-                    padding-bottom: 10px;
-
-                    Btn {
-                        text: "Connect to a server";
-                        primary: true;
-                        clicked => {
-                            root.open-connect();
-                        }
-                    }
-                }
-
-                for bookmark in root.bookmarks: ServerRow {
-                    initials: bookmark.initials;
-                    name: bookmark.name;
-                    detail: bookmark.address;
-                    clicked => {
-                        root.connect-bookmark(bookmark.index);
-                    }
-                }
-            }
-        }
-
-        if root.viewing && !root.chat-open: Rectangle {
-            background: Theme.shoal;
-
-            VerticalLayout {
-                padding: 12px;
-                padding-top: 8px;
-                spacing: 6px;
-
-                Pressable {
-                    height: 24px;
-                    border-radius: 6px;
-                    clicked => {
-                        root.chat-open = true;
-                    }
-
-                    HorizontalLayout {
-                        spacing: 8px;
-
-                        if root.has-chat: Dim {
-                            text: root.last-chat.time;
-                            font-size: 11.5px;
-                        }
-
-                        if root.has-chat && root.last-chat.name != "": Text {
-                            text: root.last-chat.name;
-                            color: root.last-chat.kind == 2 ? Theme.lure : Theme.foam;
-                            font-size: Theme.small;
-                            font-weight: 600;
-                            vertical-alignment: center;
-                        }
-
-                        Text {
-                            text: root.has-chat ? root.last-chat.text : "No messages yet. Click to open chat.";
-                            color: root.has-chat && root.last-chat.kind != 0 ? (root.last-chat.kind == 3 ? Theme.coral : Theme.foam) : Theme.drift;
-                            font-size: Theme.small;
-                            vertical-alignment: center;
-                            overflow: elide;
-                            horizontal-stretch: 1;
-                        }
-                    }
-                }
-
-                Field {
-                    text <=> root.chat-input;
-                    placeholder: root.channel-name == "" ? "Message" : "Message " + root.channel-name;
-                    accepted => {
-                        root.send-chat();
-                    }
-                }
-            }
-        }
-
-        if root.viewing && root.chat-open: Rectangle {
-            height: max(240px, root.height * 0.5);
-            background: Theme.shoal;
-
-            VerticalLayout {
-                padding-top: 10px;
-                spacing: 6px;
-
-                HorizontalLayout {
-                    padding-left: 12px;
-                    padding-right: 8px;
-                    spacing: 8px;
-
-                    Segmented {
-                        options: [root.channel-name == "" ? "Channel" : root.channel-name, "Server"];
-                        current <=> root.chat-target;
-                    }
-
-                    Rectangle {
-                        horizontal-stretch: 1;
-                    }
-
-                    IconButton {
-                        icon: Icons.chevron;
-                        clicked => {
-                            root.chat-open = false;
-                        }
-                    }
-                }
-
-                chat-scroll := ScrollView {
-                    vertical-stretch: 1;
-                    content-width: self.visible-width;
-                    content-height: max(lines.preferred-height, self.visible-height);
-                    changed content-height => {
-                        self.content-y = min(0px, self.visible-height - self.content-height);
-                    }
-                    changed visible-height => {
-                        self.content-y = min(0px, self.visible-height - self.content-height);
-                    }
-
-                    lines := VerticalLayout {
-                        width: chat-scroll.visible-width;
-                        alignment: end;
-
-                        for line in root.chat: ChatRowView {
-                            entry: line;
-                        }
-                    }
+        VerticalLayout {
+            Pressable {
+                height: 58px;
+                background: self.hovered ? Theme.shoal : transparent;
+                clicked => {
+                    root.menu-open = !root.menu-open;
                 }
 
                 HorizontalLayout {
                     padding-left: 12px;
                     padding-right: 12px;
-                    padding-bottom: 12px;
-
-                    Field {
-                        text <=> root.chat-input;
-                        placeholder: root.chat-target == 1 ? "Message everyone on the server" : (root.channel-name == "" ? "Message" : "Message " + root.channel-name);
-                        accepted => {
-                            root.send-chat();
-                        }
-                    }
-                }
-            }
-        }
-
-        Rectangle {
-            background: Theme.trench;
-
-            VerticalLayout {
-                padding: 10px;
-                padding-left: 12px;
-                padding-right: 12px;
-                spacing: 8px;
-
-                HorizontalLayout {
                     spacing: 10px;
 
-                    Rectangle {
-                        width: 34px;
-                        height: 34px;
-                        border-radius: 10px;
-                        background: root.transmitting ? Theme.lure : Theme.shoal;
+                    VerticalLayout {
+                        alignment: center;
 
-                        Text {
-                            text: root.initials;
-                            color: root.transmitting ? Theme.on-lure : Theme.foam;
-                            font-size: 12.5px;
-                            font-weight: 600;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                        Tile {
+                            focusable: false;
+                            label: root.viewing ? root.server-initials : "";
+                            viewed: root.viewing;
+                            clicked => {
+                                root.menu-open = !root.menu-open;
+                            }
+
+                            if !root.viewing: Icon {
+                                source: Icons.plus;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
                         }
                     }
 
@@ -506,347 +253,677 @@ export component PhishSpeakApp inherits Window {
                         horizontal-stretch: 1;
 
                         Text {
-                            text: root.nickname;
+                            text: root.viewing ? root.server-name : "PhishSpeak";
                             color: Theme.foam;
-                            font-size: Theme.text;
+                            font-size: 15px;
                             font-weight: 600;
                             overflow: elide;
                         }
 
                         Dim {
-                            text: root.status-text;
+                            text: root.viewing ? root.server-detail : "Choose a server";
                             overflow: elide;
                         }
                     }
 
-                    IconButton {
-                        icon: root.mic-muted ? Icons.mic-off : Icons.mic;
-                        active: !root.mic-muted;
-                        alert: root.mic-muted;
-                        clicked => {
-                            root.toggle-mic();
+                    for other in root.others: VerticalLayout {
+                        alignment: center;
+
+                        Tile {
+                            size: 30px;
+                            label: other.initials;
+                            connected: true;
+                            talking: other.talking;
+                            clicked => {
+                                root.view-server(other.id);
+                            }
                         }
                     }
-
-                    IconButton {
-                        icon: root.sound-muted ? Icons.ear-off : Icons.ear;
-                        active: !root.sound-muted;
-                        alert: root.sound-muted;
-                        clicked => {
-                            root.toggle-sound();
-                        }
-                    }
-
-                    IconButton {
-                        icon: Icons.cog;
-                        clicked => {
-                            root.open-settings(0);
-                        }
-                    }
-                }
-
-                HorizontalLayout {
-                    spacing: 8px;
 
                     VerticalLayout {
                         alignment: center;
-                        horizontal-stretch: 1;
-
-                        Meter {
-                            level: root.input-level;
-                            marker: root.threshold-position;
-                            active: root.transmitting;
-                        }
-                    }
-
-                    if root.ping-text != "": VerticalLayout {
-                        alignment: center;
 
                         Icon {
-                            source: Icons.signal;
-                            width: 14px;
-                            height: 14px;
+                            source: Icons.chevron;
                         }
                     }
-
-                    if root.ping-text != "": Dim {
-                        text: root.ping-text;
-                    }
-                }
-            }
-        }
-    }
-
-    if root.menu-open: TouchArea {
-        clicked => {
-            root.menu-open = false;
-        }
-    }
-
-    if root.menu-open: Rectangle {
-        x: 8px;
-        y: 62px;
-        width: parent.width - 16px;
-        height: min(self.preferred-height, parent.height - 74px);
-        background: Theme.shoal;
-        border-radius: 12px;
-        border-width: 1px;
-        border-color: Theme.hairline;
-        drop-shadow-blur: 26px;
-        drop-shadow-offset-y: 12px;
-        drop-shadow-color: #00000088;
-        clip: true;
-
-        TouchArea { }
-
-        VerticalLayout {
-            alignment: start;
-            padding: 8px;
-            spacing: 2px;
-
-            if root.sessions.length > 0: HorizontalLayout {
-                padding-left: 8px;
-                height: 26px;
-
-                Dim {
-                    text: "Connected";
-                }
-            }
-
-            for session in root.sessions: ServerRow {
-                initials: session.initials;
-                name: session.name;
-                detail: session.detail;
-                viewed: session.viewed;
-                connected: session.connected;
-                talking: session.talking;
-                clicked => {
-                    root.menu-open = false;
-                    root.view-server(session.id);
-                }
-            }
-
-            if root.menu-bookmarks.length > 0: HorizontalLayout {
-                padding-left: 8px;
-                height: 26px;
-
-                Dim {
-                    text: "Bookmarks";
-                }
-            }
-
-            for bookmark in root.menu-bookmarks: ServerRow {
-                initials: bookmark.initials;
-                name: bookmark.name;
-                detail: bookmark.address;
-                clicked => {
-                    root.menu-open = false;
-                    root.connect-bookmark(bookmark.index);
                 }
             }
 
             Rectangle {
-                height: 9px;
-
-                Rectangle {
-                    y: 4px;
-                    height: 1px;
-                    background: Theme.hairline;
-                }
+                height: 1px;
+                background: Theme.hairline;
             }
 
-            MenuAction {
-                icon: Icons.plus;
-                text: "Connect to a server";
-                clicked => {
-                    root.menu-open = false;
-                    root.open-connect();
-                }
-            }
-
-            MenuAction {
-                icon: Icons.bookmark;
-                text: "Edit bookmarks";
-                clicked => {
-                    root.menu-open = false;
-                    root.open-settings(3);
-                }
-            }
-
-            if root.viewing: MenuAction {
-                icon: Icons.close;
-                text: "Disconnect from " + root.server-name;
-                danger: true;
-                clicked => {
-                    root.menu-open = false;
-                    root.disconnect-viewed();
-                }
-            }
-        }
-    }
-
-    if root.dialog-open: Rectangle {
-        background: Theme.scrim;
-
-        TouchArea { }
-
-        Sheet {
-            width: min(420px, parent.width - 32px);
-            height: self.preferred-height;
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-
-            VerticalLayout {
-                padding: 18px;
-                spacing: 4px;
-
-                Text {
-                    text: "Connect to a server";
-                    color: Theme.foam;
-                    font-size: 16px;
-                    font-weight: 600;
-                }
-
-                FieldLabel {
-                    text: "Server address";
-                }
-
-                Field {
-                    text <=> root.dlg-address;
-                    placeholder: "name or address, with :port if needed";
-                    accepted => {
-                        root.connect-new();
-                    }
-                }
-
-                if root.dlg-error != "": Text {
-                    text: root.dlg-error;
-                    color: Theme.coral;
-                    font-size: Theme.small;
-                    wrap: word-wrap;
-                }
-
-                FieldLabel {
-                    text: "Nickname";
-                }
-
-                Field {
-                    text <=> root.dlg-nickname;
-                    placeholder: "the name others see";
-                    accepted => {
-                        root.connect-new();
-                    }
-                }
-
-                FieldLabel {
-                    text: "Server password, if it has one";
-                }
-
-                Field {
-                    text <=> root.dlg-password;
-                    password: true;
-                    placeholder: "None";
-                    accepted => {
-                        root.connect-new();
-                    }
-                }
-
-                FieldLabel {
-                    text: "Identity";
-                }
-
-                Dropdown {
-                    model: root.identity-names;
-                    current-index <=> root.dlg-identity;
-                    placeholder: "No identity yet. Create one in settings.";
-                }
-
-                Rectangle {
-                    height: 6px;
-                }
-
-                Check {
-                    text: "Save as a bookmark";
-                    checked <=> root.dlg-save;
-                }
+            if root.notice != "": Rectangle {
+                vertical-stretch: 0;
+                background: Theme.coral.with-alpha(0.14);
 
                 HorizontalLayout {
-                    alignment: end;
-                    padding-top: 12px;
+                    padding-left: 14px;
+                    padding-right: 6px;
+                    padding-top: 6px;
+                    padding-bottom: 6px;
                     spacing: 8px;
 
-                    Btn {
-                        text: "Cancel";
-                        clicked => {
-                            root.dialog-open = false;
+                    Text {
+                        text: root.notice;
+                        color: Theme.foam;
+                        font-size: Theme.small;
+                        wrap: word-wrap;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+
+                        IconButton {
+                            icon: Icons.close;
+                            width: 28px;
+                            height: 28px;
+                            clicked => {
+                                root.notice = "";
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+
+                if root.viewing: ListView {
+                    x: 6px;
+                    y: 6px;
+                    width: parent.width - 12px;
+                    height: parent.height - 6px;
+
+                    for item in root.tree: TreeRowView {
+                        entry: item;
+                        activated => {
+                            root.row-activated(item);
+                        }
+                    }
+                }
+
+                if root.viewing && root.tree.length == 0: Text {
+                    text: root.server-detail;
+                    color: Theme.drift;
+                    font-size: Theme.text;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                if !root.viewing: VerticalLayout {
+                    alignment: start;
+                    padding: 22px;
+                    spacing: 10px;
+
+                    Rectangle {
+                        height: 26px;
+                    }
+
+                    Text {
+                        text: "No server yet";
+                        color: Theme.foam;
+                        font-size: 17px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                    }
+
+                    Text {
+                        text: root.bookmarks.length > 0 ? "Connect to a new server, or pick one of your bookmarks." : "Connect to a server to see its channels. You can bookmark it for next time.";
+                        color: Theme.drift;
+                        font-size: Theme.text;
+                        wrap: word-wrap;
+                        horizontal-alignment: center;
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        padding-top: 6px;
+                        padding-bottom: 10px;
+
+                        Btn {
+                            text: "Connect to a server";
+                            primary: true;
+                            clicked => {
+                                root.open-connect();
+                            }
                         }
                     }
 
-                    Btn {
-                        text: "Connect";
-                        primary: true;
-                        enabled: root.dlg-address != "";
+                    for bookmark in root.bookmarks: ServerRow {
+                        initials: bookmark.initials;
+                        name: bookmark.name;
+                        detail: bookmark.address;
                         clicked => {
+                            root.connect-bookmark(bookmark.index);
+                        }
+                    }
+                }
+            }
+
+            if root.viewing && !root.chat-open: Rectangle {
+                vertical-stretch: 0;
+                background: Theme.shoal;
+
+                VerticalLayout {
+                    padding: 12px;
+                    padding-top: 8px;
+                    spacing: 6px;
+
+                    Pressable {
+                        height: 28px;
+                        border-radius: 6px;
+                        clicked => {
+                            root.chat-open = true;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+
+                            if root.has-chat: Dim {
+                                text: root.last-chat.time;
+                                font-size: 11.5px;
+                            }
+
+                            if root.has-chat && root.last-chat.name != "": Text {
+                                text: root.last-chat.name;
+                                color: root.last-chat.kind == 2 ? Theme.lure : Theme.foam;
+                                font-size: Theme.small;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: root.has-chat ? root.last-chat.text : "No messages yet. Click to open chat.";
+                                color: root.has-chat && root.last-chat.kind != 0 ? (root.last-chat.kind == 3 ? Theme.coral : Theme.foam) : Theme.drift;
+                                font-size: Theme.small;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                    }
+
+                    Field {
+                        text <=> root.chat-input;
+                        placeholder: root.channel-name == "" ? "Message" : "Message " + root.channel-name;
+                        accepted => {
+                            root.send-chat();
+                        }
+                    }
+                }
+            }
+
+            if root.viewing && root.chat-open: Rectangle {
+                min-height: 240px;
+                vertical-stretch: 1;
+                background: Theme.shoal;
+
+                VerticalLayout {
+                    padding-top: 10px;
+                    spacing: 6px;
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 8px;
+                        spacing: 8px;
+
+                        Segmented {
+                            options: [root.channel-name == "" ? "Channel" : root.channel-name, "Server"];
+                            current <=> root.chat-target;
+                        }
+
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+
+                        IconButton {
+                            icon: Icons.chevron;
+                            clicked => {
+                                root.chat-open = false;
+                            }
+                        }
+                    }
+
+                    chat-scroll := ScrollView {
+                        vertical-stretch: 1;
+                        content-width: self.visible-width;
+                        content-height: max(lines.preferred-height, self.visible-height);
+                        changed content-height => {
+                            self.content-y = min(0px, self.visible-height - self.content-height);
+                        }
+                        changed visible-height => {
+                            self.content-y = min(0px, self.visible-height - self.content-height);
+                        }
+
+                        lines := VerticalLayout {
+                            width: chat-scroll.visible-width;
+                            alignment: end;
+
+                            for line in root.chat: ChatRowView {
+                                entry: line;
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        padding-bottom: 12px;
+
+                        Field {
+                            text <=> root.chat-input;
+                            placeholder: root.chat-target == 1 ? "Message everyone on the server" : (root.channel-name == "" ? "Message" : "Message " + root.channel-name);
+                            accepted => {
+                                root.send-chat();
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                vertical-stretch: 0;
+                background: Theme.trench;
+
+                VerticalLayout {
+                    padding: 10px;
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 8px;
+
+                    HorizontalLayout {
+                        spacing: 10px;
+
+                        Rectangle {
+                            width: 34px;
+                            height: 34px;
+                            border-radius: 10px;
+                            background: root.transmitting ? Theme.lure : Theme.shoal;
+
+                            Text {
+                                text: root.initials;
+                                color: root.transmitting ? Theme.on-lure : Theme.foam;
+                                font-size: 12.5px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 1px;
+                            horizontal-stretch: 1;
+
+                            Text {
+                                text: root.nickname;
+                                color: Theme.foam;
+                                font-size: Theme.text;
+                                font-weight: 600;
+                                overflow: elide;
+                            }
+
+                            Dim {
+                                text: root.status-text;
+                                overflow: elide;
+                            }
+                        }
+
+                        IconButton {
+                            icon: root.mic-muted ? Icons.mic-off : Icons.mic;
+                            active: !root.mic-muted;
+                            alert: root.mic-muted;
+                            clicked => {
+                                root.toggle-mic();
+                            }
+                        }
+
+                        IconButton {
+                            icon: root.sound-muted ? Icons.ear-off : Icons.ear;
+                            active: !root.sound-muted;
+                            alert: root.sound-muted;
+                            clicked => {
+                                root.toggle-sound();
+                            }
+                        }
+
+                        IconButton {
+                            icon: Icons.cog;
+                            clicked => {
+                                root.open-settings(0);
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+
+                            Meter {
+                                level: root.input-level;
+                                marker: root.threshold-position;
+                                active: root.transmitting;
+                            }
+                        }
+
+                        if root.ping-text != "": VerticalLayout {
+                            alignment: center;
+
+                            Icon {
+                                source: Icons.signal;
+                                width: 14px;
+                                height: 14px;
+                            }
+                        }
+
+                        if root.ping-text != "": Dim {
+                            text: root.ping-text;
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.menu-open: TouchArea {
+            clicked => {
+                root.menu-open = false;
+            }
+        }
+
+        if root.menu-open: Rectangle {
+            x: 8px;
+            y: 62px;
+            width: parent.width - 16px;
+            height: min(self.preferred-height, parent.height - 74px);
+            background: Theme.shoal;
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: Theme.hairline;
+            drop-shadow-blur: 26px;
+            drop-shadow-offset-y: 12px;
+            drop-shadow-color: #00000088;
+            clip: true;
+
+            TouchArea { }
+
+            VerticalLayout {
+                alignment: start;
+                padding: 8px;
+                spacing: 2px;
+
+                if root.sessions.length > 0: HorizontalLayout {
+                    padding-left: 8px;
+                    height: 26px;
+
+                    Dim {
+                        text: "Connected";
+                    }
+                }
+
+                for session in root.sessions: ServerRow {
+                    initials: session.initials;
+                    name: session.name;
+                    detail: session.detail;
+                    viewed: session.viewed;
+                    connected: session.connected;
+                    talking: session.talking;
+                    clicked => {
+                        root.menu-open = false;
+                        root.view-server(session.id);
+                    }
+                }
+
+                if root.menu-bookmarks.length > 0: HorizontalLayout {
+                    padding-left: 8px;
+                    height: 26px;
+
+                    Dim {
+                        text: "Bookmarks";
+                    }
+                }
+
+                for bookmark in root.menu-bookmarks: ServerRow {
+                    initials: bookmark.initials;
+                    name: bookmark.name;
+                    detail: bookmark.address;
+                    clicked => {
+                        root.menu-open = false;
+                        root.connect-bookmark(bookmark.index);
+                    }
+                }
+
+                Rectangle {
+                    height: 9px;
+
+                    Rectangle {
+                        y: 4px;
+                        height: 1px;
+                        background: Theme.hairline;
+                    }
+                }
+
+                MenuAction {
+                    icon: Icons.plus;
+                    text: "Connect to a server";
+                    clicked => {
+                        root.menu-open = false;
+                        root.open-connect();
+                    }
+                }
+
+                MenuAction {
+                    icon: Icons.bookmark;
+                    text: "Edit bookmarks";
+                    clicked => {
+                        root.menu-open = false;
+                        root.open-settings(3);
+                    }
+                }
+
+                if root.viewing: MenuAction {
+                    icon: Icons.close;
+                    text: "Disconnect from " + root.server-name;
+                    danger: true;
+                    clicked => {
+                        root.menu-open = false;
+                        root.disconnect-viewed();
+                    }
+                }
+            }
+        }
+
+        if root.dialog-open: Rectangle {
+            background: Theme.scrim;
+            init => {
+                if (root.dlg-error != "" && root.dlg-error-field == 2) {
+                    password-field.focus-input();
+                } else if (root.dlg-error != "" && root.dlg-error-field == 1) {
+                    nickname-field.focus-input();
+                } else {
+                    address-field.focus-input();
+                }
+            }
+
+            TouchArea { }
+
+            Sheet {
+                width: min(420px, parent.width - 32px);
+                height: self.preferred-height;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+
+                VerticalLayout {
+                    padding: 18px;
+                    spacing: 4px;
+
+                    Text {
+                        text: "Connect to a server";
+                        color: Theme.foam;
+                        font-size: 16px;
+                        font-weight: 600;
+                    }
+
+                    FieldLabel {
+                        text: "Server address";
+                    }
+
+                    address-field := Field {
+                        text <=> root.dlg-address;
+                        placeholder: "name or address, with :port if needed";
+                        accepted => {
                             root.connect-new();
                         }
                     }
-                }
-            }
-        }
-    }
 
-    if root.prompt-open: Rectangle {
-        background: Theme.scrim;
-
-        TouchArea { }
-
-        Sheet {
-            width: min(380px, parent.width - 32px);
-            height: self.preferred-height;
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-
-            VerticalLayout {
-                padding: 18px;
-                spacing: 4px;
-
-                Text {
-                    text: root.prompt-name + " is locked";
-                    color: Theme.foam;
-                    font-size: 16px;
-                    font-weight: 600;
-                    overflow: elide;
-                }
-
-                FieldLabel {
-                    text: "Channel password";
-                }
-
-                Field {
-                    text <=> root.prompt-password;
-                    password: true;
-                    accepted => {
-                        root.join-with-password();
+                    if root.dlg-error != "" && root.dlg-error-field == 0: FieldError {
+                        text: root.dlg-error;
                     }
-                }
 
-                HorizontalLayout {
-                    alignment: end;
-                    padding-top: 14px;
-                    spacing: 8px;
+                    FieldLabel {
+                        text: "Nickname";
+                    }
 
-                    Btn {
-                        text: "Cancel";
-                        clicked => {
-                            root.prompt-open = false;
+                    nickname-field := Field {
+                        text <=> root.dlg-nickname;
+                        placeholder: "the name others see";
+                        accepted => {
+                            root.connect-new();
                         }
                     }
 
-                    Btn {
-                        text: "Join";
-                        primary: true;
-                        clicked => {
+                    if root.dlg-error != "" && root.dlg-error-field == 1: FieldError {
+                        text: root.dlg-error;
+                    }
+
+                    FieldLabel {
+                        text: "Server password, if it has one";
+                    }
+
+                    password-field := Field {
+                        text <=> root.dlg-password;
+                        password: true;
+                        placeholder: "None";
+                        accepted => {
+                            root.connect-new();
+                        }
+                    }
+
+                    if root.dlg-error != "" && root.dlg-error-field == 2: FieldError {
+                        text: root.dlg-error;
+                    }
+
+                    FieldLabel {
+                        text: "Identity";
+                    }
+
+                    Dropdown {
+                        model: root.identity-names;
+                        current-index <=> root.dlg-identity;
+                        placeholder: "No identity yet. Create one in settings.";
+                    }
+
+                    if root.dlg-error != "" && root.dlg-error-field == 3: FieldError {
+                        text: root.dlg-error;
+                    }
+
+                    Rectangle {
+                        height: 6px;
+                    }
+
+                    Check {
+                        text: "Save as a bookmark";
+                        checked <=> root.dlg-save;
+                    }
+
+                    HorizontalLayout {
+                        alignment: end;
+                        padding-top: 12px;
+                        spacing: 8px;
+
+                        Btn {
+                            text: "Cancel";
+                            clicked => {
+                                root.dialog-open = false;
+                            }
+                        }
+
+                        Btn {
+                            text: "Connect";
+                            primary: true;
+                            enabled: root.dlg-address != "";
+                            clicked => {
+                                root.connect-new();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.prompt-open: Rectangle {
+            background: Theme.scrim;
+            init => {
+                prompt-field.focus-input();
+            }
+
+            TouchArea { }
+
+            Sheet {
+                width: min(380px, parent.width - 32px);
+                height: self.preferred-height;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+
+                VerticalLayout {
+                    padding: 18px;
+                    spacing: 4px;
+
+                    Text {
+                        text: root.prompt-name + " is locked";
+                        color: Theme.foam;
+                        font-size: 16px;
+                        font-weight: 600;
+                        overflow: elide;
+                    }
+
+                    FieldLabel {
+                        text: "Channel password";
+                    }
+
+                    prompt-field := Field {
+                        text <=> root.prompt-password;
+                        password: true;
+                        accepted => {
                             root.join-with-password();
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: end;
+                        padding-top: 14px;
+                        spacing: 8px;
+
+                        Btn {
+                            text: "Cancel";
+                            clicked => {
+                                root.prompt-open = false;
+                            }
+                        }
+
+                        Btn {
+                            text: "Join";
+                            primary: true;
+                            clicked => {
+                                root.join-with-password();
+                            }
                         }
                     }
                 }

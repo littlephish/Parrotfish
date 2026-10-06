@@ -1,0 +1,131 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod app;
+mod bookmarks;
+mod platform;
+mod session;
+mod settings;
+
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::Duration;
+
+use slint::{CloseRequestResponse, ComponentHandle, LogicalSize, Timer, TimerMode};
+
+use app::{with_app, App, StartRequest};
+use settings::{Settings, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
+
+slint::include_modules!();
+
+const UI_TICK: Duration = Duration::from_millis(33);
+
+fn start_requests() -> Vec<StartRequest> {
+    let mut requests: Vec<StartRequest> = Vec::new();
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--connect" => {
+                if let Some(target) = args.next() {
+                    requests.push(StartRequest { target, ..StartRequest::default() });
+                }
+            }
+            "--nickname" => {
+                if let (Some(nickname), Some(last)) = (args.next(), requests.last_mut()) {
+                    last.nickname = nickname;
+                }
+            }
+            "--channel" => {
+                if let (Some(channel), Some(last)) = (args.next(), requests.last_mut()) {
+                    last.channel = channel;
+                }
+            }
+            _ => {}
+        }
+    }
+    requests
+}
+
+fn main() -> Result<(), slint::PlatformError> {
+    let ui = PhishSpeakApp::new()?;
+    let settings_window = SettingsWindow::new()?;
+    let settings = Settings::load();
+    ui.window().set_size(LogicalSize::new(settings.window_width, settings.window_height));
+
+    let app = Rc::new(RefCell::new(App::new(&ui, &settings_window, settings)));
+    let requests = start_requests();
+    with_app(&app, |state, w| state.start(w, &requests));
+
+    let a = app.clone();
+    ui.on_view_server(move |id| with_app(&a, |s, w| s.view_server(w, id.clamp(0, 0xffff) as u16)));
+    let a = app.clone();
+    ui.on_connect_bookmark(move |index| with_app(&a, |s, w| s.connect_bookmark(w, index)));
+    let a = app.clone();
+    ui.on_open_connect(move || with_app(&a, |s, w| s.open_connect(w)));
+    let a = app.clone();
+    ui.on_connect_new(move || with_app(&a, |s, w| s.connect_new(w)));
+    let a = app.clone();
+    ui.on_disconnect_viewed(move || with_app(&a, |s, w| s.disconnect_viewed(w)));
+    let a = app.clone();
+    ui.on_row_activated(move |row| with_app(&a, |s, w| s.row_activated(w, row)));
+    let a = app.clone();
+    ui.on_join_with_password(move || with_app(&a, |s, w| s.join_with_password(w)));
+    let a = app.clone();
+    ui.on_send_chat(move || with_app(&a, |s, w| s.send_chat(w)));
+    let a = app.clone();
+    ui.on_toggle_mic(move || with_app(&a, |s, w| s.toggle_mic(w)));
+    let a = app.clone();
+    ui.on_toggle_sound(move || with_app(&a, |s, w| s.toggle_sound(w)));
+    let a = app.clone();
+    ui.on_open_settings(move |tab| with_app(&a, |s, w| s.open_settings(w, tab)));
+
+    let a = app.clone();
+    settings_window.on_audio_changed(move || with_app(&a, |s, w| s.apply_audio(w)));
+    let a = app.clone();
+    settings_window.on_input_device_selected(move || with_app(&a, |s, w| s.select_input(w)));
+    let a = app.clone();
+    settings_window.on_output_device_selected(move || with_app(&a, |s, w| s.select_output(w)));
+    let a = app.clone();
+    settings_window.on_new_identity(move || with_app(&a, |s, w| s.new_identity(w)));
+    let a = app.clone();
+    settings_window.on_import_identity(move || with_app(&a, |s, w| s.import_identity(w)));
+    let a = app.clone();
+    settings_window.on_bookmark_picked(move |index| with_app(&a, |s, w| s.bookmark_picked(w, index)));
+    let a = app.clone();
+    settings_window.on_bookmark_new(move || with_app(&a, |s, w| s.bookmark_new(w)));
+    let a = app.clone();
+    settings_window.on_bookmark_saved(move || with_app(&a, |s, w| s.bookmark_saved(w)));
+    let a = app.clone();
+    settings_window.on_bookmark_removed(move || with_app(&a, |s, w| s.bookmark_removed(w)));
+    let a = app.clone();
+    settings_window.on_done(move || with_app(&a, |s, w| s.close_settings(w)));
+
+    let a = app.clone();
+    settings_window.window().on_close_requested(move || {
+        with_app(&a, |s, w| s.stop_mic_test(w));
+        CloseRequestResponse::HideWindow
+    });
+    let a = app.clone();
+    ui.window().on_close_requested(move || {
+        with_app(&a, |s, w| {
+            let window = w.main.window();
+            let size = window.size().to_logical(window.scale_factor());
+            if size.width >= MIN_WINDOW_WIDTH && size.height >= MIN_WINDOW_HEIGHT {
+                s.settings.window_width = size.width;
+                s.settings.window_height = size.height;
+            }
+            s.close_settings(w);
+        });
+        CloseRequestResponse::HideWindow
+    });
+
+    let timer = Timer::default();
+    let a = app.clone();
+    timer.start(TimerMode::Repeated, UI_TICK, move || with_app(&a, |s, w| s.tick(w)));
+
+    ui.run()?;
+    timer.stop();
+    if let Ok(mut state) = app.try_borrow_mut() {
+        state.shutdown();
+    }
+    Ok(())
+}

@@ -118,6 +118,11 @@ impl AudioEngine {
         }
     }
 
+    pub fn pause_transmit<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _held = self.shared.sink.lock();
+        f()
+    }
+
     pub fn push_voice(&self, session: u16, client_id: u16, voice_id: u16, codec: u8, data: &[u8]) {
         if let Ok(mut playback) = self.shared.playback.lock() {
             playback.push(session, client_id, voice_id, codec, data);
