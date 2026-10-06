@@ -50,6 +50,7 @@ pub(crate) enum Request {
     Command(Command),
     Text { target: TextTarget, text: String },
     Voice { codec: u8, data: Vec<u8> },
+    Whisper { payload: Vec<u8>, group: bool },
     Disconnect(String),
 }
 
@@ -336,6 +337,12 @@ impl Conn {
                 }
             }
             Request::Voice { codec, data } => self.send_voice(codec, &data),
+            Request::Whisper { payload, group } => {
+                if self.phase == Phase::Connected && payload.len() <= MAX_C2S_PAYLOAD {
+                    let flags = if group { FLAG_NEWPROTOCOL } else { 0 };
+                    self.send_packet(PacketType::VoiceWhisper, flags, &payload);
+                }
+            }
             Request::Disconnect(message) => self.begin_disconnect(&message),
         }
     }
@@ -688,12 +695,11 @@ impl Conn {
         };
         if voice.data.is_empty() {
             if self.talking.remove(&voice.client_id).is_some() {
-                self.set_talking(voice.client_id, false);
+                self.set_talking(voice.client_id, false, false);
             }
         } else {
-            if self.talking.insert(voice.client_id, Instant::now()).is_none() {
-                self.set_talking(voice.client_id, true);
-            }
+            self.talking.insert(voice.client_id, Instant::now());
+            self.set_talking(voice.client_id, true, ptype == PacketType::VoiceWhisper);
         }
         if let Some(sink) = &mut self.voice {
             sink(VoicePacket {
@@ -706,9 +712,9 @@ impl Conn {
         }
     }
 
-    fn set_talking(&mut self, client_id: u16, talking: bool) {
-        if self.book.set_talking(client_id, talking) {
-            self.emit(Event::Talking { client_id, talking });
+    fn set_talking(&mut self, client_id: u16, talking: bool, whisper: bool) {
+        if self.book.set_talking(client_id, talking, whisper) {
+            self.emit(Event::Talking { client_id, talking, whisper: talking && whisper });
         }
     }
 
@@ -784,6 +790,13 @@ impl Conn {
                 from_name: cmd.get("invokername").unwrap_or("").to_string(),
                 text: cmd.get("msg").unwrap_or("").to_string(),
             }),
+            "notifyservergrouplist" | "notifychannelgrouplist" => {
+                self.book.set_groups(&cmd, cmd.name == "notifyservergrouplist");
+                self.emit(Event::Groups {
+                    server_groups: self.book.regular_groups(true),
+                    channel_groups: self.book.regular_groups(false),
+                });
+            }
             "notifyconnectioninforequest" => {
                 let info = self.stats.connection_info();
                 self.send_command(&info);
@@ -1018,7 +1031,7 @@ impl Conn {
             .collect();
         for id in stale {
             self.talking.remove(&id);
-            self.set_talking(id, false);
+            self.set_talking(id, false, false);
         }
 
         if self.view_dirty && now.duration_since(self.last_view) >= VIEW_INTERVAL {

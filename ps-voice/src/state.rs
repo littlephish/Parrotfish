@@ -1,12 +1,15 @@
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
 
 use crate::capture::SILENCE_DB;
-use crate::codec::CODEC_OPUS_VOICE;
+use crate::codec::{CODEC_OPUS_VOICE, MAX_PACKET_BYTES};
 use crate::playback::Playback;
 
 pub const LOOPBACK_CLIENT_ID: u16 = 0xffff;
 pub const LOOPBACK_SESSION: u16 = 0xffff;
+pub const LANES: usize = 16;
+const NO_LANE: u8 = 255;
+const MIN_LANE_ROOM: usize = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TxMode {
@@ -33,7 +36,7 @@ impl TxMode {
     }
 }
 
-pub type FrameSink = Box<dyn FnMut(u8, &[u8]) + Send>;
+pub type FrameSink = Box<dyn FnMut(u8, u8, &[u8]) + Send>;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DeviceStatus {
@@ -48,6 +51,9 @@ pub struct Shared {
     pub mic_muted: AtomicBool,
     pub speaker_muted: AtomicBool,
     pub ptt: AtomicBool,
+    whisper_lane: AtomicU8,
+    on_air: AtomicU8,
+    lane_room: [AtomicU16; LANES],
     pub loopback: AtomicBool,
     pub transmitting: AtomicBool,
     pub codec: AtomicU8,
@@ -73,6 +79,9 @@ impl Default for Shared {
             mic_muted: AtomicBool::new(false),
             speaker_muted: AtomicBool::new(false),
             ptt: AtomicBool::new(false),
+            whisper_lane: AtomicU8::new(0),
+            on_air: AtomicU8::new(NO_LANE),
+            lane_room: std::array::from_fn(|_| AtomicU16::new(0)),
             loopback: AtomicBool::new(false),
             transmitting: AtomicBool::new(false),
             codec: AtomicU8::new(CODEC_OPUS_VOICE),
@@ -102,6 +111,39 @@ fn store(a: &AtomicU32, v: f32) {
 }
 
 impl Shared {
+    pub fn set_keys(&self, talk: bool, lane: u8) {
+        self.ptt.store(talk, Ordering::Relaxed);
+        self.whisper_lane.store(if usize::from(lane) < LANES { lane } else { 0 }, Ordering::Relaxed);
+    }
+
+    pub fn whisper_lane(&self) -> u8 {
+        self.whisper_lane.load(Ordering::Relaxed)
+    }
+
+    pub fn set_lane_room(&self, lane: u8, bytes: usize) {
+        if let Some(slot) = self.lane_room.get(usize::from(lane)) {
+            slot.store(bytes.clamp(MIN_LANE_ROOM, MAX_PACKET_BYTES) as u16, Ordering::Relaxed);
+        }
+    }
+
+    pub fn lane_room(&self, lane: u8) -> usize {
+        match self.lane_room.get(usize::from(lane)).map(|slot| slot.load(Ordering::Relaxed)) {
+            Some(bytes) if bytes > 0 => usize::from(bytes),
+            _ => MAX_PACKET_BYTES,
+        }
+    }
+
+    pub fn on_air_lane(&self) -> Option<u8> {
+        match self.on_air.load(Ordering::Relaxed) {
+            NO_LANE => None,
+            lane => Some(lane),
+        }
+    }
+
+    pub(crate) fn set_on_air(&self, lane: Option<u8>) {
+        self.on_air.store(lane.unwrap_or(NO_LANE), Ordering::Relaxed);
+    }
+
     pub fn tx_mode(&self) -> TxMode {
         TxMode::from_index(self.tx_mode.load(Ordering::Relaxed))
     }
@@ -154,6 +196,18 @@ impl Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn held_keys_are_stored_for_the_transmitter() {
+        let s = Shared::default();
+        assert_eq!(s.whisper_lane(), 0);
+        s.set_keys(true, 3);
+        assert!(s.ptt.load(Ordering::Relaxed));
+        assert_eq!(s.whisper_lane(), 3);
+        s.set_keys(false, 200);
+        assert!(!s.ptt.load(Ordering::Relaxed));
+        assert_eq!(s.whisper_lane(), 0);
+    }
 
     #[test]
     fn defaults_and_round_trips() {

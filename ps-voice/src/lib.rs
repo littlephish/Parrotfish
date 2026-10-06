@@ -12,7 +12,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 pub use device::{list_input_devices, list_output_devices, DeviceInfo};
-pub use state::{DeviceStatus, FrameSink, Shared, TxMode, LOOPBACK_CLIENT_ID, LOOPBACK_SESSION};
+pub use state::{DeviceStatus, FrameSink, Shared, TxMode, LANES, LOOPBACK_CLIENT_ID, LOOPBACK_SESSION};
 
 use capture::Transmitter;
 use device::{Ctl, InputSource};
@@ -53,10 +53,10 @@ fn transmit_loop(shared: Arc<Shared>, sources: Receiver<InputSource>, stop: Arc<
         let has_sink = sink_guard.as_ref().is_some_and(|g| g.is_some());
         shared.tx_enabled.store(has_sink || loopback, Ordering::Relaxed);
         let shared_ref = &*shared;
-        transmitter.process(&chunk, shared_ref, &mut |codec, data| {
+        transmitter.process(&chunk, shared_ref, &mut |lane, codec, data| {
             if let Some(guard) = sink_guard.as_mut() {
                 if let Some(sink) = guard.as_mut() {
-                    sink(codec, data);
+                    sink(lane, codec, data);
                 }
             }
             if loopback {
@@ -162,10 +162,6 @@ impl AudioEngine {
 
     pub fn set_speaker_muted(&self, muted: bool) {
         self.shared.speaker_muted.store(muted, Ordering::Relaxed);
-    }
-
-    pub fn set_ptt(&self, down: bool) {
-        self.shared.ptt.store(down, Ordering::Relaxed);
     }
 
     pub fn set_loopback(&self, enabled: bool) {

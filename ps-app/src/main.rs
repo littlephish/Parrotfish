@@ -2,9 +2,12 @@
 
 mod app;
 mod bookmarks;
+mod hotkeys;
+mod keywatch;
 mod platform;
 mod session;
 mod settings;
+mod whisper;
 
 use std::cell::RefCell;
 use std::rc::Rc;

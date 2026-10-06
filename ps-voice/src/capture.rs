@@ -31,6 +31,7 @@ pub struct Transmitter {
     lookback: VecDeque<Vec<f32>>,
     hangover: u32,
     transmitting: bool,
+    lane: u8,
     packet: [u8; MAX_PACKET_BYTES],
     stereo: Vec<f32>,
     resampled: Vec<f32>,
@@ -48,6 +49,7 @@ impl Transmitter {
             lookback: VecDeque::new(),
             hangover: 0,
             transmitting: false,
+            lane: 0,
             packet: [0; MAX_PACKET_BYTES],
             stereo: Vec::new(),
             resampled: Vec::new(),
@@ -81,7 +83,8 @@ impl Transmitter {
         true
     }
 
-    fn encode_and_emit(&mut self, frame: &[f32], sink: &mut dyn FnMut(u8, &[u8])) {
+    fn encode_and_emit(&mut self, frame: &[f32], lane: u8, room: usize, sink: &mut dyn FnMut(u8, u8, &[u8])) {
+        let room = room.clamp(1, MAX_PACKET_BYTES);
         let codec = self.codec;
         let Some(encoder) = self.encoder.as_mut() else {
             return;
@@ -92,18 +95,18 @@ impl Transmitter {
                 self.stereo.push(*s);
                 self.stereo.push(*s);
             }
-            encoder.encode(&self.stereo, &mut self.packet)
+            encoder.encode(&self.stereo, &mut self.packet[..room])
         } else {
-            encoder.encode(frame, &mut self.packet)
+            encoder.encode(frame, &mut self.packet[..room])
         };
         if let Ok(n) = result {
             if n > 0 {
-                sink(codec, &self.packet[..n]);
+                sink(lane, codec, &self.packet[..n]);
             }
         }
     }
 
-    pub fn process(&mut self, input: &[f32], shared: &Shared, sink: &mut dyn FnMut(u8, &[u8])) {
+    pub fn process(&mut self, input: &[f32], shared: &Shared, sink: &mut dyn FnMut(u8, u8, &[u8])) {
         self.resampled.clear();
         self.resampler.process(input, &mut self.resampled);
         self.pending.extend_from_slice(&self.resampled);
@@ -116,7 +119,7 @@ impl Transmitter {
         self.pending.drain(..offset);
     }
 
-    fn process_frame(&mut self, frame: &mut [f32], shared: &Shared, sink: &mut dyn FnMut(u8, &[u8])) {
+    fn process_frame(&mut self, frame: &mut [f32], shared: &Shared, sink: &mut dyn FnMut(u8, u8, &[u8])) {
         let gain = shared.input_gain();
         if (gain - 1.0).abs() > 1e-3 {
             for s in frame.iter_mut() {
@@ -126,61 +129,67 @@ impl Transmitter {
         let level = level_db(frame);
         shared.set_input_level(level);
 
+        let lane = shared.whisper_lane();
         let mode = shared.tx_mode();
-        let gate_open = match mode {
-            TxMode::Continuous => true,
-            TxMode::PushToTalk => shared.ptt.load(Ordering::Relaxed),
-            TxMode::VoiceActivation => {
-                if level >= shared.vad_threshold() {
-                    self.hangover = HANGOVER_FRAMES;
-                    true
-                } else if self.hangover > 0 {
-                    self.hangover -= 1;
-                    true
-                } else {
-                    false
+        let gate_open = lane != 0
+            || match mode {
+                TxMode::Continuous => true,
+                TxMode::PushToTalk => shared.ptt.load(Ordering::Relaxed),
+                TxMode::VoiceActivation => {
+                    if level >= shared.vad_threshold() {
+                        self.hangover = HANGOVER_FRAMES;
+                        true
+                    } else if self.hangover > 0 {
+                        self.hangover -= 1;
+                        true
+                    } else {
+                        false
+                    }
                 }
-            }
-        };
+            };
         let allowed = shared.tx_enabled.load(Ordering::Relaxed)
             && !shared.mic_muted.load(Ordering::Relaxed)
             && !shared.speaker_muted.load(Ordering::Relaxed);
         let active = gate_open && allowed;
 
+        if self.transmitting && (!active || lane != self.lane) {
+            self.transmitting = false;
+            self.hangover = 0;
+            let ended = if self.codec == 0 { CODEC_OPUS_VOICE } else { self.codec };
+            sink(self.lane, ended, &[]);
+        }
         if active {
-            let codec = shared.codec.load(Ordering::Relaxed);
+            let codec = if lane == 0 { shared.codec.load(Ordering::Relaxed) } else { CODEC_OPUS_VOICE };
             let quality = shared.codec_quality.load(Ordering::Relaxed);
             if !self.ensure_encoder(codec, quality) {
                 shared.transmitting.store(false, Ordering::Relaxed);
+                shared.set_on_air(None);
                 return;
             }
             if !self.transmitting {
                 self.transmitting = true;
-                if let Some(enc) = self.encoder.as_mut() {
-                    enc.reset();
+                self.lane = lane;
+                if let Some(encoder) = self.encoder.as_mut() {
+                    encoder.reset();
                 }
-                if mode == TxMode::VoiceActivation {
+                if lane == 0 && mode == TxMode::VoiceActivation {
                     let earlier: Vec<Vec<f32>> = self.lookback.drain(..).collect();
                     for old in &earlier {
-                        self.encode_and_emit(old, sink);
+                        self.encode_and_emit(old, 0, MAX_PACKET_BYTES, sink);
                     }
                 }
             }
             self.lookback.clear();
-            self.encode_and_emit(frame, sink);
+            let room = if lane == 0 { MAX_PACKET_BYTES } else { shared.lane_room(lane) };
+            self.encode_and_emit(frame, lane, room, sink);
         } else {
-            if self.transmitting {
-                self.transmitting = false;
-                self.hangover = 0;
-                let codec = if self.codec == 0 { CODEC_OPUS_VOICE } else { self.codec };
-                sink(codec, &[]);
-            }
             self.lookback.push_back(frame.to_vec());
             while self.lookback.len() > LOOKBACK_FRAMES {
                 self.lookback.pop_front();
             }
         }
         shared.transmitting.store(active, Ordering::Relaxed);
+        shared.set_on_air(if active { Some(lane) } else { None });
     }
 }
 
@@ -200,8 +209,94 @@ mod tests {
 
     fn collect(tx: &mut Transmitter, shared: &Shared, input: &[f32]) -> Vec<(u8, Vec<u8>)> {
         let mut out = Vec::new();
-        tx.process(input, shared, &mut |codec, data| out.push((codec, data.to_vec())));
+        tx.process(input, shared, &mut |_lane, codec, data| out.push((codec, data.to_vec())));
         out
+    }
+
+    fn lanes(tx: &mut Transmitter, shared: &Shared, input: &[f32]) -> Vec<(u8, u8, usize)> {
+        let mut out = Vec::new();
+        tx.process(input, shared, &mut |lane, codec, data| out.push((lane, codec, data.len())));
+        out
+    }
+
+    fn shape(frames: &[(u8, u8, usize)]) -> Vec<(u8, bool)> {
+        frames.iter().map(|frame| (frame.0, frame.2 > 0)).collect()
+    }
+
+    #[test]
+    fn a_whisper_key_opens_the_microphone_on_its_own_lane() {
+        let shared = Shared::default();
+        shared.tx_enabled.store(true, Ordering::Relaxed);
+        let mut tx = Transmitter::new(48_000);
+        let silence = vec![0.0f32; 960 * 3];
+        assert!(lanes(&mut tx, &shared, &silence).is_empty());
+        assert_eq!(shared.on_air_lane(), None);
+        shared.set_keys(false, 2);
+        let frames = lanes(&mut tx, &shared, &silence);
+        assert_eq!(shape(&frames), vec![(2, true), (2, true), (2, true)]);
+        assert!(frames.iter().all(|frame| frame.1 == CODEC_OPUS_VOICE));
+        assert_eq!(shared.on_air_lane(), Some(2));
+        shared.set_keys(false, 0);
+        assert_eq!(shape(&lanes(&mut tx, &shared, &silence)), vec![(2, false)]);
+        assert_eq!(shared.on_air_lane(), None);
+    }
+
+    #[test]
+    fn changing_lane_mid_sentence_ends_the_old_one_first() {
+        let shared = Shared::default();
+        shared.set_tx_mode(TxMode::PushToTalk);
+        shared.tx_enabled.store(true, Ordering::Relaxed);
+        let mut tx = Transmitter::new(48_000);
+        let two = vec![0.0f32; 960 * 2];
+        shared.set_keys(true, 0);
+        assert_eq!(shape(&lanes(&mut tx, &shared, &two)), vec![(0, true), (0, true)]);
+        shared.set_keys(true, 1);
+        assert_eq!(shape(&lanes(&mut tx, &shared, &two)), vec![(0, false), (1, true), (1, true)]);
+        shared.set_keys(true, 5);
+        assert_eq!(shape(&lanes(&mut tx, &shared, &two)), vec![(1, false), (5, true), (5, true)]);
+        shared.set_keys(true, 0);
+        assert_eq!(shape(&lanes(&mut tx, &shared, &two)), vec![(5, false), (0, true), (0, true)]);
+        shared.set_keys(false, 0);
+        assert_eq!(shape(&lanes(&mut tx, &shared, &two)), vec![(0, false)]);
+        assert!(lanes(&mut tx, &shared, &two).is_empty());
+    }
+
+    #[test]
+    fn whisper_frames_fit_their_lane_and_use_the_voice_codec() {
+        let shared = Shared::default();
+        shared.tx_enabled.store(true, Ordering::Relaxed);
+        shared.codec.store(CODEC_OPUS_MUSIC, Ordering::Relaxed);
+        shared.codec_quality.store(10, Ordering::Relaxed);
+        assert_eq!(shared.lane_room(3), MAX_PACKET_BYTES);
+        shared.set_lane_room(3, 40);
+        shared.set_lane_room(4, 1);
+        assert_eq!((shared.lane_room(3), shared.lane_room(4)), (40, 24));
+        shared.set_keys(false, 3);
+        let mut tx = Transmitter::new(48_000);
+        let frames = lanes(&mut tx, &shared, &tone(10, 0.5, 48_000, 0));
+        assert_eq!(frames.len(), 10);
+        assert!(frames.iter().all(|frame| frame.0 == 3 && frame.1 == CODEC_OPUS_VOICE && frame.2 > 0 && frame.2 <= 40));
+        shared.set_keys(false, 0);
+        shared.set_tx_mode(TxMode::Continuous);
+        let talk = lanes(&mut tx, &shared, &tone(3, 0.5, 48_000, 0));
+        assert_eq!(talk[0], (3, CODEC_OPUS_VOICE, 0));
+        assert!(talk[1..].iter().all(|frame| frame.0 == 0 && frame.1 == CODEC_OPUS_MUSIC && frame.2 > 0));
+    }
+
+    #[test]
+    fn muting_stops_whispers_too() {
+        let shared = Shared::default();
+        shared.tx_enabled.store(true, Ordering::Relaxed);
+        shared.set_keys(false, 1);
+        let mut tx = Transmitter::new(48_000);
+        let one = vec![0.0f32; 960];
+        assert_eq!(shape(&lanes(&mut tx, &shared, &one)), vec![(1, true)]);
+        shared.mic_muted.store(true, Ordering::Relaxed);
+        assert_eq!(shape(&lanes(&mut tx, &shared, &one)), vec![(1, false)]);
+        assert!(lanes(&mut tx, &shared, &one).is_empty());
+        shared.mic_muted.store(false, Ordering::Relaxed);
+        shared.tx_enabled.store(false, Ordering::Relaxed);
+        assert!(lanes(&mut tx, &shared, &one).is_empty());
     }
 
     #[test]

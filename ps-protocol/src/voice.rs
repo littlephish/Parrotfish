@@ -20,6 +20,36 @@ pub fn encode_c2s_voice(voice_id: u16, codec: u8, data: &[u8]) -> Vec<u8> {
     out
 }
 
+pub const GROUP_WHISPER_HEADER_LEN: usize = 13;
+
+pub fn whisper_header_len(channels: usize, clients: usize) -> usize {
+    5 + channels * 8 + clients * 2
+}
+
+pub fn encode_c2s_whisper(codec: u8, channels: &[u64], clients: &[u16], data: &[u8]) -> Option<Vec<u8>> {
+    if channels.len() > 255 || clients.len() > 255 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(whisper_header_len(channels.len(), clients.len()) + data.len());
+    out.extend_from_slice(&[0, 0, codec, channels.len() as u8, clients.len() as u8]);
+    for channel in channels {
+        out.extend_from_slice(&channel.to_be_bytes());
+    }
+    for client in clients {
+        out.extend_from_slice(&client.to_be_bytes());
+    }
+    out.extend_from_slice(data);
+    Some(out)
+}
+
+pub fn encode_c2s_group_whisper(codec: u8, who: u8, scope: u8, id: u64, data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(GROUP_WHISPER_HEADER_LEN + data.len());
+    out.extend_from_slice(&[0, 0, codec, who, scope]);
+    out.extend_from_slice(&id.to_be_bytes());
+    out.extend_from_slice(data);
+    out
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct C2SVoice<'a> {
     pub voice_id: u16,
@@ -95,6 +125,34 @@ mod tests {
         let v = parse_s2c_voice(&[0, 7, 0, 9, 4]).unwrap();
         assert!(v.data.is_empty());
         assert_eq!(v.client_id, 9);
+    }
+
+    #[test]
+    fn whisper_to_a_list_matches_the_wire_layout() {
+        let raw = encode_c2s_whisper(CODEC_OPUS_VOICE, &[1, 0x0102030405060708], &[9, 0x0A0B], &[0xEE, 0xFF]).unwrap();
+        assert_eq!(
+            raw,
+            vec![0, 0, 4, 2, 2, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 9, 0x0A, 0x0B, 0xEE, 0xFF]
+        );
+        assert_eq!(whisper_header_len(2, 2), 25);
+        assert_eq!(whisper_header_len(30, 60), 365);
+        assert_eq!(encode_c2s_whisper(CODEC_OPUS_VOICE, &[7], &[], &[]).unwrap().len(), 13);
+        assert_eq!(encode_c2s_whisper(CODEC_OPUS_VOICE, &[], &[], &[5]).unwrap(), vec![0, 0, 4, 0, 0, 5]);
+        assert!(encode_c2s_whisper(4, &vec![1; 256], &[], &[]).is_none());
+        assert!(encode_c2s_whisper(4, &[], &vec![1; 256], &[]).is_none());
+    }
+
+    #[test]
+    fn whisper_to_a_group_matches_the_wire_layout() {
+        assert_eq!(
+            encode_c2s_group_whisper(CODEC_OPUS_VOICE, 2, 5, 0, &[0xEE]),
+            vec![0, 0, 4, 2, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0xEE]
+        );
+        assert_eq!(
+            encode_c2s_group_whisper(CODEC_OPUS_MUSIC, 0, 0, 0x0102030405060708, &[]),
+            vec![0, 0, 5, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8]
+        );
+        assert_eq!(GROUP_WHISPER_HEADER_LEN, 13);
     }
 
     #[test]

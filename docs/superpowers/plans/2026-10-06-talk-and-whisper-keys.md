@@ -10,7 +10,7 @@
 
 **Spec:** none yet. Nothing here is built. The next two sections are the scope and the decisions I made for you; change them before anyone starts.
 
-**Status:** waiting for your review.
+**Status:** decisions 1 to 5 confirmed on 2026-10-06; 6 to 10 still open. Nothing is built.
 
 **How to read the tasks:** tests and the functions where a mistake would send voice to the wrong people are given in full. Steps that connect existing code are described by what they must do and are held to the tests and live checks listed with them. Every Rust block below was compiled on 2026-10-06 in a throwaway copy of the workspace with the changes it describes, and every test in this plan passed there (protocol 34, client 12, audio 34, and the app-side tests); the `whispertest` example printed twelve `PASS` lines against the test server. Nothing was changed in the repository. Part A (Tasks 1 to 3) is usable on its own; Part B (Tasks 4 to 9) needs Part A. This plan does not depend on the custom-icons plan; both touch `session.rs`, `app.rs` and `widgets.slint`, so whichever runs second merges by hand.
 
@@ -56,15 +56,20 @@ Also in Part B, because whisper keys are of little use without them:
 - **Channel commander**: a menu entry to become one (servers must allow it), a mark on people who are one, and "channel commanders" as a whisper group. This is the most common whisper setup on TeamSpeak servers.
 - The dock says who a whisper is going to, and says so when nobody could hear it.
 
-## Decisions I made that you have not confirmed
+## Decisions
+
+**Confirmed by you on 2026-10-06:**
 
 1. **A whisper key opens the microphone by itself**, whatever "Send my voice" is set to. That is how TeamSpeak 3 behaves: the key is an extra push-to-talk. With "When I speak" selected, a held whisper key still sends everything, including silence.
 2. **Whisper keys act on the server you are looking at**, like the microphone does. A key that names channels, people or a group of another server does nothing there and the dock says which server it belongs to.
 3. **A whisper key never falls back to your channel.** If its targets are gone, offline or on another server, nothing is sent.
-4. **The release delay is 0 by default**, so behaviour does not change until you move the slider. It goes up to 1 second (TeamSpeak allows 3) and applies to talk keys and whisper keys alike.
+4. **The release delay is a setting and starts at 0.** It is the slider "After I let go" on the Shortcuts tab, from 0 to 1 second (TeamSpeak allows 3). At 0 nothing changes from today. It applies to talk keys and whisper keys alike.
 5. **Left and right mouse buttons cannot be talk keys.** They are needed to click. Middle, 4 and 5 can.
-6. **Keys are read by polling every 5 ms, not with a keyboard hook.** It is simpler, cannot leave a key stuck, and needs nothing that anti-cheat tools object to. Two consequences: game controllers and joysticks cannot be talk keys, and, as with other voice programs, the keys may not be seen while a game that runs as administrator has the focus unless PhishSpeak also runs as administrator. I could not test the second point.
-7. **Whispers are always sent as Opus Voice**, even from a music channel, so that a long list of targets and a voice frame fit in one packet.
+
+**Still open:**
+
+6. **Keys are read by asking Windows 200 times a second whether each of your keys is down** (polling). That is what the talk key does today. The other way is a keyboard hook, which passes every key press on the PC through PhishSpeak as it happens. For keyboard and mouse both work while a game has the focus. Polling is simpler, cannot leave a key stuck, and is not the kind of system-wide hook that anti-cheat and antivirus tools sometimes flag; a hook would react the instant a key moves, not up to 5 ms later, which nobody can hear. You answered "not sure"; the recommendation is polling. Two limits apply whichever way is chosen, so they are not a reason to prefer either: a game that runs as administrator may hide the keys from PhishSpeak unless PhishSpeak also runs as administrator (not tested), and buttons on game controllers, joysticks and pedals are not keyboard keys, so neither way sees them. Controller buttons are not in this plan; they can be added later as their own task without redoing this design.
+7. **Whispers are always sent in the speech sound format (Opus Voice), also when you sit in a channel set to music quality.** A whisper packet has to carry the list of who it is for as well as the sound, and a packet holds 500 bytes. A music-quality piece of sound can take most of that, so with a long list the packet would be too big and nobody would hear the whisper. What you would notice: a whisper sent from a music channel sounds like ordinary speech, not hi-fi stereo. Ordinary talk in that channel is unaffected.
 8. **Limits:** twelve whisper keys, thirty channels and sixty people per key, four keys per combination.
 9. **"Let others whisper to me" has two settings**, on and off. TeamSpeak also has a per-contact choice; PhishSpeak has no contact list.
 10. **Not in this plan:** other hotkey actions (mute, switch channel, and so on), toggle-to-talk, per-server key profiles, a whisper history window, a sound when someone whispers to you, and whisper keys that only send while you speak.

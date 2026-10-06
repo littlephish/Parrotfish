@@ -77,6 +77,7 @@ pub struct ClientInfo {
     pub is_recording: bool,
     pub is_channel_commander: bool,
     pub talking: bool,
+    pub whispering: bool,
 }
 
 impl ClientInfo {
@@ -190,12 +191,22 @@ impl ServerView {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Group {
+    pub id: u64,
+    pub name: String,
+    pub kind: u8,
+    pub sort: u32,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Book {
     pub server: ServerInfo,
     pub own_id: u16,
     pub channels: HashMap<u64, Channel>,
     pub clients: HashMap<u16, ClientInfo>,
+    pub server_groups: HashMap<u64, Group>,
+    pub channel_groups: HashMap<u64, Group>,
 }
 
 impl Book {
@@ -213,6 +224,37 @@ impl Book {
                 .map(|c| !c.unencrypted)
                 .unwrap_or(true),
         }
+    }
+
+    pub fn set_groups(&mut self, cmd: &Command, server: bool) {
+        let key = if server { "sgid" } else { "cgid" };
+        let mut groups = HashMap::new();
+        for item in 0..cmd.len() {
+            let Some(id) = cmd.num_at::<u64>(item, key) else {
+                continue;
+            };
+            groups.insert(
+                id,
+                Group {
+                    id,
+                    name: cmd.get_at(item, "name").unwrap_or("").to_string(),
+                    kind: cmd.num_at(item, "type").unwrap_or(0),
+                    sort: cmd.num_at(item, "sortid").unwrap_or(0),
+                },
+            );
+        }
+        if server {
+            self.server_groups = groups;
+        } else {
+            self.channel_groups = groups;
+        }
+    }
+
+    pub fn regular_groups(&self, server: bool) -> Vec<Group> {
+        let source = if server { &self.server_groups } else { &self.channel_groups };
+        let mut list: Vec<Group> = source.values().filter(|group| group.kind == 1).cloned().collect();
+        list.sort_by(|a, b| (a.sort, a.id).cmp(&(b.sort, b.id)));
+        list
     }
 
     pub fn upsert_channels(&mut self, cmd: &Command) {
@@ -267,6 +309,7 @@ impl Book {
                 let from = client.channel;
                 client.channel = to;
                 client.talking = false;
+                client.whispering = false;
                 moved.push((client.clone(), from, to));
             }
         }
@@ -295,10 +338,12 @@ impl Book {
         }
     }
 
-    pub fn set_talking(&mut self, id: u16, talking: bool) -> bool {
+    pub fn set_talking(&mut self, id: u16, talking: bool, whisper: bool) -> bool {
+        let whispering = talking && whisper;
         match self.clients.get_mut(&id) {
-            Some(c) if c.talking != talking => {
+            Some(c) if c.talking != talking || c.whispering != whispering => {
                 c.talking = talking;
+                c.whispering = whispering;
                 true
             }
             _ => false,
@@ -483,9 +528,9 @@ mod tests {
         assert!(book.clients[&4].away);
         assert_eq!(book.clients[&4].away_message, "brb");
 
-        assert!(book.set_talking(4, true));
-        assert!(!book.set_talking(4, true));
-        assert!(!book.set_talking(99, true));
+        assert!(book.set_talking(4, true, false));
+        assert!(!book.set_talking(4, true, false));
+        assert!(!book.set_talking(99, true, false));
 
         let left = book.clients_left(&Command::parse(
             "notifyclientleftview cfid=1 ctid=0 reasonid=8 reasonmsg=bye clid=4",
@@ -497,6 +542,40 @@ mod tests {
         book.remove_channels(&Command::parse("notifychanneldeleted invokerid=1 cid=2"));
         assert!(!book.channels.contains_key(&2));
         assert!(!book.clients.contains_key(&5));
+    }
+
+    #[test]
+    fn whispers_are_marked_on_the_person() {
+        let mut book = book_from("channellist cid=1 cpid=0 channel_order=0 channel_name=Lobby");
+        book.clients_entered(&Command::parse("notifycliententerview cfid=0 ctid=1 reasonid=0 clid=4 client_nickname=Marlin client_type=0"));
+        assert!(book.set_talking(4, true, true));
+        assert!(book.clients[&4].talking && book.clients[&4].whispering);
+        assert!(!book.set_talking(4, true, true));
+        assert!(book.set_talking(4, true, false));
+        assert!(!book.clients[&4].whispering);
+        assert!(book.set_talking(4, false, false));
+        assert!(!book.clients[&4].talking && !book.clients[&4].whispering);
+    }
+
+    #[test]
+    fn group_lists_replace_each_other_and_sort() {
+        let mut book = Book::default();
+        book.set_groups(
+            &Command::parse("notifyservergrouplist sgid=1 name=Guest\\sServer\\sQuery type=2 iconid=0 savedb=0 sortid=0|sgid=6 name=Server\\sAdmin type=1 iconid=300 savedb=1 sortid=20|sgid=8 name=Guest type=1 iconid=0 savedb=0 sortid=10|sgid=3 name=Template type=0 iconid=0 sortid=0"),
+            true,
+        );
+        book.set_groups(
+            &Command::parse("notifychannelgrouplist cgid=8 name=Guest type=1 iconid=0 sortid=0|cgid=5 name=Channel\\sAdmin type=1 iconid=100 sortid=0"),
+            false,
+        );
+        let names: Vec<String> = book.regular_groups(true).into_iter().map(|g| g.name).collect();
+        assert_eq!(names, vec!["Guest", "Server Admin"]);
+        let channel: Vec<(u64, String)> = book.regular_groups(false).into_iter().map(|g| (g.id, g.name)).collect();
+        assert_eq!(channel, vec![(5, "Channel Admin".to_string()), (8, "Guest".to_string())]);
+        book.set_groups(&Command::parse("notifyservergrouplist sgid=9 name=Crew type=1 sortid=0"), true);
+        assert_eq!(book.server_groups.len(), 1);
+        assert_eq!(book.regular_groups(true)[0].id, 9);
+        assert_eq!(book.channel_groups.len(), 2);
     }
 
     #[test]

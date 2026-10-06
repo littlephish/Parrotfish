@@ -10,7 +10,7 @@ use std::sync::Arc;
 use ps_identity::Identity;
 use ps_protocol::command::Command;
 
-pub use book::{Channel, ChannelNode, ClientInfo, ServerInfo, ServerView};
+pub use book::{Channel, ChannelNode, ClientInfo, Group, ServerInfo, ServerView};
 pub use ps_protocol::voice::{CODEC_OPUS_MUSIC, CODEC_OPUS_VOICE};
 
 pub const DEFAULT_PORT: u16 = 9987;
@@ -86,6 +86,75 @@ impl TextTarget {
     }
 }
 
+pub const ERROR_NO_WHISPER_TARGETS: u32 = 0x070c;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhisperGroup {
+    ServerGroup(u64),
+    ChannelGroup(u64),
+    Commanders,
+    Everyone,
+}
+
+impl WhisperGroup {
+    fn wire(self) -> (u8, u64) {
+        match self {
+            WhisperGroup::ServerGroup(id) => (0, id),
+            WhisperGroup::ChannelGroup(id) => (1, id),
+            WhisperGroup::Commanders => (2, 0),
+            WhisperGroup::Everyone => (3, 0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhisperScope {
+    AllChannels,
+    CurrentChannel,
+    ParentChannel,
+    AllParentChannels,
+    ChannelFamily,
+    WholeFamily,
+    Subchannels,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WhisperTarget {
+    List { channels: Vec<u64>, clients: Vec<u16> },
+    Group { who: WhisperGroup, scope: WhisperScope },
+}
+
+impl WhisperTarget {
+    pub fn is_group(&self) -> bool {
+        matches!(self, WhisperTarget::Group { .. })
+    }
+
+    pub fn header_len(&self) -> usize {
+        match self {
+            WhisperTarget::List { channels, clients } => {
+                ps_protocol::voice::whisper_header_len(channels.len(), clients.len())
+            }
+            WhisperTarget::Group { .. } => ps_protocol::voice::GROUP_WHISPER_HEADER_LEN,
+        }
+    }
+
+    pub fn frame_room(&self) -> usize {
+        ps_protocol::packet::MAX_C2S_PAYLOAD.saturating_sub(self.header_len())
+    }
+
+    pub fn payload(&self, codec: u8, data: &[u8]) -> Option<Vec<u8>> {
+        match self {
+            WhisperTarget::List { channels, clients } => {
+                ps_protocol::voice::encode_c2s_whisper(codec, channels, clients, data)
+            }
+            WhisperTarget::Group { who, scope } => {
+                let (kind, id) = who.wire();
+                Some(ps_protocol::voice::encode_c2s_group_whisper(codec, kind, *scope as u8, id, data))
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LinkStats {
     pub ping_ms: f32,
@@ -101,7 +170,7 @@ pub enum Event {
     State(ConnectionState),
     Connected { client_id: u16, server: ServerInfo },
     View(ServerView),
-    Talking { client_id: u16, talking: bool },
+    Talking { client_id: u16, talking: bool, whisper: bool },
     TextMessage { target: TextTarget, from_id: u16, from_name: String, text: String },
     Poke { from_name: String, text: String },
     ClientEntered { client: ClientInfo },
@@ -109,6 +178,7 @@ pub enum Event {
     ClientMoved { client: ClientInfo, from: u64, to: u64 },
     ServerError { id: u32, message: String, extra: String },
     SecurityLevelRequired(u8),
+    Groups { server_groups: Vec<Group>, channel_groups: Vec<Group> },
     Stats(LinkStats),
     Disconnected { reason: String },
 }
@@ -181,6 +251,19 @@ impl ClientHandle {
         }
     }
 
+    pub fn send_whisper(&self, target: &WhisperTarget, codec: u8, data: &[u8]) {
+        if !self.is_connected() {
+            return;
+        }
+        if let Some(payload) = target.payload(codec, data) {
+            let _ = self.inner.tx.send(conn::Request::Whisper { payload, group: target.is_group() });
+        }
+    }
+
+    pub fn set_channel_commander(&self, on: bool) {
+        self.send_command(Command::new("clientupdate").arg("client_is_channel_commander", u8::from(on)));
+    }
+
     pub fn send_command(&self, command: Command) {
         let _ = self.inner.tx.send(conn::Request::Command(command));
     }
@@ -221,5 +304,37 @@ impl ClientHandle {
 
     pub fn disconnect(&self, message: &str) {
         let _ = self.inner.tx.send(conn::Request::Disconnect(message.to_string()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn whisper_targets_encode_for_the_wire() {
+        let list = WhisperTarget::List { channels: vec![1, 9], clients: vec![8] };
+        assert!(!list.is_group());
+        assert_eq!(list.header_len(), 23);
+        assert_eq!(list.frame_room(), ps_protocol::packet::MAX_C2S_PAYLOAD - 23);
+        assert_eq!(
+            list.payload(4, &[0xAA]).unwrap(),
+            vec![0, 0, 4, 2, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 9, 0, 8, 0xAA]
+        );
+        let wire = |who: WhisperGroup, scope: WhisperScope| {
+            WhisperTarget::Group { who, scope }.payload(4, &[]).unwrap()[3..].to_vec()
+        };
+        assert_eq!(wire(WhisperGroup::ServerGroup(6), WhisperScope::AllChannels), vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 6]);
+        assert_eq!(wire(WhisperGroup::ChannelGroup(5), WhisperScope::CurrentChannel), vec![1, 1, 0, 0, 0, 0, 0, 0, 0, 5]);
+        assert_eq!(wire(WhisperGroup::Commanders, WhisperScope::ParentChannel), vec![2, 2, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(wire(WhisperGroup::Everyone, WhisperScope::AllParentChannels)[..2], [3, 3]);
+        assert_eq!(wire(WhisperGroup::Everyone, WhisperScope::ChannelFamily)[1], 4);
+        assert_eq!(wire(WhisperGroup::Everyone, WhisperScope::WholeFamily)[1], 5);
+        assert_eq!(wire(WhisperGroup::Everyone, WhisperScope::Subchannels)[1], 6);
+        let group = WhisperTarget::Group { who: WhisperGroup::Everyone, scope: WhisperScope::AllChannels };
+        assert!(group.is_group());
+        assert_eq!((group.header_len(), group.frame_room()), (13, ps_protocol::packet::MAX_C2S_PAYLOAD - 13));
+        let crowded = WhisperTarget::List { channels: vec![1; 70], clients: vec![] };
+        assert_eq!(crowded.frame_room(), 0);
     }
 }

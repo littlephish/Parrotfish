@@ -1,23 +1,3 @@
-pub const PTT_KEYS: &[(&str, i32)] = &[
-    ("No hotkey", 0),
-    ("Left Ctrl", 0xA2),
-    ("Right Ctrl", 0xA3),
-    ("Left Alt", 0xA4),
-    ("Right Alt", 0xA5),
-    ("Left Shift", 0xA0),
-    ("Right Shift", 0xA1),
-    ("Caps Lock", 0x14),
-    ("Mouse 4", 0x05),
-    ("Mouse 5", 0x06),
-    ("Middle mouse", 0x04),
-    ("` (backtick)", 0xC0),
-    ("Scroll Lock", 0x91),
-    ("Pause", 0x13),
-    ("F8", 0x77),
-    ("F9", 0x78),
-    ("F10", 0x79),
-];
-
 #[cfg(windows)]
 mod imp {
     #[repr(C)]
@@ -36,6 +16,16 @@ mod imp {
     #[link(name = "user32")]
     extern "system" {
         fn GetAsyncKeyState(vkey: i32) -> i16;
+        fn MapVirtualKeyW(code: u32, map_type: u32) -> u32;
+    }
+
+    pub fn key_char(vk: u16) -> Option<char> {
+        let mapped = unsafe { MapVirtualKeyW(u32::from(vk), 2) } & 0xFFFF;
+        if mapped == 0 {
+            None
+        } else {
+            char::from_u32(mapped)
+        }
     }
 
     #[link(name = "kernel32")]
@@ -64,6 +54,10 @@ mod imp {
         false
     }
 
+    pub fn key_char(_vk: u16) -> Option<char> {
+        None
+    }
+
     pub fn local_hms() -> (u32, u32, u32) {
         let secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -73,7 +67,7 @@ mod imp {
     }
 }
 
-pub use imp::{key_down, local_hms};
+pub use imp::{key_char, key_down, local_hms};
 
 pub fn timestamp() -> String {
     let (h, m, s) = local_hms();
@@ -93,13 +87,9 @@ mod tests {
     }
 
     #[test]
-    fn hotkey_table_is_sane() {
-        assert_eq!(PTT_KEYS[0].1, 0);
+    fn keys_that_do_not_exist_are_never_down() {
         assert!(!key_down(0));
         assert!(!key_down(-5));
-        let mut codes: Vec<i32> = PTT_KEYS.iter().map(|k| k.1).collect();
-        codes.sort_unstable();
-        codes.dedup();
-        assert_eq!(codes.len(), PTT_KEYS.len());
+        assert_eq!(crate::hotkeys::key_name(0x41, &key_char), if cfg!(windows) { "A" } else { "Key 65" });
     }
 }

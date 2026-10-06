@@ -1,9 +1,10 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::Receiver;
+use std::time::{Duration, Instant};
 
 use ps_client::spacer::{parse_spacer, Spacer, SpacerAlign, SpacerLine};
 use ps_client::{
-    ClientHandle, ConnectionState, Event, ServerView, TextTarget, CODEC_OPUS_MUSIC, CODEC_OPUS_VOICE,
+    ClientHandle, ConnectionState, Event, Group, ERROR_NO_WHISPER_TARGETS, ServerView, TextTarget, CODEC_OPUS_MUSIC, CODEC_OPUS_VOICE,
 };
 
 use crate::platform;
@@ -12,6 +13,7 @@ pub const MAX_CHAT_LINES: usize = 400;
 const MAX_LINE_CHARS: usize = 2000;
 const REPEAT_FILL_CHARS: usize = 240;
 const DEFAULT_CODEC_QUALITY: u8 = 6;
+const WHISPER_LINE_GAP: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RowKind {
@@ -48,6 +50,8 @@ pub struct RowData {
     pub sound_muted: bool,
     pub away: bool,
     pub tag: String,
+    pub whispering: bool,
+    pub commander: bool,
 }
 
 fn fill_width(pattern: &str) -> String {
@@ -96,7 +100,11 @@ pub fn build_rows(view: &ServerView, own_talking: bool) -> Vec<RowData> {
                 mic_muted: client.input_muted || !client.input_hardware,
                 sound_muted: client.output_muted || !client.output_hardware,
                 away: client.away,
-                tag: if client.is_query {
+                whispering: client.whispering,
+                commander: client.is_channel_commander,
+                tag: if client.whispering {
+                    "whispers to you".to_string()
+                } else if client.is_query {
                     "query".to_string()
                 } else if client.away {
                     "away".to_string()
@@ -343,6 +351,8 @@ pub struct Outcome {
     pub forget: Vec<u16>,
     pub forget_all: bool,
     pub notice: Option<String>,
+    pub whisper_unheard: bool,
+    pub whisper_from: Option<u16>,
 }
 
 pub struct Session {
@@ -362,6 +372,9 @@ pub struct Session {
     pub leaving: bool,
     pub waiting_level: Option<u8>,
     pub trace: bool,
+    pub whispered: HashMap<u16, Instant>,
+    pub server_groups: Vec<Group>,
+    pub channel_groups: Vec<Group>,
 }
 
 impl Session {
@@ -384,6 +397,9 @@ impl Session {
             leaving: false,
             waiting_level: None,
             trace,
+            whispered: HashMap::new(),
+            server_groups: Vec::new(),
+            channel_groups: Vec::new(),
         }
     }
 
@@ -535,12 +551,15 @@ impl Session {
                 out.tree = true;
                 out.header = true;
             }
-            Event::Talking { client_id, talking } => {
+            Event::Talking { client_id, talking, whisper } => {
+                let mut name = String::new();
                 if let Some(view) = &mut self.view {
                     for node in &mut view.channels {
                         for client in &mut node.clients {
                             if client.id == client_id {
                                 client.talking = talking;
+                                client.whispering = talking && whisper;
+                                name = client.nickname.clone();
                             }
                         }
                     }
@@ -549,6 +568,15 @@ impl Session {
                 self.count_talkers();
                 out.talking = Some((client_id, talking));
                 out.header = (before > 0) != (self.talkers > 0);
+                if talking && whisper {
+                    out.whisper_from = Some(client_id);
+                    let now = Instant::now();
+                    let recent = self.whispered.get(&client_id).is_some_and(|at| now.duration_since(*at) < WHISPER_LINE_GAP);
+                    self.whispered.insert(client_id, now);
+                    if !recent && !name.is_empty() {
+                        self.system(&format!("{name} is whispering to you"));
+                    }
+                }
             }
             Event::TextMessage { target, from_id, from_name, text } => {
                 let mine = self.own_id != 0 && from_id == self.own_id;
@@ -590,8 +618,12 @@ impl Session {
                 }
             }
             Event::ServerError { id, message, extra } => {
-                let text = server_error_text(id, &message, &extra);
-                self.push_line(ChatKind::Error, "", &text);
+                if id == ERROR_NO_WHISPER_TARGETS {
+                    out.whisper_unheard = true;
+                } else {
+                    let text = server_error_text(id, &message, &extra);
+                    self.push_line(ChatKind::Error, "", &text);
+                }
             }
             Event::SecurityLevelRequired(level) => {
                 self.waiting_level = Some(level);
@@ -599,6 +631,10 @@ impl Session {
                     "This server asks for identity security level {level}. Working on it, which can take a while."
                 ));
                 out.level = Some(level);
+            }
+            Event::Groups { server_groups, channel_groups } => {
+                self.server_groups = server_groups;
+                self.channel_groups = channel_groups;
             }
             Event::Stats(stats) => {
                 let text = format!("{:.0} ms", stats.ping_ms.max(0.0));
@@ -872,7 +908,7 @@ mod tests {
         assert_eq!(s.own_nickname(), "Minnow");
         assert!(!s.apply(Event::View(sample_view())).channel);
 
-        let out = s.apply(Event::Talking { client_id: 8, talking: false });
+        let out = s.apply(Event::Talking { client_id: 8, talking: false, whisper: false });
         assert_eq!(out.talking, Some((8, false)));
         assert!(out.header);
         assert_eq!(s.talkers, 0);
@@ -948,6 +984,31 @@ mod tests {
         cancelled.leaving = true;
         let out = cancelled.apply(Event::Disconnected { reason: "connection attempt cancelled".into() });
         assert!(out.closed.is_some());
+    }
+
+    #[test]
+    fn whispers_and_unheard_whispers_are_noted() {
+        let mut s = session();
+        s.apply(Event::Connected { client_id: 7, server: ServerInfo { name: "Reef Runners".into(), ..ServerInfo::default() } });
+        s.apply(Event::View(sample_view()));
+        let lines = s.chat.len();
+        let out = s.apply(Event::Talking { client_id: 8, talking: true, whisper: true });
+        assert_eq!(out.whisper_from, Some(8));
+        assert_eq!(s.chat.back().unwrap().text, "Marlin is whispering to you");
+        assert_eq!(s.chat.len(), lines + 1);
+        let rows = build_rows(s.view.as_ref().unwrap(), false);
+        assert!(rows.iter().any(|row| row.text == "Marlin" && row.whispering && row.talking));
+        s.apply(Event::Talking { client_id: 8, talking: false, whisper: false });
+        let again = s.apply(Event::Talking { client_id: 8, talking: true, whisper: true });
+        assert_eq!(again.whisper_from, Some(8));
+        assert_eq!(s.chat.len(), lines + 1);
+        let plain = s.apply(Event::Talking { client_id: 8, talking: true, whisper: false });
+        assert_eq!(plain.whisper_from, None);
+
+        let before = s.chat.len();
+        let out = s.apply(Event::ServerError { id: 0x070c, message: "no whisper targets found".into(), extra: String::new() });
+        assert!(out.whisper_unheard);
+        assert_eq!(s.chat.len(), before);
     }
 
     #[test]
