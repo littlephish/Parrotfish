@@ -63,15 +63,15 @@ Conditions the spec implies that are most likely to bite, each pinned to a task 
 `pub enum Spacer { Text { align: SpacerAlign, text: String }, Line(SpacerLine), Gap }`,
 `pub fn parse_spacer(name: &str, parent: u64) -> Option<Spacer>`.
 
-- [ ] Write the failing tests. Cases, `(name, parent) -> result`:
+- [x] Write the failing tests. Cases, `(name, parent) -> result`:
   `[cspacer]Games` -> Text Center "Games"; `[lspacer]Chill` and `[spacer]Chill` -> Text Left;
   `[rspacer]est. 2019` -> Text Right; `[*spacer]-=` -> Text Repeat "-="; `[cspacer12]Games` and
   `[CSPACER]Games` -> Text Center; `[spacer0]---`, `-.-`, `-..` -> Line Dashed; `...` -> Line Dotted;
   `___` -> Line Solid; `[spacer3]` and `[cspacer]   ` -> Gap; and None for `[cspacer`, `[xspacer]A`,
   `cspacer]A`, `Lobby`, `[cspacer]Games` with parent 5, `[c spacer]A`.
-- [ ] Run `cargo test -p ps-client spacer`; expect compile failure.
-- [ ] Implement `parse_spacer`: parent must be 0; name must start with `[`; the tag up to the first `]`, lower-cased, must be `l`, `c`, `r`, `*` or nothing followed by `spacer` and then anything; the rest is the text.
-- [ ] Run the tests; expect pass.
+- [x] Run `cargo test -p ps-client spacer`; expect compile failure.
+- [x] Implement `parse_spacer`: parent must be 0; name must start with `[`; the tag up to the first `]`, lower-cased, must be `l`, `c`, `r`, `*` or nothing followed by `spacer` and then anything; the rest is the text.
+- [x] Run the tests; expect pass.
 
 ### Task 2: Mixer keyed by connection and client in `ps-voice`
 
@@ -83,10 +83,10 @@ Conditions the spec implies that are most likely to bite, each pinned to a task 
 `AudioEngine::push_voice(session, client_id, voice_id, codec, data)`, `AudioEngine::remove_talker(session, client_id)`,
 `AudioEngine::clear_session(session)`, `pub const LOOPBACK_SESSION: u16 = 0xffff`.
 
-- [ ] Write the failing test `two_connections_can_share_a_client_number`: push 30 packets of a 440 Hz stream as (session 1, client 7) and 30 of an 880 Hz stream as (session 2, client 7); mix 10 blocks; assert two active talkers and that both `talker(1, 7)` and `talker(2, 7)` decoded 10 packets; `clear_session(1)`; assert one active talker remains and `talker(2, 7)` still exists.
-- [ ] Run `cargo test -p ps-voice two_connections`; expect compile failure.
-- [ ] Change the talker map key to `(u32::from(session) << 16) | u32::from(client_id)`; add `clear_session`; thread the session through `AudioEngine` and the loopback path; update the existing mixer test and both examples to pass session 0.
-- [ ] Run `cargo test -p ps-voice`; expect all pass.
+- [x] Write the failing test `two_connections_can_share_a_client_number`: push 30 packets of a 440 Hz stream as (session 1, client 7) and 30 of an 880 Hz stream as (session 2, client 7); mix 10 blocks; assert two active talkers and that both `talker(1, 7)` and `talker(2, 7)` decoded 10 packets; `clear_session(1)`; assert one active talker remains and `talker(2, 7)` still exists.
+- [x] Run `cargo test -p ps-voice two_connections`; expect compile failure.
+- [x] Change the talker map key to `(u32::from(session) << 16) | u32::from(client_id)`; add `clear_session`; thread the session through `AudioEngine` and the loopback path; update the existing mixer test and both examples to pass session 0.
+- [x] Run `cargo test -p ps-voice`; expect all pass.
 
 ### Task 3: Bookmarks in `ps-app`
 
@@ -98,10 +98,10 @@ Conditions the spec implies that are most likely to bite, each pinned to a task 
 `pub fn initials(name: &str) -> String`.
 File: `%APPDATA%\PhishSpeak\bookmarks.ini`, one `[bookmark]` section per entry with `name`, `address`, `nickname`, `identity`.
 
-- [ ] Write the failing tests: round trip of three bookmarks including a name with `=` and non-ASCII letters and an identity UID ending in `=`; a damaged file (stray lines, a section with no address, an empty section) keeps only the complete entries; `upsert` replaces an entry with the same address in different case and appends a new one; `initials`: "Reef Runners" -> "RR", "night shift raids" -> "NS", "Home" -> "HO", "x" -> "X", "" -> "?", "  the   reef " -> "TR".
-- [ ] Run `cargo test -p ps-app bookmarks`; expect compile failure.
-- [ ] Implement. Values are written after the first `=` on the line and read back with `split_once('=')`; an entry needs a non-empty address to count; a missing name falls back to the address.
-- [ ] Run the tests; expect pass.
+- [x] Write the failing tests: round trip of three bookmarks including a name with `=` and non-ASCII letters and an identity UID ending in `=`; a damaged file (stray lines, a section with no address, an empty section) keeps only the complete entries; `upsert` replaces an entry with the same address in different case and appends a new one; `initials`: "Reef Runners" -> "RR", "night shift raids" -> "NS", "Home" -> "HO", "x" -> "X", "" -> "?", "  the   reef " -> "TR".
+- [x] Run `cargo test -p ps-app bookmarks`; expect compile failure.
+- [x] Implement. Values are written after the first `=` on the line and read back with `split_once('=')`; an entry needs a non-empty address to count; a missing name falls back to the address.
+- [x] Run the tests; expect pass.
 
 ### Task 4: Sessions and routing in `ps-app`
 
@@ -118,10 +118,10 @@ File: `%APPDATA%\PhishSpeak\bookmarks.ini`, one `[bookmark]` section per entry w
 `pub enum MicMove { None, Switch { end_talk_on: Option<u16>, send_to: Option<u16> } }`,
 `pub fn mic_move(old: Option<u16>, new: Option<u16>, transmitting: bool) -> MicMove`.
 
-- [ ] Write the failing tests. `build_rows`: a view with a centred spacer, a line spacer, a locked channel, a music channel (codec 5) with a nested channel, three people (me, one talking, one muted and away) produces the expected kinds, depths, icons, counts and flags in tree order, and spacers have count 0. `next_view`: closing the viewed session picks the next connected one; closing a background session keeps the view; closing the last returns None. `mic_move`: same session -> None; different session while transmitting -> end talk on the old, send to the new; while silent -> no end-talk; new None -> send to nobody. Settings: window width and height round-trip and clamp to the minimum.
-- [ ] Run `cargo test -p ps-app`; expect compile failure.
-- [ ] Implement `session.rs` (row building, chat history capped at 400 lines, event handling moved over from the current `main.rs`) and the pure functions. Implement `app.rs`: connect from a bookmark or from dialog fields, switch view (apply `mic_move`: send an empty voice packet to the session left behind, point the engine's frame sink at the new one, set the codec from its channel), disconnect, mute applied to every session, the security-level retry per session, and one voice sink per session that tags packets with the session id. When a server refuses the password or cannot be reached, the connect dialog reopens with the fields still filled and the reason under the field it concerns; the password is used for that attempt only and never written to disk.
-- [ ] Run `cargo test -p ps-app`; expect pass.
+- [x] Write the failing tests. `build_rows`: a view with a centred spacer, a line spacer, a locked channel, a music channel (codec 5) with a nested channel, three people (me, one talking, one muted and away) produces the expected kinds, depths, icons, counts and flags in tree order, and spacers have count 0. `next_view`: closing the viewed session picks the next connected one; closing a background session keeps the view; closing the last returns None. `mic_move`: same session -> None; different session while transmitting -> end talk on the old, send to the new; while silent -> no end-talk; new None -> send to nobody. Settings: window width and height round-trip and clamp to the minimum.
+- [x] Run `cargo test -p ps-app`; expect compile failure.
+- [x] Implement `session.rs` (row building, chat history capped at 400 lines, event handling moved over from the current `main.rs`) and the pure functions. Implement `app.rs`: connect from a bookmark or from dialog fields, switch view (apply `mic_move`: send an empty voice packet to the session left behind, point the engine's frame sink at the new one, set the codec from its channel), disconnect, mute applied to every session, the security-level retry per session, and one voice sink per session that tags packets with the session id. When a server refuses the password or cannot be reached, the connect dialog reopens with the fields still filled and the reason under the field it concerns; the password is used for that attempt only and never written to disk.
+- [x] Run `cargo test -p ps-app`; expect pass.
 
 ### Task 5: The Slint interface
 
@@ -129,22 +129,22 @@ File: `%APPDATA%\PhishSpeak\bookmarks.ini`, one `[bookmark]` section per entry w
 
 **Interfaces:** Consumes the Task 4 types, converted to Slint structs `TreeRow`, `ServerTile`, `ChatRow`, `BookmarkRow`, `IdentityRow`. Produces two components, `PhishSpeakApp` (main window) and `SettingsWindow`, with these callbacks to Rust: `open-menu`, `view-server(id)`, `connect-bookmark(index)`, `connect-new(address, nickname, password, identity-index, save)`, `disconnect-viewed`, `row-activated(row)`, `join-with-password(channel-id, password)`, `send-chat(text, to-server)`, `toggle-mic`, `toggle-sound`, `open-settings(tab)` (the cog opens the Microphone tab, "Edit bookmarks" opens the Bookmarks tab); and from the settings window: `audio-changed`, `input-device-selected`, `output-device-selected`, `new-identity`, `import-identity(path)`, `bookmark-saved(index, name, address, nickname, identity-index)`, `bookmark-removed(index)`, `ptt-key-selected`.
 
-- [ ] Write `theme.slint` with the eight colours and the sizes from Global Constraints.
-- [ ] Write the icons as 24 x 24 stroke-only SVG files and check each loads with `colorize`.
-- [ ] Write `widgets.slint`: `Tile` (initials, connected ring, viewed fill, talking dot), `IconButton` (32 px, hover, on and muted states), `LevelMeter` with marker, `TreeRowView` (one component switching on row kind; the talking dot gets a halo that grows in over 250 ms), `ChatRowView`, `Segmented`.
-- [ ] Rewrite `main.slint`: header, tree `ListView`, chat drawer (closed and open), dock, empty state, and three overlays: servers menu, connect dialog (error text under the address field), channel password prompt.
-- [ ] Write `settings.slint`: a themed tab strip and six pages (Microphone, Sound, Identities, Bookmarks, Shortcuts, About) using fluent `ComboBox`, `Slider`, `LineEdit` and `CheckBox` for input.
-- [ ] `cargo build -p ps-app`; expect a clean build with no warnings.
+- [x] Write `theme.slint` with the eight colours and the sizes from Global Constraints.
+- [x] Write the icons as 24 x 24 stroke-only SVG files and check each loads with `colorize`.
+- [x] Write `widgets.slint`: `Tile` (initials, connected ring, viewed fill, talking dot), `IconButton` (32 px, hover, on and muted states), `LevelMeter` with marker, `TreeRowView` (one component switching on row kind; the talking dot gets a halo that grows in over 250 ms), `ChatRowView`, `Segmented`.
+- [x] Rewrite `main.slint`: header, tree `ListView`, chat drawer (closed and open), dock, empty state, and three overlays: servers menu, connect dialog (error text under the address field), channel password prompt.
+- [x] Write `settings.slint`: a themed tab strip and six pages (Microphone, Sound, Identities, Bookmarks, Shortcuts, About) using fluent `ComboBox`, `Slider`, `LineEdit` and `CheckBox` for input.
+- [x] `cargo build -p ps-app`; expect a clean build with no warnings.
 
 ### Task 6: Wiring, live checks and documents
 
 **Files:** Rewrite `ps-app/src/main.rs`; modify `PLAN.md`, `README.md`.
 
-- [ ] Wire every callback from Task 5 to `app.rs`; one 33 ms timer pumps all sessions and refreshes only what changed; closing the main window disconnects every session and saves settings and bookmarks.
-- [ ] `cargo test --workspace` and `cargo build --workspace --all-targets`; expect all tests pass and no warnings.
-- [ ] Start the local TeamSpeak server. Create spacer channels through ServerQuery (`[cspacer]Games`, `[*spacer1]---`, `[lspacer]Chill`, `[rspacer]est. 2019`, `[spacer2]...`) and a channel named `[cspacer` to confirm it stays joinable.
-- [ ] Take software-rendered screenshots of: empty state, in a channel, servers menu, chat open, connect dialog, password prompt, each settings tab. Compare with `compact-detail-v2.html`; fix differences.
-- [ ] Two sessions at once with two identities in different channels. With a headless listener in each channel, confirm voice arrives only in the viewed session's channel, that switching view moves it, and that the session left behind gets its end-of-talk packet. Confirm a headless sender in each channel is heard from both.
-- [ ] Bookmark a server, close the app, start it again, connect from the bookmark with one click.
-- [ ] Check the spec's quality bar: contrast of Drift on Reef and Foam on Current at least 4.5:1, visible focus ring, hover on every clickable element, nothing clickable under 28 px.
-- [ ] Update `PLAN.md` (status, crates table, Slint notes learned) and the README's run instructions. Run `build.bat` once more.
+- [x] Wire every callback from Task 5 to `app.rs`; one 33 ms timer pumps all sessions and refreshes only what changed; closing the main window disconnects every session and saves settings and bookmarks.
+- [x] `cargo test --workspace` and `cargo build --workspace --all-targets`; expect all tests pass and no warnings.
+- [x] Start the local TeamSpeak server. Create spacer channels through ServerQuery (`[cspacer]Games`, `[*spacer1]---`, `[lspacer]Chill`, `[rspacer]est. 2019`, `[spacer2]...`) and a channel named `[cspacer` to confirm it stays joinable.
+- [x] Take software-rendered screenshots of: empty state, in a channel, servers menu, chat open, connect dialog, password prompt, each settings tab. Compare with `compact-detail-v2.html`; fix differences.
+- [x] Two sessions at once with two identities in different channels. With a headless listener in each channel, confirm voice arrives only in the viewed session's channel, that switching view moves it, and that the session left behind gets its end-of-talk packet. Confirm a headless sender in each channel is heard from both.
+- [x] Bookmark a server, close the app, start it again, connect from the bookmark with one click.
+- [x] Check the spec's quality bar: contrast of Drift on Reef and Foam on Current at least 4.5:1, visible focus ring, hover on every clickable element, nothing clickable under 28 px.
+- [x] Update `PLAN.md` (status, crates table, Slint notes learned) and the README's run instructions. Run `build.bat` once more.

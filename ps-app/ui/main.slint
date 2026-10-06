@@ -69,6 +69,7 @@ component ServerRow inherits Pressable {
 
         Dim {
             text: root.detail;
+            color: root.viewed || root.hovered ? Theme.drift-bright : Theme.drift;
             font-size: 11.5px;
         }
     }
@@ -99,7 +100,7 @@ component MenuAction inherits Pressable {
 
         Text {
             text: root.text;
-            color: root.danger ? Theme.coral : Theme.foam;
+            color: root.danger ? Theme.coral-bright : Theme.foam;
             font-size: Theme.text;
             vertical-alignment: center;
             overflow: elide;
@@ -439,7 +440,7 @@ export component PhishSpeakApp inherits Window {
 
                             Text {
                                 text: root.has-chat ? root.last-chat.text : "No messages yet. Click to open chat.";
-                                color: root.has-chat && root.last-chat.kind != 0 ? (root.last-chat.kind == 3 ? Theme.coral : Theme.foam) : Theme.drift;
+                                color: root.has-chat && root.last-chat.kind != 0 ? (root.last-chat.kind == 3 ? Theme.coral-bright : Theme.foam) : Theme.drift;
                                 font-size: Theme.small;
                                 vertical-alignment: center;
                                 overflow: elide;

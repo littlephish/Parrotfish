@@ -4,6 +4,12 @@ PhishSpeak is an unofficial TeamSpeak 3 client written in Rust with a [Slint](ht
 It signs in with a regular TeamSpeak identity, shows the channel tree, sends and receives text
 chat, and carries voice in both directions with Opus.
 
+- A compact window: the channel tree, a chat drawer, and a dock with mute buttons and the
+  microphone level. Spacer channels such as `[cspacer]Games` are drawn as dividers.
+- Bookmarks for one-click connections.
+- Several servers at once. You hear all of them; your microphone goes to the one you are viewing.
+- One settings window with tabs: microphone, sound, identities, bookmarks, shortcuts, about.
+
 It is early software. It has been tested against a TeamSpeak 3.13.8 server, but not yet in a
 conversation with the official client or on a public server. [PLAN.md](PLAN.md) lists what works,
 what has been verified and what is still missing.
@@ -18,14 +24,19 @@ target\release\ps-app.exe
 ```
 
 `build.bat` runs `cargo build --release -p ps-app`. During development, `cargo run -p ps-app`
-builds faster. To connect straight away:
+builds faster. To connect straight away, name a bookmark or give an address:
 
 ```
-target\release\ps-app.exe --connect host[:port] --nickname YourName
+target\release\ps-app.exe --connect host[:port] --nickname YourName --channel "Channel name"
 ```
 
-Import an identity `.ini` exported from the TeamSpeak client, or create a new identity in the app.
-Settings and identities created in the app are stored in `%APPDATA%\PhishSpeak`.
+`--connect` can be repeated to open several servers; `--nickname` and `--channel` are optional
+and apply to the `--connect` before them.
+
+On first start PhishSpeak creates an identity for you. To use one from the TeamSpeak client,
+export it there and add the file under Settings, Identities; PhishSpeak reads the file where it
+is and never changes it. Settings, bookmarks and identities created in the app are stored in
+`%APPDATA%\PhishSpeak`. Server and channel passwords are never saved.
 
 ## Tests
 

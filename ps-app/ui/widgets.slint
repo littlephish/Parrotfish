@@ -116,7 +116,7 @@ export component Btn inherits Pressable {
 
     label := Text {
         text: root.text;
-        color: root.primary ? Theme.on-lure : (root.danger ? Theme.coral : Theme.foam);
+        color: root.primary ? Theme.on-lure : (root.danger ? Theme.coral-bright : Theme.foam);
         font-size: Theme.text;
         font-weight: 600;
         horizontal-alignment: center;
@@ -632,7 +632,7 @@ export component TreeRowView inherits Rectangle {
 
             if root.entry.count > 0: Text {
                 text: "" + root.entry.count;
-                color: Theme.drift;
+                color: root.entry.current ? Theme.drift-bright : Theme.drift;
                 font-size: Theme.small;
                 vertical-alignment: center;
             }
@@ -746,7 +746,7 @@ export component ChatRowView inherits Rectangle {
 
         Text {
             text: root.entry.text;
-            color: root.entry.kind == 0 ? Theme.drift : (root.entry.kind == 3 ? Theme.coral : Theme.foam);
+            color: root.entry.kind == 0 ? Theme.drift : (root.entry.kind == 3 ? Theme.coral-bright : Theme.foam);
             font-size: root.entry.kind == 0 ? Theme.small : Theme.chat;
             wrap: word-wrap;
             vertical-alignment: top;

@@ -7,22 +7,32 @@ joins a server, shows the channel tree, chats, and does voice (Opus) both ways.
 
 Working end to end against a real TeamSpeak 3.13.8 server: login, channel tree, channel
 switching (incl. password channels), text chat, microphone capture → Opus → server, and
-server → Opus → speakers, with and without voice encryption. 105 unit tests green.
+server → Opus → speakers, with and without voice encryption. 120 unit tests green.
+
+The window is the compact tree layout in the Twilight reef palette (design:
+`docs/superpowers/specs/2026-10-06-compact-window-design.md`): spacer channels are drawn as
+dividers, servers can be bookmarked, several servers can be connected at once (you hear all
+of them, the microphone goes to the one you are viewing), and every setting lives in a
+separate tabbed settings window.
 
 Run it:
 
 ```
 cargo run --release -p ps-app                      # GUI
-cargo run --release -p ps-app -- --connect host[:port] [--nickname NAME]
+cargo run --release -p ps-app -- --connect <bookmark name or host[:port]> [--nickname NAME] [--channel NAME]
 ```
+
+`--connect` can be given more than once; `--nickname` and `--channel` apply to the one before them.
 
 Not done yet: ServerQuery browser (v1.1), whispers (send), private-chat tabs, permissions UI,
 channel create/edit, file transfer/avatars, SRV/TSDNS lookup (use `host:port`), legacy
 Speex/CELT codecs (reported in the log, not decoded), pre-3.1 servers (`initivexpand`).
 
 Not yet verified by anyone: a conversation with the **official** TS3 client in the same
-channel (everything so far is PhishSpeak ↔ real server ↔ PhishSpeak), and a real internet
-server. Do that first before trusting it for daily use.
+channel (everything so far is PhishSpeak ↔ real server ↔ PhishSpeak), and voice on a real
+internet server (signing in to one has worked). Do that first before trusting it for daily use.
+Also unverified: sound by ear, the hold-to-talk key, and two different servers at once (the
+multi-server test used two connections to one server).
 
 ## Goals
 
@@ -39,12 +49,12 @@ server. Do that first before trusting it for daily use.
 
 | Crate | Responsibility | Status |
 |---|---|---|
-| `ps-identity` | INI parse, identity (de)obfuscation, DER, P-256, UID, hashcash level, sign/verify, generate/save | done, 18 tests |
+| `ps-identity` | INI parse, identity (de)obfuscation, DER, P-256, UID, hashcash level, sign/verify, generate/save | done, 14 tests |
 | `ps-crypto` | EAX-AES128 (8-byte MAC), dummy key, per-packet key/nonce, license chain, Ed25519 shared secret, RSA puzzle | done, 16 tests |
 | `ps-protocol` | Packet headers, command escape/parse/build, QuickLZ + fragmentation, receive windows/generations, Init1 payloads, voice payloads | done, 32 tests |
-| `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client book, voice in/out, events | done, 7 tests + live tests |
-| `ps-voice` | Opus codec, resampler, jitter buffer + mixer, VAD/PTT gate, cpal device I/O (WASAPI) | done, 28 tests + live tests |
-| `ps-app` | Slint GUI wiring everything together, settings, PTT hotkey | done, 4 tests |
+| `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client book, voice in/out, events; `spacer` recognises spacer channels | done, 10 tests + live tests |
+| `ps-voice` | Opus codec, resampler, jitter buffer + mixer (talkers keyed by connection and client), VAD/PTT gate, cpal device I/O (WASAPI) | done, 29 tests + live tests |
+| `ps-app` | The windows. `session.rs` one connection (events, tree rows, chat history), `app.rs` all sessions, the viewed one and where the microphone goes, `bookmarks.rs`, `settings.rs`, `platform.rs` (talk key), `ui/` theme, widgets, main and settings windows | done, 19 tests + live tests |
 | `ps-serverquery` | Text protocol over TCP 10011 | not started |
 
 Threads: UI thread (Slint, 33 ms timer drains client events) · `ps-client` actor + UDP reader ·
@@ -127,6 +137,21 @@ ConnectOk", "level 213"). What is actually on the wire:
   1000-character messages; voice round trip between two clients (Opus Voice and Opus Music,
   encryption off and forced on) byte-exact; 70 000 encrypted voice packets across the 16-bit
   packet-id wrap; handshake + chat with 25 % simulated loss each way.
+- Compact window, live against the same server, driven with real clicks and keystrokes and
+  checked in software-rendered screenshots: every spacer form (centred, left, right, repeated,
+  dashed, dotted, gap) and a channel named `[cspacer` that stays an ordinary, joinable channel;
+  joining a locked channel through the password prompt; channel and server chat incl. a refusal
+  shown as a readable line; the six settings tabs and their controls; creating an identity and a
+  bookmark; a bookmark surviving a restart and connecting with one click; a failed connect
+  reopening the dialog with the reason under the address; the identity being strengthened
+  automatically (level 10 → 23) and the connection retried; the window size being remembered.
+- Two connections at once with two identities in different channels, with a headless listener
+  in each channel (`channeltest`): voice arrived only in the viewed connection's channel at
+  50 packets/s; switching the view delivered an end-of-talk packet to the channel left behind
+  and the first packet to the other one 12–14 ms later; disconnecting the viewed connection
+  moved the view and the microphone to the remaining one; talkers in both channels were shown
+  at the same time (in the tree and on the other connection's tile); muting the microphone or
+  the sound stops the stream with an end-of-talk packet.
 - Audio devices on this PC: capture runs at 48 kHz from the Arctis and webcam mics; a −48 dBFS
   test tone pushed through the playback path was read back from the headphone endpoint via
   WASAPI loopback at −48.0 dBFS.
@@ -134,7 +159,10 @@ ConnectOk", "level 213"). What is actually on the wire:
 Dev tools (examples): `cargo run -p ps-client --example probe -- <host> [--identity file] [--say TEXT]
 [--join CID] [--loss 0.2] [--auto-level] [--log]`, `cargo run -p ps-voice --example voicetest --
 <host> [--music] [--listen] [--burst 70000] [--loss 0.2]`, `cargo run -p ps-voice --example
-devicetest -- [--input NAME] [--tone]`. `PHISHSPEAK_TRACE=1` makes the GUI log every command.
+devicetest -- [--input NAME] [--tone]`, `cargo run -p ps-voice --example channeltest -- <host>
+[--nick NAME] [--join CID] [--seconds N] [--talk SECONDS]` (sits in one channel and reports
+every voice and end-of-talk packet it hears; with `--talk` it also sends a tone).
+`PHISHSPEAK_TRACE=1` makes the GUI show every command in the chat drawer.
 
 A local test server: official `teamspeak3-server_linux_amd64` in WSL
 (`./ts3server license_accepted=1`, which accepts TeamSpeak's server license), reachable from
@@ -150,9 +178,21 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   PLC. Revisit if the crate is fixed or when switching to C libopus (needs CMake).
 - Windows capture streams only accept the device's native format, so both directions go through
   our own windowed-sinc resampler.
-- Settings live in `%APPDATA%\PhishSpeak\settings.ini`; identities created in the app in
-  `%APPDATA%\PhishSpeak\identities`. An improved key offset for an imported identity is cached
-  in settings, the imported `.ini` is never modified. Server passwords are not stored.
+- Settings live in `%APPDATA%\PhishSpeak\settings.ini`, bookmarks in `bookmarks.ini` next to
+  it, identities created in the app in `%APPDATA%\PhishSpeak\identities`. Importing an identity
+  remembers where the file is; it is never copied and never modified, and an improved key offset
+  is cached in settings. Passwords are used for one attempt and never written to disk.
+- One bookmark per server address. A second bookmark for the same server needs a different
+  spelling of the address (for example with the port).
+- Several servers: every connection is heard; the microphone goes to the viewed one only. Mute
+  applies to all. When the view changes mid-sentence the server left behind gets an end-of-talk
+  packet, and on mute the end-of-talk packet is sent before the server is told we are muted
+  (it drops voice from muted clients, so the other order leaves listeners waiting for a timeout).
+- Amber (Lure) is reserved: someone is talking, where you are (viewed server, active tab,
+  keyboard focus, your own name in chat), and the one main button of a dialog. Error and
+  secondary text use lighter tints on raised and highlighted surfaces to keep 4.5:1 contrast.
+- The minimum window size (340 × 520) is declared in the UI; it has not been checked by
+  dragging the window border.
 
 ## Milestones
 
@@ -163,8 +203,13 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
 5. ServerQuery browser (TCP 10011) feeding the server field.
 6. ✅ Voice: Opus encode/decode + device I/O, send/receive `Voice`.
 7. ✅ Text chat + channel tree (basic). Private chats, pokes UI, permissions: open.
-8. 🚧 Identity management (create ✅ / import ✅), settings ✅, polish.
-9. Next: test against the official client and a public server; SRV/TSDNS resolution; whispers;
+8. ✅ Identity management (create / import), settings window, bookmarks, several servers at once,
+   spacer channels, compact window.
+9. Planned, not started: the icons a server defines for channels, people, groups and itself
+   (`docs/superpowers/plans/2026-10-06-custom-icons.md`, waiting for review).
+10. Planned, not started: talk keys of your choice and TeamSpeak-style whisper keys
+    (`docs/superpowers/plans/2026-10-06-talk-and-whisper-keys.md`, waiting for review).
+11. Next: test against the official client and a public server; SRV/TSDNS resolution;
    noise suppression / AGC; per-user volume in the UI (the mixer already supports it).
 
 ## References
@@ -234,8 +279,33 @@ Rust ↔ .slint API:
 - Screenshots for checking layout: run with `SLINT_BACKEND=winit-software`; the default GPU
   renderer comes out blank in `PrintWindow` captures.
 
+Learned while building the compact window:
+- A second window is just another exported `Window` component: `SettingsWindow::new()`, then
+  `show()` / `hide()`. The event loop only ends when every window is hidden, so the main
+  window's `on_close_requested` has to hide the others.
+- Key presses reach a `FocusScope` only while something inside it has focus. For Escape to work
+  everywhere: wrap the window content in one `FocusScope`, give the window
+  `forward-focus: <that scope>`, and call `scope.focus()` from `changed` handlers when an overlay
+  closes. Unhandled keys bubble from a focused `TextInput` up to it.
+- `init => { field.focus(); }` on the root element of an `if` block focuses a field when the
+  overlay appears.
+- An overlay sheet can size itself with `height: self.preferred-height;` when its content is a layout.
+- A child whose `height` depends on `root.height` inside the root layout is a binding loop;
+  share space with `vertical-stretch` instead.
+- `overflow: clip` on a `Text` does not cut off a string wider than its box in the software
+  renderer; put the text in a `Rectangle { clip: true; }`.
+- `PopupWindow` (`popup.show()` / `popup.close()`) is enough for a themed dropdown; `@image-url`
+  needs literal paths, so icons live in a global (`Icons.mic`), tinted with `colorize`.
+- Window size: `window().set_size(LogicalSize)` before `run()`, and
+  `window().size().to_logical(window().scale_factor())` in the close handler.
+- A test script can drive the window by posting `WM_MOUSEMOVE`, `WM_LBUTTONDOWN/UP` and
+  `WM_KEYDOWN/UP` to it (lower-case letters, digits and unshifted punctuation only), which
+  works while the window is behind others.
+
 ## Conventions
 
 - No comments unless asked; follow existing code style per crate.
+- No real identities, UIDs or machine paths in tests, documents or scripts. Use the keys
+  tsclientlib publishes, or generate one in the test.
 - Test/verification scripts in Python (not PowerShell).
 - Each protocol struct gets a round-trip test with captured or TSLib-derived vectors.

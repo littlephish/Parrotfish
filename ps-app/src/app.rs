@@ -1252,7 +1252,15 @@ impl App {
                 id: i32::from(s.id),
                 initials: initials(&s.name).into(),
                 name: s.name.as_str().into(),
-                detail: s.short_detail().into(),
+                detail: if !s.is_connected() {
+                    s.short_detail().into()
+                } else if self.viewed == Some(s.id) {
+                    "viewing".into()
+                } else if s.talkers > 0 {
+                    "someone is talking".into()
+                } else {
+                    s.short_detail().into()
+                },
                 viewed: self.viewed == Some(s.id),
                 connected: s.is_connected(),
                 talking: s.talkers > 0,
