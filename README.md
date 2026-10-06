@@ -1,0 +1,100 @@
+# PhishSpeak
+
+PhishSpeak is an unofficial TeamSpeak 3 client written in Rust with a [Slint](https://slint.dev) GUI.
+It signs in with a regular TeamSpeak identity, shows the channel tree, sends and receives text
+chat, and carries voice in both directions with Opus.
+
+It is early software. It has been tested against a TeamSpeak 3.13.8 server, but not yet in a
+conversation with the official client or on a public server. [PLAN.md](PLAN.md) lists what works,
+what has been verified and what is still missing.
+
+## Build and run
+
+You need Rust (stable, MSVC toolchain) on Windows 10 or 11.
+
+```
+build.bat
+target\release\ps-app.exe
+```
+
+`build.bat` runs `cargo build --release -p ps-app`. During development, `cargo run -p ps-app`
+builds faster. To connect straight away:
+
+```
+target\release\ps-app.exe --connect host[:port] --nickname YourName
+```
+
+Import an identity `.ini` exported from the TeamSpeak client, or create a new identity in the app.
+Settings and identities created in the app are stored in `%APPDATA%\PhishSpeak`.
+
+## Tests
+
+```
+cargo test --workspace
+```
+
+The unit tests need no server. The tools under `ps-client/examples` and `ps-voice/examples`
+exercise a real server and the local sound devices; PLAN.md explains how to use them.
+
+## Layout
+
+| Crate | What it does |
+|---|---|
+| `ps-identity` | TeamSpeak identities: import, export, security level, signing |
+| `ps-crypto` | Packet encryption, licence chain and the key exchange |
+| `ps-protocol` | Packet framing, commands, compression, fragmentation |
+| `ps-client` | The connection: handshake, reliability, channels, clients, voice packets |
+| `ps-voice` | Opus, resampling, jitter buffer, mixing, microphone and speaker devices |
+| `ps-app` | The window |
+
+## Credits
+
+PhishSpeak exists because other people worked out and published how the TeamSpeak 3 protocol
+behaves. The code in this repository was written for this project; the public projects below
+supplied the protocol knowledge, and in one case test data.
+
+**Protocol sources**
+
+- [ReSpeak/tsdeclarations](https://github.com/ReSpeak/tsdeclarations) (MIT or Apache-2.0).
+  `ts3protocol.md` is the written description of the wire protocol that PhishSpeak follows: packet
+  layout, encryption, the Init1 puzzle, the licence chain and the key exchange. The client version
+  and signature PhishSpeak presents to servers come from its `Versions.csv`, and error codes and
+  message fields were checked against `Errors.csv` and `Messages.toml`.
+- [ReSpeak/tsclientlib](https://github.com/ReSpeak/tsclientlib) (MIT or Apache-2.0), in particular
+  `tsproto`, `tsproto-packets` and `tsproto-types`. This Rust implementation was the reference for
+  how acknowledgements, receive windows, packet counters and the first handshake packets behave in
+  practice. **Test vectors in `ps-crypto`, `ps-identity` and `ps-protocol` are taken from its test
+  suite**: the licence blobs and derived key, the shared-IV and key/nonce values, the dummy-key
+  packet, a captured `clientinit` packet, a server licence signature, and the identity UID and
+  security-level cases.
+- [Splamy/TS3AudioBot](https://github.com/Splamy/TS3AudioBot) (OSL-3.0), its `TSLib` library
+  (`TsFullClient.cs`, `PacketHandler.cs`, `TsCrypt.cs`, `License.cs`). Read as a behavioural
+  reference for the order of the handshake, which packets use the temporary key, the Init1 packet
+  layouts and the connection-statistics reply. No TSLib code was copied.
+- [Manevolent/ts3j](https://github.com/Manevolent/ts3j) (Apache-2.0). A Java client used to
+  cross-check the handshake and the `clientinit` parameters.
+- [landave/TSIdentityTool](https://github.com/landave/TSIdentityTool) (MIT). The identity
+  obfuscation used in TeamSpeak's identity exports was published there; tsclientlib credits it,
+  tsdeclarations documents the algorithm, and `ps-identity` implements it.
+
+**Libraries**
+
+- [Slint](https://slint.dev) for the interface. Slint is offered under GPL-3.0, a royalty-free
+  licence or a commercial licence; pick the one that fits before distributing a build.
+- [Opus](https://opus-codec.org) by the Xiph.Org Foundation, through
+  [unsafe-libopus](https://github.com/DCNick3/unsafe-libopus), a Rust translation of libopus 1.3.1
+  (BSD-3-Clause).
+- [cpal](https://github.com/RustAudio/cpal) for sound devices and
+  [rtrb](https://github.com/mgeier/rtrb) for the capture ring buffer.
+- [quicklz](https://crates.io/crates/quicklz), the ReSpeak implementation of the compression
+  TeamSpeak uses for large commands.
+- The [RustCrypto](https://github.com/RustCrypto) crates (`aes`, `eax`, `sha1`, `sha2`, `p256`),
+  [curve25519-dalek](https://github.com/dalek-cryptography/curve25519-dalek), `num-bigint`,
+  `base64` and `rand`.
+
+## TeamSpeak
+
+TeamSpeak is a trademark of TeamSpeak Systems GmbH. PhishSpeak is an independent project and is
+not affiliated with, endorsed by or supported by TeamSpeak. It introduces itself to servers with a
+client version string and signature published in tsdeclarations; server owners may not permit
+third-party clients, so check the rules of the servers you join.

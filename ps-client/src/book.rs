@@ -1,0 +1,530 @@
+use std::collections::{HashMap, HashSet};
+
+use ps_protocol::command::Command;
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Channel {
+    pub id: u64,
+    pub parent: u64,
+    pub order: u64,
+    pub name: String,
+    pub topic: String,
+    pub codec: u8,
+    pub codec_quality: u8,
+    pub unencrypted: bool,
+    pub is_default: bool,
+    pub has_password: bool,
+    pub max_clients: i64,
+    pub needed_talk_power: i64,
+}
+
+impl Channel {
+    pub fn apply(&mut self, cmd: &Command, item: usize) {
+        if let Some(v) = cmd.num_at(item, "cpid") {
+            self.parent = v;
+        }
+        if let Some(v) = cmd.num_at(item, "channel_order") {
+            self.order = v;
+        }
+        if let Some(v) = cmd.num_at(item, "order") {
+            self.order = v;
+        }
+        if let Some(v) = cmd.get_at(item, "channel_name") {
+            self.name = v.to_string();
+        }
+        if let Some(v) = cmd.get_at(item, "channel_topic") {
+            self.topic = v.to_string();
+        }
+        if let Some(v) = cmd.num_at(item, "channel_codec") {
+            self.codec = v;
+        }
+        if let Some(v) = cmd.num_at(item, "channel_codec_quality") {
+            self.codec_quality = v;
+        }
+        if let Some(v) = cmd.bool_at(item, "channel_codec_is_unencrypted") {
+            self.unencrypted = v;
+        }
+        if let Some(v) = cmd.bool_at(item, "channel_flag_default") {
+            self.is_default = v;
+        }
+        if let Some(v) = cmd.bool_at(item, "channel_flag_password") {
+            self.has_password = v;
+        }
+        if let Some(v) = cmd.num_at(item, "channel_maxclients") {
+            self.max_clients = v;
+        }
+        if let Some(v) = cmd.num_at(item, "channel_needed_talk_power") {
+            self.needed_talk_power = v;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ClientInfo {
+    pub id: u16,
+    pub channel: u64,
+    pub nickname: String,
+    pub uid: String,
+    pub input_muted: bool,
+    pub output_muted: bool,
+    pub input_hardware: bool,
+    pub output_hardware: bool,
+    pub away: bool,
+    pub away_message: String,
+    pub is_query: bool,
+    pub talk_power: i64,
+    pub is_talker: bool,
+    pub is_recording: bool,
+    pub is_channel_commander: bool,
+    pub talking: bool,
+}
+
+impl ClientInfo {
+    pub fn apply(&mut self, cmd: &Command, item: usize) {
+        if let Some(v) = cmd.get_at(item, "client_nickname") {
+            self.nickname = v.to_string();
+        }
+        if let Some(v) = cmd.get_at(item, "client_unique_identifier") {
+            self.uid = v.to_string();
+        }
+        if let Some(v) = cmd.bool_at(item, "client_input_muted") {
+            self.input_muted = v;
+        }
+        if let Some(v) = cmd.bool_at(item, "client_output_muted") {
+            self.output_muted = v;
+        }
+        if let Some(v) = cmd.bool_at(item, "client_input_hardware") {
+            self.input_hardware = v;
+        }
+        if let Some(v) = cmd.bool_at(item, "client_output_hardware") {
+            self.output_hardware = v;
+        }
+        if let Some(v) = cmd.bool_at(item, "client_away") {
+            self.away = v;
+        }
+        if let Some(v) = cmd.get_at(item, "client_away_message") {
+            self.away_message = v.to_string();
+        }
+        if let Some(v) = cmd.num_at::<u8>(item, "client_type") {
+            self.is_query = v == 1;
+        }
+        if let Some(v) = cmd.num_at(item, "client_talk_power") {
+            self.talk_power = v;
+        }
+        if let Some(v) = cmd.bool_at(item, "client_is_talker") {
+            self.is_talker = v;
+        }
+        if let Some(v) = cmd.bool_at(item, "client_is_recording") {
+            self.is_recording = v;
+        }
+        if let Some(v) = cmd.bool_at(item, "client_is_channel_commander") {
+            self.is_channel_commander = v;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ServerInfo {
+    pub name: String,
+    pub welcome_message: String,
+    pub platform: String,
+    pub version: String,
+    pub virtual_server_id: u64,
+    pub max_clients: u32,
+    pub codec_encryption_mode: u8,
+    pub uid: String,
+}
+
+impl ServerInfo {
+    pub fn apply(&mut self, cmd: &Command) {
+        if let Some(v) = cmd.get("virtualserver_name") {
+            self.name = v.to_string();
+        }
+        if let Some(v) = cmd.get("virtualserver_welcomemessage") {
+            self.welcome_message = v.to_string();
+        }
+        if let Some(v) = cmd.get("virtualserver_platform") {
+            self.platform = v.to_string();
+        }
+        if let Some(v) = cmd.get("virtualserver_version") {
+            self.version = v.to_string();
+        }
+        if let Some(v) = cmd.num("virtualserver_id") {
+            self.virtual_server_id = v;
+        }
+        if let Some(v) = cmd.num("virtualserver_maxclients") {
+            self.max_clients = v;
+        }
+        if let Some(v) = cmd.num("virtualserver_codec_encryption_mode") {
+            self.codec_encryption_mode = v;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ChannelNode {
+    pub channel: Channel,
+    pub depth: u32,
+    pub clients: Vec<ClientInfo>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ServerView {
+    pub server: ServerInfo,
+    pub own_id: u16,
+    pub own_channel: u64,
+    pub channels: Vec<ChannelNode>,
+}
+
+impl ServerView {
+    pub fn own_channel_node(&self) -> Option<&ChannelNode> {
+        self.channels.iter().find(|n| n.channel.id == self.own_channel)
+    }
+
+    pub fn client(&self, id: u16) -> Option<&ClientInfo> {
+        self.channels.iter().flat_map(|n| n.clients.iter()).find(|c| c.id == id)
+    }
+
+    pub fn client_count(&self) -> usize {
+        self.channels.iter().map(|n| n.clients.len()).sum()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Book {
+    pub server: ServerInfo,
+    pub own_id: u16,
+    pub channels: HashMap<u64, Channel>,
+    pub clients: HashMap<u16, ClientInfo>,
+}
+
+impl Book {
+    pub fn own_channel(&self) -> u64 {
+        self.clients.get(&self.own_id).map(|c| c.channel).unwrap_or(0)
+    }
+
+    pub fn voice_encryption(&self) -> bool {
+        match self.server.codec_encryption_mode {
+            1 => false,
+            2 => true,
+            _ => self
+                .channels
+                .get(&self.own_channel())
+                .map(|c| !c.unencrypted)
+                .unwrap_or(true),
+        }
+    }
+
+    pub fn upsert_channels(&mut self, cmd: &Command) {
+        for item in 0..cmd.len() {
+            let Some(id) = cmd.num_at::<u64>(item, "cid") else {
+                continue;
+            };
+            let channel = self.channels.entry(id).or_insert_with(|| Channel { id, ..Default::default() });
+            channel.apply(cmd, item);
+        }
+    }
+
+    pub fn remove_channels(&mut self, cmd: &Command) {
+        for item in 0..cmd.len() {
+            if let Some(id) = cmd.num_at::<u64>(item, "cid") {
+                self.channels.remove(&id);
+                self.clients.retain(|_, c| c.channel != id);
+            }
+        }
+    }
+
+    pub fn clients_entered(&mut self, cmd: &Command) -> Vec<ClientInfo> {
+        let mut entered = Vec::new();
+        for item in 0..cmd.len() {
+            let Some(id) = cmd.num_at::<u16>(item, "clid") else {
+                continue;
+            };
+            let client = self.clients.entry(id).or_insert_with(|| ClientInfo {
+                id,
+                input_hardware: true,
+                output_hardware: true,
+                ..Default::default()
+            });
+            if let Some(channel) = cmd.num_at(item, "ctid") {
+                client.channel = channel;
+            }
+            client.apply(cmd, item);
+            entered.push(client.clone());
+        }
+        entered
+    }
+
+    pub fn clients_moved(&mut self, cmd: &Command) -> Vec<(ClientInfo, u64, u64)> {
+        let mut moved = Vec::new();
+        for item in 0..cmd.len() {
+            let (Some(id), Some(to)) =
+                (cmd.num_at::<u16>(item, "clid"), cmd.num_at::<u64>(item, "ctid"))
+            else {
+                continue;
+            };
+            if let Some(client) = self.clients.get_mut(&id) {
+                let from = client.channel;
+                client.channel = to;
+                client.talking = false;
+                moved.push((client.clone(), from, to));
+            }
+        }
+        moved
+    }
+
+    pub fn clients_left(&mut self, cmd: &Command) -> Vec<ClientInfo> {
+        let mut left = Vec::new();
+        for item in 0..cmd.len() {
+            if let Some(id) = cmd.num_at::<u16>(item, "clid") {
+                if let Some(client) = self.clients.remove(&id) {
+                    left.push(client);
+                }
+            }
+        }
+        left
+    }
+
+    pub fn clients_updated(&mut self, cmd: &Command) {
+        for item in 0..cmd.len() {
+            if let Some(id) = cmd.num_at::<u16>(item, "clid") {
+                if let Some(client) = self.clients.get_mut(&id) {
+                    client.apply(cmd, item);
+                }
+            }
+        }
+    }
+
+    pub fn set_talking(&mut self, id: u16, talking: bool) -> bool {
+        match self.clients.get_mut(&id) {
+            Some(c) if c.talking != talking => {
+                c.talking = talking;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn channel_order(&self) -> Vec<(u64, u32)> {
+        let mut children: HashMap<u64, Vec<&Channel>> = HashMap::new();
+        for c in self.channels.values() {
+            let parent = if c.parent != 0 && !self.channels.contains_key(&c.parent) { 0 } else { c.parent };
+            children.entry(parent).or_default().push(c);
+        }
+        let mut out = Vec::with_capacity(self.channels.len());
+        let mut visited = HashSet::new();
+        self.walk(0, 0, &children, &mut visited, &mut out);
+        let mut orphans: Vec<u64> =
+            self.channels.keys().copied().filter(|id| !visited.contains(id)).collect();
+        orphans.sort_unstable();
+        for id in orphans {
+            if visited.insert(id) {
+                out.push((id, 0));
+                self.walk(id, 1, &children, &mut visited, &mut out);
+            }
+        }
+        out
+    }
+
+    fn walk(
+        &self,
+        parent: u64,
+        depth: u32,
+        children: &HashMap<u64, Vec<&Channel>>,
+        visited: &mut HashSet<u64>,
+        out: &mut Vec<(u64, u32)>,
+    ) {
+        let Some(kids) = children.get(&parent) else {
+            return;
+        };
+        for id in sibling_order(kids) {
+            if visited.insert(id) {
+                out.push((id, depth));
+                self.walk(id, depth + 1, children, visited, out);
+            }
+        }
+    }
+
+    pub fn view(&self) -> ServerView {
+        let mut by_channel: HashMap<u64, Vec<ClientInfo>> = HashMap::new();
+        for c in self.clients.values() {
+            by_channel.entry(c.channel).or_default().push(c.clone());
+        }
+        let channels = self
+            .channel_order()
+            .into_iter()
+            .filter_map(|(id, depth)| {
+                let channel = self.channels.get(&id)?.clone();
+                let mut clients = by_channel.remove(&id).unwrap_or_default();
+                clients.sort_by(|a, b| {
+                    a.is_query
+                        .cmp(&b.is_query)
+                        .then_with(|| a.nickname.to_lowercase().cmp(&b.nickname.to_lowercase()))
+                        .then_with(|| a.id.cmp(&b.id))
+                });
+                Some(ChannelNode { channel, depth, clients })
+            })
+            .collect();
+        ServerView {
+            server: self.server.clone(),
+            own_id: self.own_id,
+            own_channel: self.own_channel(),
+            channels,
+        }
+    }
+}
+
+fn sibling_order(kids: &[&Channel]) -> Vec<u64> {
+    let ids: HashSet<u64> = kids.iter().map(|c| c.id).collect();
+    let mut after: HashMap<u64, Vec<u64>> = HashMap::new();
+    for c in kids {
+        let prev = if c.order != 0 && !ids.contains(&c.order) { 0 } else { c.order };
+        after.entry(prev).or_default().push(c.id);
+    }
+    for v in after.values_mut() {
+        v.sort_unstable();
+    }
+    let mut out = Vec::with_capacity(kids.len());
+    let mut seen = HashSet::new();
+    let mut stack: Vec<u64> = after.get(&0).cloned().unwrap_or_default();
+    stack.reverse();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        out.push(id);
+        if let Some(next) = after.get(&id) {
+            for n in next.iter().rev() {
+                stack.push(*n);
+            }
+        }
+    }
+    let mut rest: Vec<u64> = ids.into_iter().filter(|id| !seen.contains(id)).collect();
+    rest.sort_unstable();
+    out.extend(rest);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn book_from(list: &str) -> Book {
+        let mut book = Book::default();
+        book.upsert_channels(&Command::parse(list));
+        book
+    }
+
+    #[test]
+    fn orders_channels_by_previous_sibling() {
+        let book = book_from(
+            "channellist cid=1 cpid=0 channel_order=0 channel_name=Lobby|cid=5 cpid=0 channel_order=3 channel_name=Last|cid=3 cpid=0 channel_order=1 channel_name=Middle|cid=7 cpid=3 channel_order=0 channel_name=Sub\\sA|cid=8 cpid=3 channel_order=7 channel_name=Sub\\sB|cid=9 cpid=7 channel_order=0 channel_name=Deep",
+        );
+        assert_eq!(book.channel_order(), vec![(1, 0), (3, 0), (7, 1), (9, 2), (8, 1), (5, 0)]);
+        let view = book.view();
+        let names: Vec<&str> = view.channels.iter().map(|n| n.channel.name.as_str()).collect();
+        assert_eq!(names, vec!["Lobby", "Middle", "Sub A", "Deep", "Sub B", "Last"]);
+    }
+
+    #[test]
+    fn tolerates_broken_links() {
+        let book = book_from(
+            "channellist cid=1 cpid=0 channel_order=0|cid=2 cpid=0 channel_order=99|cid=3 cpid=0 channel_order=4|cid=4 cpid=0 channel_order=3|cid=6 cpid=42 channel_order=0",
+        );
+        let order = book.channel_order();
+        let mut ids: Vec<u64> = order.iter().map(|(id, _)| *id).collect();
+        assert_eq!(order.len(), 5);
+        ids.sort_unstable();
+        assert_eq!(ids, vec![1, 2, 3, 4, 6]);
+        assert_eq!(order[0], (1, 0));
+    }
+
+    #[test]
+    fn client_lifecycle() {
+        let mut book = book_from(
+            "channellist cid=1 cpid=0 channel_order=0 channel_name=Lobby channel_codec=4 channel_codec_quality=6 channel_codec_is_unencrypted=1|cid=2 cpid=0 channel_order=1 channel_name=Private channel_codec=5 channel_codec_quality=10 channel_codec_is_unencrypted=0 channel_flag_password=1",
+        );
+        book.own_id = 3;
+        let entered = book.clients_entered(&Command::parse(
+            "notifycliententerview cfid=0 ctid=1 reasonid=0 clid=3 client_unique_identifier=abc= client_nickname=Little\\sPhish client_input_muted=0 client_output_muted=0 client_type=0|clid=4 client_unique_identifier=def= client_nickname=bob client_type=0 client_input_muted=1|clid=5 ctid=2 client_nickname=Query client_type=1",
+        ));
+        assert_eq!(entered.len(), 3);
+        assert_eq!(book.own_channel(), 1);
+        assert_eq!(book.clients[&4].channel, 1);
+        assert_eq!(book.clients[&4].nickname, "bob");
+        assert!(book.clients[&4].input_muted);
+        assert_eq!(book.clients[&5].channel, 2);
+        assert!(book.clients[&5].is_query);
+        assert!(!book.voice_encryption());
+
+        let view = book.view();
+        assert_eq!(view.own_channel, 1);
+        assert_eq!(view.client_count(), 3);
+        let lobby: Vec<&str> = view.channels[0].clients.iter().map(|c| c.nickname.as_str()).collect();
+        assert_eq!(lobby, vec!["bob", "Little Phish"]);
+        assert_eq!(view.own_channel_node().unwrap().channel.codec_quality, 6);
+
+        let moved = book.clients_moved(&Command::parse("notifyclientmoved ctid=2 reasonid=0 clid=3"));
+        assert_eq!(moved.len(), 1);
+        assert_eq!((moved[0].1, moved[0].2), (1, 2));
+        assert_eq!(book.own_channel(), 2);
+        assert!(book.voice_encryption());
+
+        book.server.codec_encryption_mode = 1;
+        assert!(!book.voice_encryption());
+        book.server.codec_encryption_mode = 2;
+        assert!(book.voice_encryption());
+
+        book.clients_updated(&Command::parse(
+            "notifyclientupdated clid=4 client_nickname=Robert client_input_muted=0 client_away=1 client_away_message=brb",
+        ));
+        assert_eq!(book.clients[&4].nickname, "Robert");
+        assert!(!book.clients[&4].input_muted);
+        assert!(book.clients[&4].away);
+        assert_eq!(book.clients[&4].away_message, "brb");
+
+        assert!(book.set_talking(4, true));
+        assert!(!book.set_talking(4, true));
+        assert!(!book.set_talking(99, true));
+
+        let left = book.clients_left(&Command::parse(
+            "notifyclientleftview cfid=1 ctid=0 reasonid=8 reasonmsg=bye clid=4",
+        ));
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].nickname, "Robert");
+        assert!(!book.clients.contains_key(&4));
+
+        book.remove_channels(&Command::parse("notifychanneldeleted invokerid=1 cid=2"));
+        assert!(!book.channels.contains_key(&2));
+        assert!(!book.clients.contains_key(&5));
+    }
+
+    #[test]
+    fn channel_edit_and_move() {
+        let mut book = book_from("channellist cid=1 cpid=0 channel_order=0 channel_name=A|cid=2 cpid=0 channel_order=1 channel_name=B");
+        book.upsert_channels(&Command::parse(
+            "notifychanneledited cid=2 reasonid=10 invokerid=1 channel_name=Renamed channel_codec_quality=9",
+        ));
+        assert_eq!(book.channels[&2].name, "Renamed");
+        assert_eq!(book.channels[&2].codec_quality, 9);
+        book.upsert_channels(&Command::parse("notifychannelmoved cid=2 cpid=1 order=0 reasonid=1"));
+        assert_eq!(book.channel_order(), vec![(1, 0), (2, 1)]);
+        book.upsert_channels(&Command::parse(
+            "notifychannelcreated cid=3 cpid=0 channel_name=New channel_order=1 invokerid=2",
+        ));
+        assert_eq!(book.channel_order(), vec![(1, 0), (2, 1), (3, 0)]);
+    }
+
+    #[test]
+    fn server_info() {
+        let mut s = ServerInfo::default();
+        s.apply(&Command::parse(
+            "initserver virtualserver_name=TeamSpeak\\s]I[\\sServer virtualserver_welcomemessage=Welcome virtualserver_platform=Linux virtualserver_version=3.13.7\\s[Build:\\s1655727713] virtualserver_maxclients=32 virtualserver_codec_encryption_mode=2 virtualserver_id=1 aclid=2",
+        ));
+        assert_eq!(s.name, "TeamSpeak ]I[ Server");
+        assert_eq!(s.version, "3.13.7 [Build: 1655727713]");
+        assert_eq!(s.max_clients, 32);
+        assert_eq!(s.codec_encryption_mode, 2);
+        assert_eq!(s.virtual_server_id, 1);
+    }
+}

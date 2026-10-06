@@ -1,0 +1,7 @@
+[package]
+name = "ps-protocol"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+quicklz = { workspace = true }

@@ -1,0 +1,13 @@
+[package]
+name = "ps-voice"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cpal = { workspace = true }
+rtrb = { workspace = true }
+unsafe-libopus = { workspace = true }
+
+[dev-dependencies]
+ps-client = { path = "../ps-client" }
+ps-identity = { path = "../ps-identity" }

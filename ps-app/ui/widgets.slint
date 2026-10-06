@@ -1,0 +1,738 @@
+import { ListView } from "std-widgets.slint";
+import { Theme, Icons } from "theme.slint";
+
+export struct TreeRow {
+    kind: int,
+    id: int,
+    depth: int,
+    text: string,
+    align: int,
+    line: int,
+    icon: int,
+    count: int,
+    current: bool,
+    talking: bool,
+    me: bool,
+    mic-muted: bool,
+    sound-muted: bool,
+    away: bool,
+    tag: string,
+}
+
+export struct ServerTile {
+    id: int,
+    initials: string,
+    name: string,
+    detail: string,
+    viewed: bool,
+    connected: bool,
+    talking: bool,
+}
+
+export struct BookmarkRow {
+    index: int,
+    initials: string,
+    name: string,
+    address: string,
+    nickname: string,
+    identity-index: int,
+}
+
+export struct ChatRow {
+    time: string,
+    kind: int,
+    name: string,
+    text: string,
+}
+
+export struct IdentityRow {
+    name: string,
+    uid: string,
+    detail: string,
+}
+
+export component Icon inherits Image {
+    in property <color> tint: Theme.drift;
+    width: 16px;
+    height: 16px;
+    image-fit: contain;
+    colorize: root.tint;
+}
+
+export component Pressable inherits Rectangle {
+    in property <bool> enabled: true;
+    in property <bool> focusable: true;
+    out property <bool> hovered: touch.has-hover && root.enabled;
+    callback clicked();
+    callback double-clicked();
+
+    scope := FocusScope {
+        enabled: root.enabled && root.focusable;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+        double-clicked => {
+            root.double-clicked();
+        }
+    }
+
+    @children
+
+    Rectangle {
+        border-radius: root.border-radius;
+        border-width: scope.has-focus ? 2px : 0px;
+        border-color: Theme.lure;
+    }
+}
+
+export component Btn inherits Pressable {
+    in property <string> text;
+    in property <bool> primary;
+    in property <bool> danger;
+
+    height: 32px;
+    min-width: label.preferred-width + 28px;
+    border-radius: 8px;
+    opacity: root.enabled ? 1 : 0.45;
+    background: root.primary ? (root.hovered ? Theme.lure.brighter(10%) : Theme.lure) : (root.hovered ? Theme.current : Theme.shoal);
+
+    Rectangle {
+        border-radius: 8px;
+        border-width: root.primary ? 0px : 1px;
+        border-color: Theme.hairline;
+    }
+
+    label := Text {
+        text: root.text;
+        color: root.primary ? Theme.on-lure : (root.danger ? Theme.coral : Theme.foam);
+        font-size: Theme.text;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component IconButton inherits Pressable {
+    in property <image> icon;
+    in property <bool> active;
+    in property <bool> alert;
+
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: root.alert ? Theme.coral.with-alpha(0.18) : (root.hovered ? Theme.current : (root.active ? Theme.shoal : transparent));
+
+    Icon {
+        source: root.icon;
+        tint: root.alert ? Theme.coral : (root.active || root.hovered ? Theme.foam : Theme.drift);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+}
+
+export component Tile inherits Pressable {
+    in property <string> label;
+    in property <bool> viewed;
+    in property <bool> connected;
+    in property <bool> talking;
+    in property <length> size: 34px;
+
+    width: root.size;
+    height: root.size;
+    border-radius: root.size * 0.3;
+    background: root.viewed ? Theme.lure : (root.hovered ? Theme.current : Theme.shoal);
+    border-width: root.connected && !root.viewed ? 2px : 0px;
+    border-color: Theme.drift;
+
+    Text {
+        text: root.label;
+        color: root.viewed ? Theme.on-lure : (root.connected ? Theme.foam : Theme.drift);
+        font-size: root.size * 0.36;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    if root.talking: Rectangle {
+        x: parent.width - 8px;
+        y: parent.height - 8px;
+        width: 11px;
+        height: 11px;
+        border-radius: 5.5px;
+        background: Theme.lure;
+        border-width: 2px;
+        border-color: Theme.trench;
+    }
+}
+
+export component Meter inherits Rectangle {
+    in property <float> level;
+    in property <float> marker: -1;
+    in property <bool> active;
+
+    height: 6px;
+    border-radius: 3px;
+    background: Theme.shoal;
+    clip: true;
+
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        height: parent.height;
+        width: parent.width * max(0, min(1, root.level));
+        border-radius: 3px;
+        background: root.active ? Theme.lure : Theme.drift;
+    }
+
+    if root.marker >= 0: Rectangle {
+        x: parent.width * min(1, root.marker) - 1px;
+        y: 0px;
+        width: 2px;
+        height: parent.height;
+        background: Theme.foam;
+    }
+}
+
+export component Slide inherits Rectangle {
+    in property <float> minimum: 0;
+    in property <float> maximum: 1;
+    in property <float> step: 1;
+    in-out property <float> value;
+    in property <float> level: -1;
+    in property <bool> level-active;
+    callback changed();
+
+    property <float> fraction: max(0, min(1, (root.value - root.minimum) / (root.maximum - root.minimum)));
+
+    height: 28px;
+    min-width: 120px;
+
+    function set-fraction(f: float) {
+        root.value = root.minimum + (root.maximum - root.minimum) * max(0, min(1, f));
+        root.changed();
+    }
+
+    scope := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.LeftArrow) {
+                root.value = max(root.minimum, root.value - root.step);
+                root.changed();
+                return accept;
+            }
+            if (event.text == Key.RightArrow) {
+                root.value = min(root.maximum, root.value + root.step);
+                root.changed();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    Rectangle {
+        y: (parent.height - 8px) / 2;
+        height: 8px;
+        border-radius: 4px;
+        background: Theme.trench;
+        clip: true;
+
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            height: parent.height;
+            width: parent.width * (root.level >= 0 ? max(0, min(1, root.level)) : root.fraction);
+            background: root.level >= 0 ? (root.level-active ? Theme.lure : Theme.drift) : Theme.lure;
+        }
+    }
+
+    Rectangle {
+        x: max(0px, min(parent.width - self.width, parent.width * root.fraction - self.width / 2));
+        y: (parent.height - self.height) / 2;
+        width: 14px;
+        height: 14px;
+        border-radius: 7px;
+        background: Theme.foam;
+        border-width: scope.has-focus ? 2px : 0px;
+        border-color: Theme.lure;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        moved => {
+            if (self.pressed) {
+                root.set-fraction(self.mouse-x / root.width);
+            }
+        }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                root.set-fraction(self.mouse-x / root.width);
+            }
+        }
+    }
+}
+
+export component Field inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    in property <string> placeholder;
+    in property <bool> password;
+    in property <bool> enabled: true;
+    callback accepted();
+    callback edited();
+
+    height: 34px;
+    border-radius: 8px;
+    background: Theme.trench;
+    border-width: input.has-focus ? 2px : 1px;
+    border-color: input.has-focus ? Theme.lure : Theme.hairline;
+    clip: true;
+
+    public function focus-input() {
+        input.focus();
+    }
+
+    if input.text == "": Text {
+        x: 12px;
+        y: 0px;
+        height: parent.height;
+        width: parent.width - 24px;
+        text: root.placeholder;
+        color: Theme.drift;
+        font-size: Theme.text;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    input := TextInput {
+        x: 12px;
+        y: 0px;
+        width: parent.width - 24px;
+        height: parent.height;
+        vertical-alignment: center;
+        single-line: true;
+        enabled: root.enabled;
+        color: Theme.foam;
+        font-size: Theme.text;
+        input-type: root.password ? InputType.password : InputType.text;
+        selection-background-color: Theme.current;
+        selection-foreground-color: Theme.foam;
+        accepted => {
+            root.accepted();
+        }
+        edited => {
+            root.edited();
+        }
+    }
+}
+
+export component Check inherits Pressable {
+    in-out property <bool> checked;
+    in property <string> text;
+    callback toggled();
+
+    height: 30px;
+    border-radius: 6px;
+    clicked => {
+        root.checked = !root.checked;
+        root.toggled();
+    }
+
+    HorizontalLayout {
+        padding-left: 2px;
+        spacing: 10px;
+
+        VerticalLayout {
+            alignment: center;
+
+            Rectangle {
+                width: 18px;
+                height: 18px;
+                border-radius: 5px;
+                border-width: 1.5px;
+                border-color: root.checked ? Theme.lure : Theme.drift;
+                background: root.checked ? Theme.lure : transparent;
+
+                if root.checked: Icon {
+                    source: Icons.check;
+                    tint: Theme.on-lure;
+                    width: 14px;
+                    height: 14px;
+                    x: 2px;
+                    y: 2px;
+                }
+            }
+        }
+
+        Text {
+            text: root.text;
+            color: Theme.foam;
+            font-size: Theme.text;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+    }
+}
+
+export component Segmented inherits Rectangle {
+    in property <[string]> options;
+    in-out property <int> current;
+    callback selected();
+
+    height: 32px;
+    border-radius: 8px;
+    background: Theme.trench;
+
+    HorizontalLayout {
+        padding: 3px;
+        spacing: 2px;
+
+        for label[i] in root.options: Pressable {
+            border-radius: 6px;
+            min-width: caption.preferred-width + 22px;
+            background: i == root.current ? Theme.current : (self.hovered ? Theme.shoal : transparent);
+            clicked => {
+                root.current = i;
+                root.selected();
+            }
+
+            caption := Text {
+                text: label;
+                color: i == root.current ? Theme.foam : Theme.drift;
+                font-size: Theme.text;
+                font-weight: i == root.current ? 600 : 400;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+export component Dropdown inherits Pressable {
+    in property <[string]> model;
+    in-out property <int> current-index;
+    in property <string> placeholder: "Nothing to choose from";
+    callback selected();
+
+    height: 34px;
+    border-radius: 8px;
+    background: Theme.trench;
+    clicked => {
+        popup.show();
+    }
+
+    Rectangle {
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Theme.hairline;
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 10px;
+        spacing: 8px;
+
+        Text {
+            text: root.current-index >= 0 && root.current-index < root.model.length ? root.model[root.current-index] : root.placeholder;
+            color: root.model.length > 0 ? Theme.foam : Theme.drift;
+            font-size: Theme.text;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+
+        VerticalLayout {
+            alignment: center;
+
+            Icon {
+                source: Icons.chevron;
+            }
+        }
+    }
+
+    popup := PopupWindow {
+        x: 0px;
+        y: root.height + 4px;
+        width: root.width;
+        height: min(246px, root.model.length * 30px + 8px);
+
+        Rectangle {
+            background: Theme.shoal;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: Theme.hairline;
+            clip: true;
+
+            ListView {
+                x: 4px;
+                y: 4px;
+                width: parent.width - 8px;
+                height: parent.height - 8px;
+
+                for item[i] in root.model: Rectangle {
+                    height: 30px;
+                    border-radius: 6px;
+                    background: option.has-hover || i == root.current-index ? Theme.current : transparent;
+
+                    Text {
+                        x: 10px;
+                        width: parent.width - 20px;
+                        text: item;
+                        color: Theme.foam;
+                        font-size: Theme.text;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    option := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.current-index = i;
+                            root.selected();
+                            popup.close();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component Rule inherits VerticalLayout {
+    alignment: center;
+    horizontal-stretch: 1;
+
+    Rectangle {
+        height: 1px;
+        background: Theme.hairline;
+    }
+}
+
+component Dashes inherits Rectangle {
+    in property <length> dash: 6px;
+    in property <length> gap: 4px;
+    in property <length> thickness: 1px;
+
+    clip: true;
+    horizontal-stretch: 1;
+
+    HorizontalLayout {
+        x: 0px;
+        y: (parent.height - root.thickness) / 2;
+        height: root.thickness;
+        width: 120 * (root.dash + root.gap);
+        spacing: root.gap;
+
+        for i in 120: Rectangle {
+            width: root.dash;
+            background: Theme.drift.with-alpha(0.45);
+        }
+    }
+}
+
+export component TreeRowView inherits Rectangle {
+    in property <TreeRow> entry;
+    callback activated();
+
+    height: Theme.row;
+
+    if root.entry.kind == 0: HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 10px;
+
+        if root.entry.align == 1: Rule { }
+
+        Text {
+            text: root.entry.text;
+            color: root.entry.align == 1 ? Theme.foam.with-alpha(0.85) : Theme.drift;
+            font-size: Theme.small;
+            font-weight: root.entry.align == 2 ? 400 : 600;
+            vertical-alignment: center;
+            horizontal-alignment: root.entry.align == 2 ? TextHorizontalAlignment.right : TextHorizontalAlignment.left;
+            horizontal-stretch: root.entry.align == 1 ? 0 : 1;
+            overflow: root.entry.align == 3 ? TextOverflow.clip : TextOverflow.elide;
+        }
+
+        if root.entry.align == 1: Rule { }
+    }
+
+    if root.entry.kind == 1: HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+
+        if root.entry.line == 0: Rule { }
+
+        if root.entry.line == 1: Dashes { }
+
+        if root.entry.line == 2: Dashes {
+            dash: 2px;
+            gap: 4px;
+            thickness: 2px;
+        }
+    }
+
+    if root.entry.kind == 3: Pressable {
+        focusable: false;
+        border-radius: 6px;
+        background: root.entry.current ? Theme.current : (self.hovered ? Theme.shoal : transparent);
+        double-clicked => {
+            root.activated();
+        }
+
+        HorizontalLayout {
+            padding-left: 10px + root.entry.depth * 16px;
+            padding-right: 10px;
+            spacing: 8px;
+
+            VerticalLayout {
+                alignment: center;
+
+                Icon {
+                    source: root.entry.icon == 1 ? Icons.lock : (root.entry.icon == 2 ? Icons.note : Icons.speaker);
+                }
+            }
+
+            Text {
+                text: root.entry.text;
+                color: Theme.foam;
+                font-size: Theme.text;
+                font-weight: 600;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+
+            if root.entry.count > 0: Text {
+                text: "" + root.entry.count;
+                color: Theme.drift;
+                font-size: Theme.small;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    if root.entry.kind == 4: HorizontalLayout {
+        padding-left: 30px + root.entry.depth * 16px;
+        padding-right: 10px;
+        spacing: 6px;
+
+        VerticalLayout {
+            alignment: center;
+
+            Rectangle {
+                width: 17px;
+                height: 17px;
+
+                Rectangle {
+                    width: root.entry.talking ? 17px : 9px;
+                    height: self.width;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: self.width / 2;
+                    background: Theme.lure;
+                    opacity: root.entry.talking ? 0.3 : 0;
+                    animate width, opacity {
+                        duration: 250ms;
+                        easing: ease-out;
+                    }
+                }
+
+                Rectangle {
+                    x: 4px;
+                    y: 4px;
+                    width: 9px;
+                    height: 9px;
+                    border-radius: 4.5px;
+                    background: root.entry.talking ? Theme.lure : Theme.drift;
+                    opacity: root.entry.talking ? 1 : 0.55;
+                }
+            }
+        }
+
+        Text {
+            text: root.entry.text;
+            color: root.entry.talking ? Theme.lure : (root.entry.away ? Theme.drift : Theme.foam);
+            font-size: Theme.text;
+            font-weight: root.entry.me ? 600 : 400;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+
+        if root.entry.mic-muted: VerticalLayout {
+            alignment: center;
+
+            Icon {
+                source: Icons.mic-off;
+                tint: Theme.coral;
+                width: 14px;
+                height: 14px;
+            }
+        }
+
+        if root.entry.sound-muted: VerticalLayout {
+            alignment: center;
+
+            Icon {
+                source: Icons.ear-off;
+                tint: Theme.coral;
+                width: 14px;
+                height: 14px;
+            }
+        }
+
+        if root.entry.tag != "": Text {
+            text: root.entry.tag;
+            color: Theme.drift;
+            font-size: 11.5px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component ChatRowView inherits Rectangle {
+    in property <ChatRow> entry;
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        padding-top: 3px;
+        padding-bottom: 3px;
+        spacing: 8px;
+
+        Text {
+            width: 34px;
+            text: root.entry.time;
+            color: Theme.drift;
+            font-size: 11.5px;
+            vertical-alignment: top;
+        }
+
+        if root.entry.kind == 1 || root.entry.kind == 2: Text {
+            text: root.entry.name;
+            color: root.entry.kind == 2 ? Theme.lure : Theme.foam;
+            font-size: Theme.chat;
+            font-weight: 600;
+            vertical-alignment: top;
+        }
+
+        Text {
+            text: root.entry.text;
+            color: root.entry.kind == 0 ? Theme.drift : (root.entry.kind == 3 ? Theme.coral : Theme.foam);
+            font-size: root.entry.kind == 0 ? Theme.small : Theme.chat;
+            wrap: word-wrap;
+            vertical-alignment: top;
+            horizontal-stretch: 1;
+        }
+    }
+}

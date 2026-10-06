@@ -1,0 +1,10 @@
+[package]
+name = "ps-identity"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+base64 = { workspace = true }
+p256 = { workspace = true }
+rand = { workspace = true }
+sha1 = { workspace = true }

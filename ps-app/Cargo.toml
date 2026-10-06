@@ -1,0 +1,13 @@
+[package]
+name = "ps-app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ps-identity = { path = "../ps-identity" }
+ps-client = { path = "../ps-client" }
+ps-voice = { path = "../ps-voice" }
+slint = { workspace = true }
+
+[build-dependencies]
+slint-build = "1"

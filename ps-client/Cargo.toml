@@ -1,0 +1,12 @@
+[package]
+name = "ps-client"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ps-identity = { path = "../ps-identity" }
+ps-crypto = { path = "../ps-crypto" }
+ps-protocol = { path = "../ps-protocol" }
+base64 = { workspace = true }
+rand = { workspace = true }
+sha1 = { workspace = true }
