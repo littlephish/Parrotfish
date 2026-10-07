@@ -1663,6 +1663,10 @@ impl App {
                 self.start_level_job(&uid, level);
             }
         }
+        if outcome.retry {
+            self.route_mic();
+            self.dirty = Dirty::everything();
+        }
         if let Some(reason) = outcome.closed {
             self.finish_session(w, id, &reason, was_connecting);
         }
@@ -1765,12 +1769,40 @@ impl App {
         self.viewed_session().is_some_and(|s| s.is_connected()) && !self.sound_muted && !self.mic_muted
     }
 
+    fn retry_lost_connections(&mut self, w: &Windows) {
+        let now = Instant::now();
+        let mut due: Vec<u16> = Vec::new();
+        for session in &mut self.sessions {
+            let Some(at) = session.retry_at.filter(|_| session.client.is_none()) else {
+                continue;
+            };
+            if now >= at {
+                session.retry_at = None;
+                session.state_text = "Connecting again".to_string();
+                due.push(session.id);
+                self.dirty.sessions = true;
+                continue;
+            }
+            let text = format!("Connection lost. Trying again in {} s", at.duration_since(now).as_secs() + 1);
+            if session.state_text != text {
+                session.state_text = text;
+                self.dirty.sessions = true;
+            }
+        }
+        for id in due {
+            if let Err((_, problem)) = self.launch(id) {
+                self.finish_session(w, id, &problem, false);
+            }
+        }
+    }
+
     fn status_text(&self) -> String {
         let Some(session) = self.viewed_session() else {
             return "Not connected".to_string();
         };
         if !session.is_connected() {
-            return if session.waiting_level.is_some() { session.state_text.clone() } else { "Connecting".to_string() };
+            let told = session.waiting_level.is_some() || session.retries > 0;
+            return if told { session.state_text.clone() } else { "Connecting".to_string() };
         }
         if self.sound_muted {
             return "Sound muted".to_string();
@@ -1801,6 +1833,7 @@ impl App {
                 self.on_outcome(w, id, was_connecting, outcome);
             }
         }
+        self.retry_lost_connections(w);
         self.poll_level_jobs(w);
         self.poll_capture(w);
         self.watch_whispers();

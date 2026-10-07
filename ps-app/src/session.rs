@@ -488,6 +488,39 @@ pub struct ConnectRequest {
     pub quiet: bool,
 }
 
+pub fn should_retry(reason: &str) -> bool {
+    const PASSING: [&str; 8] = [
+        "connection lost",
+        "server stopped",
+        "server is shutting down",
+        "no response",
+        "nothing is listening",
+        "the handshake with the server timed out",
+        "cannot resolve",
+        "cannot find the address",
+    ];
+    PASSING.iter().any(|start| reason.starts_with(start))
+}
+
+fn sentence(text: &str) -> String {
+    let text = text.trim().trim_end_matches('.');
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+pub fn retry_delay(attempt: u32) -> Duration {
+    Duration::from_secs(match attempt {
+        0 | 1 => 2,
+        2 => 4,
+        3 => 8,
+        4 => 15,
+        _ => 30,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Peer {
     pub id: u16,
@@ -514,6 +547,7 @@ pub struct Outcome {
     pub folds: bool,
     pub start_channel: Option<(u64, bool)>,
     pub start_password: String,
+    pub retry: bool,
     pub icon: Option<(u32, Result<Vec<u8>, String>)>,
 }
 
@@ -542,6 +576,11 @@ pub struct Session {
     pub reply_to: Option<(u16, String)>,
     pub server_uid: String,
     pub start_pending: bool,
+    pub was_connected: bool,
+    pub retries: u32,
+    pub retry_at: Option<Instant>,
+    pub kept_password: String,
+    pub last_channel: (String, u64),
     pub peer: Option<Peer>,
     pub voices_applied: HashMap<u16, (String, f32)>,
     pub silenced: HashSet<u16>,
@@ -575,6 +614,11 @@ impl Session {
             reply_to: None,
             server_uid: String::new(),
             start_pending: false,
+            was_connected: false,
+            retries: 0,
+            retry_at: None,
+            kept_password: String::new(),
+            last_channel: (String::new(), 0),
             peer: None,
             voices_applied: HashMap::new(),
             silenced: HashSet::new(),
@@ -717,7 +761,10 @@ impl Session {
                 self.server_uid = server.uid.clone();
                 self.start_pending = !self.request.channel.trim().is_empty() || self.request.channel_id != 0;
                 self.waiting_level = None;
-                self.request.password.clear();
+                self.was_connected = true;
+                self.retries = 0;
+                self.retry_at = None;
+                self.kept_password = std::mem::take(&mut self.request.password);
                 if !self.start_pending {
                     self.request.channel_password.clear();
                 }
@@ -740,6 +787,11 @@ impl Session {
                     self.name = view.server.name.trim().to_string();
                 }
                 let before = self.view.as_ref().map(|v| (v.own_channel, self.own_codec()));
+                if view.own_channel != 0 {
+                    if let Some(path) = channel_path(&view, view.own_channel) {
+                        self.last_channel = (path, view.own_channel);
+                    }
+                }
                 self.view = Some(view);
                 let after = self.view.as_ref().map(|v| (v.own_channel, self.own_codec()));
                 out.channel = before != after;
@@ -901,6 +953,19 @@ impl Session {
                 if self.waiting_level.is_some() && !self.leaving {
                     self.phase = Phase::Connecting;
                     self.state_text = "Making your identity stronger".to_string();
+                } else if !self.leaving && self.was_connected && should_retry(&reason) {
+                    self.retries += 1;
+                    let wait = retry_delay(self.retries);
+                    self.retry_at = Some(Instant::now() + wait);
+                    self.phase = Phase::Connecting;
+                    self.state_text = format!("Connection lost. Trying again in {} s", wait.as_secs());
+                    self.request.password = self.kept_password.clone();
+                    if self.last_channel.1 != 0 {
+                        (self.request.channel, self.request.channel_id) = self.last_channel.clone();
+                    }
+                    let line = format!("{}. Trying again in {} s.", sentence(&reason), wait.as_secs());
+                    self.system(&line);
+                    out.retry = true;
                 } else {
                     self.phase = Phase::Closed(reason.clone());
                     out.closed = Some(reason);
@@ -1246,6 +1311,55 @@ mod tests {
             text: "hi".into(),
         });
         assert_eq!(s.peer.as_ref().map(|peer| peer.id), Some(8), "a second sender does not take over the reply");
+    }
+
+    #[test]
+    fn a_lost_connection_is_tried_again_but_a_kick_is_not() {
+        assert!(should_retry("connection lost (the server stopped responding)"));
+        assert!(should_retry("connection lost (a packet was never acknowledged)"));
+        assert!(should_retry("server is shutting down (maintenance)"));
+        assert!(should_retry("server stopped"));
+        assert!(should_retry("no response from reef.example.net:9987 (is a TeamSpeak 3 server running there?)"));
+        assert!(should_retry("nothing is listening on reef.example.net:9987 (port unreachable)"));
+        assert!(should_retry("cannot find the address of reef.example.net"));
+        assert!(!should_retry("kicked from the server by Marlin (bye)"));
+        assert!(!should_retry("banned from the server"));
+        assert!(!should_retry("the server refused the connection: invalid server password"));
+        assert!(!should_retry("disconnected"));
+        assert!(!should_retry("left"));
+        let waits: Vec<u64> = (1..=7).map(|attempt| retry_delay(attempt).as_secs()).collect();
+        assert_eq!(waits, vec![2, 4, 8, 15, 30, 30, 30]);
+
+        let mut s = session();
+        s.apply(Event::Connected { client_id: 7, server: ServerInfo::default() });
+        s.apply(Event::View(sample_view()));
+        assert_eq!(s.request.password, "");
+        let out = s.apply(Event::Disconnected { reason: "connection lost (the server stopped responding)".into() });
+        assert!(out.retry && out.closed.is_none() && out.forget_all);
+        assert_eq!((s.phase.clone(), s.retries), (Phase::Connecting, 1));
+        assert!(s.retry_at.is_some() && s.view.is_none());
+        assert_eq!((s.request.channel.as_str(), s.request.channel_id), ("Lobby", 1));
+        assert_eq!(s.request.password, "hunter2", "the password is kept in memory for the next try");
+        assert!(s.chat.back().unwrap().text.contains("Trying again in 2 s"));
+
+        let out = s.apply(Event::Disconnected { reason: "no response from reef.example.net:9987".into() });
+        assert!(out.retry);
+        assert_eq!(s.retries, 2);
+        s.apply(Event::Connected { client_id: 9, server: ServerInfo::default() });
+        assert_eq!((s.retries, s.retry_at), (0, None));
+
+        let out = s.apply(Event::Disconnected { reason: "kicked from the server by Marlin".into() });
+        assert!(!out.retry && out.closed.is_some());
+
+        let mut fresh = session();
+        let out = fresh.apply(Event::Disconnected { reason: "no response from reef.example.net:9987".into() });
+        assert!(!out.retry && out.closed.is_some(), "a first attempt that fails is not repeated");
+
+        let mut going = session();
+        going.apply(Event::Connected { client_id: 7, server: ServerInfo::default() });
+        going.leaving = true;
+        let out = going.apply(Event::Disconnected { reason: "connection lost (the server stopped responding)".into() });
+        assert!(!out.retry && out.closed.is_some());
     }
 
     #[test]
