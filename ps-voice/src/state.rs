@@ -55,6 +55,10 @@ pub struct Shared {
     on_air: AtomicU8,
     lane_room: [AtomicU16; LANES],
     pub loopback: AtomicBool,
+    echo_cancel: AtomicBool,
+    echo_reduction: AtomicU32,
+    echo_delay: AtomicU32,
+    echo_drift: AtomicU32,
     pub transmitting: AtomicBool,
     pub codec: AtomicU8,
     pub codec_quality: AtomicU8,
@@ -83,6 +87,10 @@ impl Default for Shared {
             on_air: AtomicU8::new(NO_LANE),
             lane_room: std::array::from_fn(|_| AtomicU16::new(0)),
             loopback: AtomicBool::new(false),
+            echo_cancel: AtomicBool::new(false),
+            echo_reduction: AtomicU32::new(f32::NAN.to_bits()),
+            echo_delay: AtomicU32::new(f32::NAN.to_bits()),
+            echo_drift: AtomicU32::new(0f32.to_bits()),
             transmitting: AtomicBool::new(false),
             codec: AtomicU8::new(CODEC_OPUS_VOICE),
             codec_quality: AtomicU8::new(6),
@@ -142,6 +150,38 @@ impl Shared {
 
     pub(crate) fn set_on_air(&self, lane: Option<u8>) {
         self.on_air.store(lane.unwrap_or(NO_LANE), Ordering::Relaxed);
+    }
+
+    pub fn echo_cancel(&self) -> bool {
+        self.echo_cancel.load(Ordering::Relaxed)
+    }
+
+    pub fn set_echo_cancel(&self, on: bool) {
+        self.echo_cancel.store(on, Ordering::Relaxed);
+        if !on {
+            self.set_echo_reduction(None);
+        }
+    }
+
+    pub fn echo_reduction(&self) -> Option<f32> {
+        Some(load(&self.echo_reduction)).filter(|db| db.is_finite())
+    }
+
+    pub fn set_echo_reduction(&self, db: Option<f32>) {
+        store(&self.echo_reduction, db.unwrap_or(f32::NAN));
+    }
+
+    pub fn echo_delay_ms(&self) -> Option<f32> {
+        Some(load(&self.echo_delay)).filter(|ms| ms.is_finite())
+    }
+
+    pub fn echo_drift_ppm(&self) -> f32 {
+        load(&self.echo_drift)
+    }
+
+    pub fn set_echo_details(&self, delay_ms: Option<f32>, drift_ppm: f32) {
+        store(&self.echo_delay, delay_ms.unwrap_or(f32::NAN));
+        store(&self.echo_drift, drift_ppm);
     }
 
     pub fn tx_mode(&self) -> TxMode {
@@ -217,6 +257,12 @@ mod tests {
         assert_eq!(s.input_gain(), 1.0);
         assert_eq!(s.output_volume(), 1.0);
         assert_eq!(s.input_level(), SILENCE_DB);
+        assert!(!s.echo_cancel() && s.echo_reduction().is_none());
+        s.set_echo_cancel(true);
+        s.set_echo_reduction(Some(23.5));
+        assert_eq!((s.echo_cancel(), s.echo_reduction()), (true, Some(23.5)));
+        s.set_echo_cancel(false);
+        assert_eq!(s.echo_reduction(), None);
         s.set_tx_mode(TxMode::Continuous);
         assert_eq!(s.tx_mode(), TxMode::Continuous);
         s.set_input_gain(100.0);

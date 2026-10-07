@@ -1,13 +1,14 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use ps_client::spacer::{parse_spacer, Spacer, SpacerAlign, SpacerLine};
 use ps_client::{
-    ClientHandle, ConnectionState, Event, Group, ERROR_NO_WHISPER_TARGETS, ServerView, TextTarget, CODEC_OPUS_MUSIC, CODEC_OPUS_VOICE,
+    ChannelNode, ClientHandle, ConnectionState, Event, Group, ERROR_NO_WHISPER_TARGETS, ServerView, TextTarget, CODEC_OPUS_MUSIC, CODEC_OPUS_VOICE,
 };
 
 use crate::platform;
+use crate::settings::MAX_REMEMBERED_FOLDS;
 
 pub const MAX_CHAT_LINES: usize = 400;
 const MAX_LINE_CHARS: usize = 2000;
@@ -52,6 +53,8 @@ pub struct RowData {
     pub tag: String,
     pub whispering: bool,
     pub commander: bool,
+    pub foldable: bool,
+    pub folded: bool,
 }
 
 fn fill_width(pattern: &str) -> String {
@@ -59,10 +62,69 @@ fn fill_width(pattern: &str) -> String {
     pattern.repeat(REPEAT_FILL_CHARS.div_ceil(length))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FoldMode {
+    #[default]
+    Open,
+    Empty,
+    All,
+}
+
+impl FoldMode {
+    pub fn from_index(index: i32) -> Self {
+        match index {
+            0 => FoldMode::Open,
+            2 => FoldMode::All,
+            _ => FoldMode::Empty,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Folds {
+    pub mode: FoldMode,
+    pub chosen: HashMap<u64, bool>,
+}
+
+fn branch_end(nodes: &[ChannelNode], index: usize) -> usize {
+    let depth = nodes[index].depth;
+    let mut end = index + 1;
+    while end < nodes.len() && nodes[end].depth > depth {
+        end += 1;
+    }
+    end
+}
+
+fn fold_state(view: &ServerView, index: usize, folds: &Folds) -> (bool, bool) {
+    let nodes = &view.channels;
+    let node = &nodes[index];
+    let below = &nodes[index + 1..branch_end(nodes, index)];
+    let spacer = parse_spacer(&node.channel.name, node.channel.parent).is_some();
+    let foldable = !spacer && (!below.is_empty() || !node.clients.is_empty());
+    let nobody = node.clients.is_empty() && below.iter().all(|n| n.clients.is_empty());
+    let mine = node.channel.id == view.own_channel || below.iter().any(|n| n.channel.id == view.own_channel);
+    let by_default = match folds.mode {
+        FoldMode::Open => false,
+        FoldMode::Empty => !below.is_empty() && nobody,
+        FoldMode::All => !mine,
+    };
+    (foldable, foldable && folds.chosen.get(&node.channel.id).copied().unwrap_or(by_default))
+}
+
+#[cfg(test)]
 pub fn build_rows(view: &ServerView, own_talking: bool) -> Vec<RowData> {
+    build_rows_folded(view, own_talking, &Folds::default())
+}
+
+pub fn build_rows_folded(view: &ServerView, own_talking: bool, folds: &Folds) -> Vec<RowData> {
+    let nodes = &view.channels;
     let mut rows = Vec::new();
-    for node in &view.channels {
+    let mut index = 0;
+    while index < nodes.len() {
+        let node = &nodes[index];
         let channel = &node.channel;
+        let end = branch_end(nodes, index);
+        let (foldable, folded) = fold_state(view, index, folds);
         let base = RowData { id: channel.id, depth: node.depth, ..RowData::default() };
         match parse_spacer(&channel.name, channel.parent) {
             Some(Spacer::Text { align, text }) => rows.push(RowData {
@@ -73,20 +135,31 @@ pub fn build_rows(view: &ServerView, own_talking: bool) -> Vec<RowData> {
             }),
             Some(Spacer::Line(line)) => rows.push(RowData { kind: RowKind::SpacerLine, line, ..base }),
             Some(Spacer::Gap) => rows.push(RowData { kind: RowKind::Gap, ..base }),
-            None => rows.push(RowData {
-                kind: RowKind::Channel,
-                text: channel.name.clone(),
-                icon: if channel.has_password {
-                    ChannelIcon::Lock
-                } else if channel.codec == CODEC_OPUS_MUSIC {
-                    ChannelIcon::Music
-                } else {
-                    ChannelIcon::Speaker
-                },
-                count: node.clients.len(),
-                current: channel.id == view.own_channel,
-                ..base
-            }),
+            None => {
+                let inside = || nodes[index..end].iter().flat_map(|n| n.clients.iter());
+                let holds_me = nodes[index + 1..end].iter().any(|n| n.channel.id == view.own_channel);
+                rows.push(RowData {
+                    kind: RowKind::Channel,
+                    text: channel.name.clone(),
+                    icon: if channel.has_password {
+                        ChannelIcon::Lock
+                    } else if channel.codec == CODEC_OPUS_MUSIC {
+                        ChannelIcon::Music
+                    } else {
+                        ChannelIcon::Speaker
+                    },
+                    count: if folded { inside().count() } else { node.clients.len() },
+                    current: channel.id == view.own_channel || (folded && holds_me),
+                    talking: folded && inside().any(|c| if c.id == view.own_id { own_talking } else { c.talking }),
+                    foldable,
+                    folded,
+                    ..base
+                })
+            }
+        }
+        if folded {
+            index = end;
+            continue;
         }
         for client in &node.clients {
             let me = client.id == view.own_id;
@@ -114,8 +187,77 @@ pub fn build_rows(view: &ServerView, own_talking: bool) -> Vec<RowData> {
                 ..RowData::default()
             });
         }
+        index += 1;
     }
     rows
+}
+
+pub fn toggle_fold(view: &ServerView, folds: &mut Folds, channel: u64) {
+    let Some(index) = view.channels.iter().position(|n| n.channel.id == channel) else {
+        return;
+    };
+    let (foldable, folded) = fold_state(view, index, folds);
+    if foldable {
+        folds.chosen.insert(channel, !folded);
+    }
+}
+
+pub fn reveal(view: &ServerView, folds: &mut Folds, channel: u64) -> bool {
+    let mut id = channel;
+    let mut changed = false;
+    for _ in 0..=view.channels.len() {
+        if folds.chosen.get(&id) == Some(&true) {
+            folds.chosen.remove(&id);
+            changed = true;
+        }
+        match view.channels.iter().find(|n| n.channel.id == id) {
+            Some(node) if node.channel.parent != 0 => id = node.channel.parent,
+            _ => break,
+        }
+    }
+    changed
+}
+
+pub fn remembered(folds: &Folds, view: Option<&ServerView>) -> BTreeMap<u64, bool> {
+    let exists = |id: u64| view.map_or(true, |v| v.channels.iter().any(|node| node.channel.id == id));
+    let mut kept: Vec<(u64, bool)> =
+        folds.chosen.iter().map(|(id, folded)| (*id, *folded)).filter(|(id, _)| exists(*id)).collect();
+    kept.sort_unstable();
+    kept.truncate(MAX_REMEMBERED_FOLDS);
+    kept.into_iter().collect()
+}
+
+fn hush_whispers(view: &mut ServerView) {
+    for client in view.channels.iter_mut().flat_map(|node| node.clients.iter_mut()) {
+        if client.whispering {
+            client.talking = false;
+            client.whispering = false;
+        }
+    }
+}
+
+pub fn channel_path(view: &ServerView, id: u64) -> Option<String> {
+    let mut names: Vec<String> = Vec::new();
+    let mut current = id;
+    for _ in 0..=view.channels.len() {
+        let node = view.channels.iter().find(|n| n.channel.id == current)?;
+        names.push(node.channel.name.replace('/', "\\/"));
+        if node.channel.parent == 0 {
+            names.reverse();
+            return Some(names.join("/"));
+        }
+        current = node.channel.parent;
+    }
+    None
+}
+
+pub fn find_start_channel(view: &ServerView, path: &str, id: u64) -> Option<u64> {
+    let by_path = if path.trim().is_empty() {
+        None
+    } else {
+        view.channels.iter().map(|n| n.channel.id).find(|id| channel_path(view, *id).as_deref() == Some(path))
+    };
+    by_path.or_else(|| view.channels.iter().map(|n| n.channel.id).find(|known| id != 0 && *known == id))
 }
 
 pub fn next_view(sessions: &[(u16, bool)], viewed: Option<u16>, closed: u16) -> Option<u16> {
@@ -335,6 +477,7 @@ pub struct ConnectRequest {
     pub password: String,
     pub identity_uid: String,
     pub channel: String,
+    pub channel_id: u64,
     pub save_bookmark: bool,
 }
 
@@ -353,6 +496,9 @@ pub struct Outcome {
     pub notice: Option<String>,
     pub whisper_unheard: bool,
     pub whisper_from: Option<u16>,
+    pub groups: bool,
+    pub folds: bool,
+    pub start_channel: Option<(u64, bool)>,
 }
 
 pub struct Session {
@@ -375,6 +521,11 @@ pub struct Session {
     pub whispered: HashMap<u16, Instant>,
     pub server_groups: Vec<Group>,
     pub channel_groups: Vec<Group>,
+    pub folds: Folds,
+    pub allow_whispers: bool,
+    pub reply_to: Option<(u16, String)>,
+    pub server_uid: String,
+    pub start_pending: bool,
 }
 
 impl Session {
@@ -400,6 +551,11 @@ impl Session {
             whispered: HashMap::new(),
             server_groups: Vec::new(),
             channel_groups: Vec::new(),
+            folds: Folds::default(),
+            allow_whispers: true,
+            reply_to: None,
+            server_uid: String::new(),
+            start_pending: false,
         }
     }
 
@@ -412,6 +568,16 @@ impl Session {
 
     pub fn is_connected(&self) -> bool {
         self.phase == Phase::Connected
+    }
+
+    pub fn set_allow_whispers(&mut self, allow: bool) {
+        self.allow_whispers = allow;
+        if !allow {
+            if let Some(view) = &mut self.view {
+                hush_whispers(view);
+            }
+            self.count_talkers();
+        }
     }
 
     pub fn drain(&mut self) -> Vec<Event> {
@@ -526,6 +692,8 @@ impl Session {
             Event::Connected { client_id, server } => {
                 self.phase = Phase::Connected;
                 self.own_id = client_id;
+                self.server_uid = server.uid.clone();
+                self.start_pending = !self.request.channel.trim().is_empty() || self.request.channel_id != 0;
                 self.waiting_level = None;
                 self.request.password.clear();
                 if self.request.name.trim().is_empty() && !server.name.trim().is_empty() {
@@ -539,7 +707,10 @@ impl Session {
                 out.connected = true;
                 out.header = true;
             }
-            Event::View(view) => {
+            Event::View(mut view) => {
+                if !self.allow_whispers {
+                    hush_whispers(&mut view);
+                }
                 if self.request.name.trim().is_empty() && !view.server.name.trim().is_empty() {
                     self.name = view.server.name.trim().to_string();
                 }
@@ -547,11 +718,29 @@ impl Session {
                 self.view = Some(view);
                 let after = self.view.as_ref().map(|v| (v.own_channel, self.own_codec()));
                 out.channel = before != after;
+                if let Some(view) = &self.view {
+                    if before.map(|(channel, _)| channel) != Some(view.own_channel) {
+                        out.folds = reveal(view, &mut self.folds, view.own_channel);
+                    }
+                }
+                if let (true, Some(view)) = (self.start_pending, &self.view) {
+                    if view.own_channel != 0 {
+                        self.start_pending = false;
+                        let wanted = find_start_channel(view, &self.request.channel, self.request.channel_id);
+                        out.start_channel = wanted.filter(|id| *id != view.own_channel).map(|id| {
+                            let locked = view.channels.iter().any(|n| n.channel.id == id && n.channel.has_password);
+                            (id, locked)
+                        });
+                    }
+                }
                 self.count_talkers();
                 out.tree = true;
                 out.header = true;
             }
             Event::Talking { client_id, talking, whisper } => {
+                let refused = whisper && !self.allow_whispers;
+                let talking = talking && !refused;
+                let whisper = whisper && !refused;
                 let mut name = String::new();
                 if let Some(view) = &mut self.view {
                     for node in &mut view.channels {
@@ -570,6 +759,8 @@ impl Session {
                 out.header = (before > 0) != (self.talkers > 0);
                 if talking && whisper {
                     out.whisper_from = Some(client_id);
+                    let uid = self.view.as_ref().and_then(|v| v.client(client_id)).map(|c| c.uid.clone());
+                    self.reply_to = uid.map(|uid| (client_id, uid));
                     let now = Instant::now();
                     let recent = self.whispered.get(&client_id).is_some_and(|at| now.duration_since(*at) < WHISPER_LINE_GAP);
                     self.whispered.insert(client_id, now);
@@ -635,6 +826,7 @@ impl Session {
             Event::Groups { server_groups, channel_groups } => {
                 self.server_groups = server_groups;
                 self.channel_groups = channel_groups;
+                out.groups = true;
             }
             Event::Stats(stats) => {
                 let text = format!("{:.0} ms", stats.ping_ms.max(0.0));
@@ -780,6 +972,276 @@ mod tests {
         let silent = build_rows(&sample_view(), false);
         assert!(!silent[3].talking);
         assert!(build_rows(&ServerView::default(), true).is_empty());
+    }
+
+    fn branch_view() -> ServerView {
+        let node = |id: u64, parent: u64, depth: u32, name: &str, clients: Vec<ClientInfo>| ChannelNode {
+            channel: channel(id, parent, name),
+            depth,
+            clients,
+        };
+        ServerView {
+            server: ServerInfo::default(),
+            own_id: 7,
+            own_channel: 30,
+            channels: vec![
+                node(10, 0, 0, "Empty branch", vec![]),
+                node(11, 10, 1, "Empty child", vec![]),
+                node(12, 11, 2, "Empty grandchild", vec![]),
+                node(20, 0, 0, "Busy branch", vec![]),
+                node(21, 20, 1, "Busy child", vec![person(8, 21, "Marlin")]),
+                node(30, 0, 0, "Alone", vec![person(7, 30, "Minnow")]),
+                node(40, 0, 0, "Bare", vec![]),
+                node(50, 0, 0, "[cspacer]Divider", vec![]),
+                node(51, 50, 1, "Under a divider", vec![]),
+            ],
+        }
+    }
+
+    fn names(rows: &[RowData]) -> Vec<&str> {
+        rows.iter().map(|row| row.text.as_str()).collect()
+    }
+
+    #[test]
+    fn channels_fold_and_unfold() {
+        let view = sample_view();
+        let open = build_rows_folded(&view, true, &Folds::default());
+        assert_eq!(open, build_rows(&view, true));
+        assert!(open[1].foldable && !open[1].folded);
+        assert!(!open[6].foldable);
+        assert!(open[7].foldable && open[8].foldable);
+        assert!(!open[0].foldable && !open[5].foldable);
+
+        let mut folds = Folds::default();
+        toggle_fold(&view, &mut folds, 1);
+        let rows = build_rows_folded(&view, true, &folds);
+        assert_eq!(rows.len(), open.len() - 3);
+        assert_eq!((rows[1].text.as_str(), rows[1].count), ("Lobby", 3));
+        assert!(rows[1].folded && rows[1].talking && rows[1].current);
+        assert_eq!(rows[2].kind, RowKind::SpacerLine);
+        let mut quiet = sample_view();
+        quiet.channels[1].clients[2].talking = false;
+        assert!(build_rows_folded(&quiet, true, &folds)[1].talking);
+        assert!(!build_rows_folded(&quiet, false, &folds)[1].talking);
+
+        toggle_fold(&view, &mut folds, 2);
+        let rows = build_rows_folded(&view, true, &folds);
+        let radio = rows.iter().find(|row| row.text == "Radio").unwrap();
+        assert!(radio.folded && radio.count == 2 && !radio.talking);
+        assert!(!rows.iter().any(|row| row.text == "Nested" || row.text == "Jukebox"));
+
+        toggle_fold(&view, &mut folds, 1);
+        toggle_fold(&view, &mut folds, 3);
+        toggle_fold(&view, &mut folds, 20);
+        toggle_fold(&view, &mut folds, 999);
+        assert_eq!(folds.chosen.get(&1), Some(&false));
+        assert!(!folds.chosen.contains_key(&3) && !folds.chosen.contains_key(&20) && !folds.chosen.contains_key(&999));
+        assert_eq!(build_rows_folded(&view, true, &folds)[2].text, "Coralline");
+    }
+
+    #[test]
+    fn empty_branches_start_folded_when_asked() {
+        let view = branch_view();
+        let all = build_rows_folded(&view, false, &Folds::default());
+        assert_eq!(all.len(), 11);
+
+        let mut folds = Folds { mode: FoldMode::Empty, ..Folds::default() };
+        let rows = build_rows_folded(&view, false, &folds);
+        assert_eq!(
+            names(&rows),
+            vec!["Empty branch", "Busy branch", "Busy child", "Marlin", "Alone", "Minnow", "Bare", "Divider", "Under a divider"]
+        );
+        assert!(rows[0].foldable && rows[0].folded && rows[0].count == 0 && !rows[0].current);
+        assert!(rows[1].foldable && !rows[1].folded);
+        assert!(rows[4].foldable && !rows[4].folded && rows[4].current);
+        assert!(!rows[6].foldable && !rows[7].foldable && !rows[8].foldable);
+
+        toggle_fold(&view, &mut folds, 10);
+        let rows = build_rows_folded(&view, false, &folds);
+        assert_eq!(names(&rows)[..3], ["Empty branch", "Empty child", "Busy branch"]);
+        assert!(rows[1].folded);
+
+        let mut busy = branch_view();
+        busy.channels[2].clients.push(person(9, 12, "Coralline"));
+        let rows = build_rows_folded(&busy, false, &Folds { mode: FoldMode::Empty, ..Folds::default() });
+        assert_eq!(names(&rows)[..4], ["Empty branch", "Empty child", "Empty grandchild", "Coralline"]);
+    }
+
+    #[test]
+    fn everything_can_start_folded_except_the_way_to_me() {
+        let mut view = branch_view();
+        let mut folds = Folds { mode: FoldMode::All, ..Folds::default() };
+        let rows = build_rows_folded(&view, false, &folds);
+        assert_eq!(
+            names(&rows),
+            vec!["Empty branch", "Busy branch", "Alone", "Minnow", "Bare", "Divider", "Under a divider"]
+        );
+        assert!(rows[0].folded && rows[1].folded && rows[1].count == 1 && !rows[2].folded && rows[2].current);
+
+        view.own_channel = 21;
+        let rows = build_rows_folded(&view, false, &folds);
+        assert_eq!(
+            names(&rows),
+            vec!["Empty branch", "Busy branch", "Busy child", "Marlin", "Alone", "Bare", "Divider", "Under a divider"]
+        );
+        assert!(!rows[1].folded && !rows[2].folded && rows[4].folded && rows[4].count == 1);
+
+        toggle_fold(&view, &mut folds, 10);
+        toggle_fold(&view, &mut folds, 20);
+        let rows = build_rows_folded(&view, false, &folds);
+        assert_eq!(names(&rows), vec!["Empty branch", "Empty child", "Busy branch", "Alone", "Bare", "Divider", "Under a divider"]);
+        assert!(rows[1].folded && rows[2].folded && rows[2].current);
+        assert!(reveal(&view, &mut folds, 21));
+        assert!(!reveal(&view, &mut folds, 21));
+        assert!(names(&build_rows_folded(&view, false, &folds)).contains(&"Marlin"));
+
+        let open = Folds { mode: FoldMode::Open, ..Folds::default() };
+        assert_eq!(build_rows_folded(&view, false, &open).len(), 11);
+        assert_eq!(
+            [0, 1, 2, 7, -1].map(FoldMode::from_index),
+            [FoldMode::Open, FoldMode::Empty, FoldMode::All, FoldMode::Empty, FoldMode::Empty]
+        );
+    }
+
+    #[test]
+    fn folding_choices_are_kept_for_channels_that_still_exist() {
+        let view = branch_view();
+        let mut folds = Folds::default();
+        folds.chosen.insert(20, true);
+        folds.chosen.insert(10, false);
+        folds.chosen.insert(999, true);
+        assert_eq!(remembered(&folds, Some(&view)), BTreeMap::from([(10, false), (20, true)]));
+        assert_eq!(remembered(&folds, None).len(), 3);
+        for id in 0..2000u64 {
+            folds.chosen.insert(5000 + id, true);
+        }
+        assert_eq!(remembered(&folds, None).len(), MAX_REMEMBERED_FOLDS);
+        assert!(remembered(&Folds::default(), Some(&view)).is_empty());
+    }
+
+    #[test]
+    fn joining_a_channel_opens_the_way_to_it() {
+        let mut view = branch_view();
+        let mut folds = Folds::default();
+        toggle_fold(&view, &mut folds, 20);
+        toggle_fold(&view, &mut folds, 30);
+        assert_eq!(names(&build_rows_folded(&view, false, &folds)), vec![
+            "Empty branch", "Empty child", "Empty grandchild", "Busy branch", "Alone", "Bare", "Divider", "Under a divider"
+        ]);
+        let folded = build_rows_folded(&view, true, &folds);
+        assert!(folded[4].folded && folded[4].current && folded[4].talking && folded[4].count == 1);
+
+        view.own_channel = 21;
+        let hidden = build_rows_folded(&view, false, &folds);
+        assert!(hidden[3].folded && hidden[3].current);
+        assert!(reveal(&view, &mut folds, 21));
+        assert!(!folds.chosen.contains_key(&20));
+        assert_eq!(folds.chosen.get(&30), Some(&true));
+        assert!(names(&build_rows_folded(&view, false, &folds)).contains(&"Marlin"));
+        assert!(!reveal(&view, &mut folds, 777));
+
+        let mut s = session();
+        s.apply(Event::Connected {
+            client_id: 7,
+            server: ServerInfo { uid: "serverA".into(), ..ServerInfo::default() },
+        });
+        assert_eq!(s.server_uid, "serverA");
+        s.folds = Folds::default();
+        s.folds.chosen.insert(20, true);
+        let mut first = branch_view();
+        first.own_channel = 30;
+        assert!(!s.apply(Event::View(first)).folds);
+        assert!(s.apply(Event::View(view.clone())).folds);
+        assert!(!s.folds.chosen.contains_key(&20));
+        assert!(!s.apply(Event::View(view)).folds);
+    }
+
+    #[test]
+    fn whispers_can_be_refused() {
+        let mut s = session();
+        s.allow_whispers = false;
+        s.apply(Event::Connected { client_id: 7, server: ServerInfo::default() });
+        let mut view = sample_view();
+        view.channels[1].clients[2].talking = false;
+        s.apply(Event::View(view));
+        let lines = s.chat.len();
+        let out = s.apply(Event::Talking { client_id: 8, talking: true, whisper: true });
+        assert_eq!(out.whisper_from, None);
+        assert_eq!(s.chat.len(), lines);
+        let rows = build_rows(s.view.as_ref().unwrap(), false);
+        assert!(rows.iter().any(|row| row.text == "Marlin" && !row.talking && !row.whispering));
+        assert_eq!(s.reply_to, None);
+        let mut whispered = sample_view();
+        whispered.channels[1].clients[2].whispering = true;
+        s.apply(Event::View(whispered));
+        assert_eq!(s.talkers, 0);
+        let rows = build_rows(s.view.as_ref().unwrap(), false);
+        assert!(rows.iter().any(|row| row.text == "Marlin" && !row.talking && !row.whispering && row.tag.is_empty()));
+        s.apply(Event::Talking { client_id: 8, talking: true, whisper: false });
+        assert!(build_rows(s.view.as_ref().unwrap(), false).iter().any(|row| row.text == "Marlin" && row.talking));
+
+        s.set_allow_whispers(true);
+        let mut named = sample_view();
+        named.channels[1].clients[2].uid = "uidMarlin".into();
+        s.apply(Event::View(named));
+        s.apply(Event::Talking { client_id: 8, talking: true, whisper: true });
+        assert_eq!(s.reply_to, Some((8, "uidMarlin".to_string())));
+        assert_eq!(s.talkers, 1);
+        s.set_allow_whispers(false);
+        assert_eq!(s.talkers, 0);
+        assert!(build_rows(s.view.as_ref().unwrap(), false).iter().all(|row| !row.whispering));
+
+        let out = s.apply(Event::Groups {
+            server_groups: vec![Group { id: 6, name: "Server Admin".into(), kind: 1, sort: 0 }],
+            channel_groups: vec![],
+        });
+        assert!(out.groups && s.server_groups.len() == 1);
+    }
+
+    #[test]
+    fn the_start_channel_is_found_by_path_then_by_number() {
+        let mut view = branch_view();
+        view.channels[2].channel.name = "Up/Down".into();
+        assert_eq!(channel_path(&view, 10).as_deref(), Some("Empty branch"));
+        assert_eq!(channel_path(&view, 12).as_deref(), Some("Empty branch/Empty child/Up\\/Down"));
+        assert_eq!(channel_path(&view, 999), None);
+        assert_eq!(find_start_channel(&view, "Busy branch/Busy child", 0), Some(21));
+        assert_eq!(find_start_channel(&view, "Empty branch/Empty child/Up\\/Down", 0), Some(12));
+        assert_eq!(find_start_channel(&view, "Busy child", 0), None);
+        assert_eq!(find_start_channel(&view, "Renamed since", 21), Some(21));
+        assert_eq!(find_start_channel(&view, "Busy branch", 21), Some(20));
+        assert_eq!(find_start_channel(&view, "", 0), None);
+        assert_eq!(find_start_channel(&view, "Gone", 999), None);
+
+        let request = ConnectRequest {
+            address: "reef.example.net".into(),
+            channel: "Busy branch/Busy child".into(),
+            channel_id: 21,
+            ..ConnectRequest::default()
+        };
+        let mut s = Session::new(1, request, false);
+        s.apply(Event::Connected { client_id: 7, server: ServerInfo::default() });
+        let mut early = branch_view();
+        early.own_channel = 0;
+        assert_eq!(s.apply(Event::View(early)).start_channel, None);
+        assert_eq!(s.apply(Event::View(branch_view())).start_channel, Some((21, false)));
+        assert_eq!(s.apply(Event::View(branch_view())).start_channel, None);
+
+        let mut locked = branch_view();
+        locked.channels[4].channel.has_password = true;
+        let mut again = Session::new(2, s.request.clone(), false);
+        again.apply(Event::Connected { client_id: 7, server: ServerInfo::default() });
+        assert_eq!(again.apply(Event::View(locked)).start_channel, Some((21, true)));
+
+        let mut there = branch_view();
+        there.own_channel = 21;
+        let mut arrived = Session::new(3, s.request.clone(), false);
+        arrived.apply(Event::Connected { client_id: 7, server: ServerInfo::default() });
+        assert_eq!(arrived.apply(Event::View(there)).start_channel, None);
+
+        let mut plain = session();
+        plain.apply(Event::Connected { client_id: 7, server: ServerInfo::default() });
+        assert_eq!(plain.apply(Event::View(branch_view())).start_channel, None);
     }
 
     #[test]

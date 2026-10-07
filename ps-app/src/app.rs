@@ -3,23 +3,32 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use ps_client::spacer::{SpacerAlign, SpacerLine};
-use ps_client::{ClientHandle, ConnectOptions, TextTarget, VoiceSink, DEFAULT_PORT};
+use ps_client::spacer::{parse_spacer, SpacerAlign, SpacerLine};
+use ps_client::{
+    ClientHandle, ConnectOptions, TextTarget, VoiceSink, WhisperTarget, CODEC_OPUS_VOICE, DEFAULT_PORT,
+};
 use ps_identity::Identity;
 use ps_voice::{AudioEngine, DeviceInfo, FrameSink, TxMode};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel, Weak};
 
 use crate::bookmarks::{initials, Bookmark, Bookmarks};
+use crate::hotkeys::chord_name;
+use crate::keywatch::KeyWatcher;
 use crate::platform;
 use crate::session::{
-    build_rows, connect_failure, mic_move, next_view, ChannelIcon, ChatKind, ChatLine, ConnectRequest, DialogField,
-    MicMove, Outcome, RowData, RowKind, Session,
+    self, build_rows_folded, connect_failure, mic_move, next_view, ChannelIcon, ChatKind, ChatLine, ConnectRequest,
+    DialogField, FoldMode, MicMove, Outcome, RowData, RowKind, Session,
 };
 use crate::settings::{self, Settings};
-use crate::{BookmarkRow, ChatRow, IdentityRow, PhishSpeakApp, ServerTile, SettingsWindow, TreeRow};
+use crate::whisper::{route, Route, WhisperKeys};
+use crate::{
+    BookmarkRow, ChatRow, IdentityRow, PhishSpeakApp, PickRow, ServerTile, SettingsWindow, TreeRow, WhisperKeyRow,
+};
+
+mod shortcuts;
 
 const SETTINGS_SAVE_DELAY: Duration = Duration::from_secs(2);
 const METER_FLOOR_DB: f32 = -70.0;
@@ -38,14 +47,27 @@ fn string_model(items: Vec<String>) -> ModelRc<SharedString> {
 }
 
 fn sync_rows<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T>) {
-    if model.row_count() == rows.len() {
-        for (index, row) in rows.into_iter().enumerate() {
-            if model.row_data(index).as_ref() != Some(&row) {
-                model.set_row_data(index, row);
-            }
+    let (old, new) = (model.row_count(), rows.len());
+    let same = |at: usize, row: &T| model.row_data(at).as_ref() == Some(row);
+    let mut head = 0;
+    while head < old.min(new) && same(head, &rows[head]) {
+        head += 1;
+    }
+    let mut tail = 0;
+    while tail < old.min(new) - head && same(old - 1 - tail, &rows[new - 1 - tail]) {
+        tail += 1;
+    }
+    let (gone, added) = (old - head - tail, new - head - tail);
+    let kept = gone.min(added);
+    for (offset, row) in rows.into_iter().skip(head).take(added).enumerate() {
+        if offset >= kept {
+            model.insert(head + offset, row);
+        } else if !same(head + offset, &row) {
+            model.set_row_data(head + offset, row);
         }
-    } else {
-        model.set_vec(rows);
+    }
+    for _ in kept..gone {
+        model.remove(head + added);
     }
 }
 
@@ -85,6 +107,10 @@ fn tree_row(row: &RowData) -> TreeRow {
         sound_muted: row.sound_muted,
         away: row.away,
         tag: row.tag.as_str().into(),
+        whispering: row.whispering,
+        commander: row.commander,
+        foldable: row.foldable,
+        folded: row.folded,
     }
 }
 
@@ -137,11 +163,12 @@ struct Dirty {
     chat: bool,
     bookmarks: bool,
     identities: bool,
+    shortcuts: bool,
 }
 
 impl Dirty {
     fn everything() -> Self {
-        Self { sessions: true, tree: true, chat: true, bookmarks: true, identities: true }
+        Self { sessions: true, tree: true, chat: true, bookmarks: true, identities: true, shortcuts: true }
     }
 }
 
@@ -149,7 +176,29 @@ pub struct App {
     main: Weak<PhishSpeakApp>,
     settings_window: Weak<SettingsWindow>,
     engine: AudioEngine,
+    watcher: KeyWatcher,
     pub settings: Settings,
+    whisper_keys: WhisperKeys,
+    lanes: Arc<Mutex<Vec<Option<WhisperTarget>>>>,
+    lane_names: Vec<String>,
+    lane_notes: Vec<String>,
+    lanes_stale: bool,
+    reply_live: Option<(u16, u16, String)>,
+    unheard: Option<(u8, Instant)>,
+    whisper_air: Option<u8>,
+    last_whisper_lane: u8,
+    allow_whispers: Arc<AtomicBool>,
+    capture: Option<shortcuts::CaptureTarget>,
+    editor: Option<shortcuts::Editor>,
+    shortcut_note: (i32, String),
+    talk_rows: Rc<VecModel<SharedString>>,
+    whisper_rows: Rc<VecModel<WhisperKeyRow>>,
+    pick_rows: Rc<VecModel<PickRow>>,
+    group_rows: Rc<VecModel<SharedString>>,
+    tree_shown: Option<u16>,
+    start_rows: Rc<VecModel<SharedString>>,
+    bm_options: Vec<(String, String, u64)>,
+    bm_choice: (String, u64),
     save_at: Option<Instant>,
     bookmarks: Bookmarks,
     identities: Vec<LoadedIdentity>,
@@ -172,6 +221,8 @@ pub struct App {
     silence_warned: bool,
     warned_codecs: Vec<u8>,
     shown_status: String,
+    shown_echo: String,
+    shown_wide: bool,
     shown_devices: (String, String),
     trace: bool,
 }
@@ -197,11 +248,35 @@ impl App {
         if !settings.output_device.is_empty() {
             engine.set_output_device(Some(settings.output_device.clone()));
         }
+        let watcher = KeyWatcher::start(engine.shared().clone());
+        let allow_whispers = Arc::new(AtomicBool::new(settings.allow_whispers));
         Self {
             main: main.as_weak(),
             settings_window: settings_window.as_weak(),
             engine,
+            watcher,
             settings,
+            whisper_keys: WhisperKeys::load(),
+            lanes: Arc::new(Mutex::new(Vec::new())),
+            lane_names: Vec::new(),
+            lane_notes: Vec::new(),
+            lanes_stale: false,
+            reply_live: None,
+            unheard: None,
+            whisper_air: None,
+            last_whisper_lane: 0,
+            allow_whispers,
+            capture: None,
+            editor: None,
+            shortcut_note: (0, String::new()),
+            talk_rows: Rc::new(VecModel::default()),
+            whisper_rows: Rc::new(VecModel::default()),
+            pick_rows: Rc::new(VecModel::default()),
+            group_rows: Rc::new(VecModel::default()),
+            tree_shown: None,
+            start_rows: Rc::new(VecModel::default()),
+            bm_options: Vec::new(),
+            bm_choice: (String::new(), 0),
             save_at: None,
             bookmarks: Bookmarks::load(),
             identities: Vec::new(),
@@ -224,6 +299,8 @@ impl App {
             silence_warned: false,
             warned_codecs: Vec::new(),
             shown_status: String::new(),
+            shown_echo: String::new(),
+            shown_wide: false,
             shown_devices: (String::new(), String::new()),
             trace: std::env::var_os("PHISHSPEAK_TRACE").is_some(),
         }
@@ -232,13 +309,17 @@ impl App {
     pub fn start(&mut self, w: &Windows, requests: &[StartRequest]) {
         w.main.set_tree(ModelRc::from(self.tree.clone()));
         w.main.set_chat(ModelRc::from(self.chat.clone()));
-        w.settings.set_ptt_keys(string_model(platform::PTT_KEYS.iter().map(|k| k.0.to_string()).collect()));
+        w.settings.set_talk_keys(ModelRc::from(self.talk_rows.clone()));
+        w.settings.set_whisper_keys(ModelRc::from(self.whisper_rows.clone()));
+        w.settings.set_editor_rows(ModelRc::from(self.pick_rows.clone()));
+        w.settings.set_editor_groups(ModelRc::from(self.group_rows.clone()));
+        w.settings.set_bm_channels(ModelRc::from(self.start_rows.clone()));
         w.settings.set_version(env!("CARGO_PKG_VERSION").into());
         w.settings.set_tx_mode(self.settings.tx_mode);
         w.settings.set_vad_threshold(self.settings.vad_threshold);
         w.settings.set_mic_gain(self.settings.mic_gain);
         w.settings.set_output_volume(self.settings.output_volume);
-        w.settings.set_ptt_key_index(self.settings.ptt_key.clamp(0, platform::PTT_KEYS.len() as i32 - 1));
+        w.settings.set_echo_cancel(self.settings.echo_cancel);
         let problems = self.load_identities();
         if self.identities.is_empty() {
             if let Err(problem) = self.create_identity() {
@@ -249,6 +330,8 @@ impl App {
         }
         self.refresh_devices(w);
         self.apply_audio(w);
+        self.push_bindings();
+        self.rebuild_lanes(true);
         self.save_at = None;
         self.dirty = Dirty::everything();
         for request in requests {
@@ -453,24 +536,26 @@ impl App {
         let threshold = w.settings.get_vad_threshold().clamp(METER_FLOOR_DB, 0.0);
         let gain = w.settings.get_mic_gain().clamp(0.0, 300.0);
         let volume = w.settings.get_output_volume().clamp(0.0, 200.0);
-        let key = w.settings.get_ptt_key_index().clamp(0, platform::PTT_KEYS.len() as i32 - 1);
         let shared = self.engine.shared();
         shared.set_tx_mode(TxMode::from_index(tx_mode as u8));
         shared.set_vad_threshold(threshold);
         shared.set_input_gain(gain / 100.0);
         shared.set_output_volume(volume / 100.0);
+        let echo = w.settings.get_echo_cancel();
+        shared.set_echo_cancel(echo);
         self.engine.set_loopback(w.settings.get_mic_test());
         w.main.set_threshold_position(if tx_mode == 0 { level_position(threshold) } else { -1.0 });
         self.settings.tx_mode = tx_mode;
         self.settings.vad_threshold = threshold;
         self.settings.mic_gain = gain;
         self.settings.output_volume = volume;
-        self.settings.ptt_key = key;
+        self.settings.echo_cancel = echo;
         self.mark_settings_dirty();
     }
 
     pub fn open_settings(&mut self, w: &Windows, tab: i32) {
-        w.settings.set_tab(tab.clamp(0, 5));
+        w.settings.set_tab(tab.clamp(0, 6));
+        self.dirty.shortcuts = true;
         self.refresh_devices(w);
         if w.settings.get_bm_index() < 0 && w.settings.get_bm_address().is_empty() {
             self.bookmark_new(w);
@@ -485,8 +570,13 @@ impl App {
         self.engine.set_loopback(false);
     }
 
-    pub fn close_settings(&mut self, w: &Windows) {
+    pub fn settings_hidden(&mut self, w: &Windows) {
         self.stop_mic_test(w);
+        self.close_editor();
+    }
+
+    pub fn close_settings(&mut self, w: &Windows) {
+        self.settings_hidden(w);
         let _ = w.settings.hide();
     }
 
@@ -516,6 +606,101 @@ impl App {
         self.dirty.bookmarks = true;
     }
 
+    fn enter_start_channel(&mut self, w: &Windows, id: u16, channel: u64, locked: bool) {
+        let Some(session) = self.session(id) else {
+            return;
+        };
+        let Some(client) = &session.client else {
+            return;
+        };
+        if !locked {
+            client.join_channel(channel, "");
+        } else if self.viewed == Some(id) && !w.main.get_prompt_open() {
+            w.main.set_prompt_name(session.channel_name(channel).into());
+            w.main.set_prompt_password("".into());
+            w.main.set_prompt_open(true);
+            self.prompt = Some((id, channel));
+        }
+    }
+
+    fn start_options(&self, address: &str) -> (Vec<(String, String, u64)>, bool) {
+        let mut options = vec![("The channel the server puts me in".to_string(), String::new(), 0u64)];
+        let live = self
+            .sessions
+            .iter()
+            .filter(|s| s.is_connected() && same_address(&s.request.address, address))
+            .find_map(|s| s.view.as_ref());
+        if let Some(view) = live {
+            for node in &view.channels {
+                if parse_spacer(&node.channel.name, node.channel.parent).is_some() {
+                    continue;
+                }
+                if let Some(path) = session::channel_path(view, node.channel.id) {
+                    let indent = "    ".repeat(node.depth.min(8) as usize);
+                    options.push((format!("{indent}{}", node.channel.name), path, node.channel.id));
+                }
+            }
+        }
+        (options, live.is_some())
+    }
+
+    fn publish_start_channels(&mut self, w: &Windows) {
+        let address = w.settings.get_bm_address().trim().to_string();
+        let (mut options, live) = self.start_options(&address);
+        let (path, id) = self.bm_choice.clone();
+        let mut selected = 0;
+        if !path.is_empty() || id != 0 {
+            let by_path = options.iter().position(|o| !path.is_empty() && o.1 == path);
+            let found = by_path.or_else(|| options.iter().position(|o| id != 0 && o.2 == id));
+            selected = match found {
+                Some(at) => at,
+                None => {
+                    let shown = if path.is_empty() { format!("Channel {id}") } else { path.replace("\\/", "/") };
+                    let label = if live { format!("{shown} (not on the server now)") } else { shown };
+                    options.insert(1, (label, path, id));
+                    1
+                }
+            };
+        }
+        let labels: Vec<SharedString> = options.iter().map(|o| o.0.as_str().into()).collect();
+        sync_rows(&self.start_rows, labels);
+        self.bm_options = options;
+        w.settings.set_bm_channel(selected as i32);
+        w.settings.set_bm_channel_hint(
+            if live || address.is_empty() { "" } else { "Connect to this server to pick from its channels." }.into(),
+        );
+    }
+
+    pub fn bookmark_channel_selected(&mut self, w: &Windows) {
+        let index = w.settings.get_bm_channel().max(0) as usize;
+        if let Some(option) = self.bm_options.get(index) {
+            self.bm_choice = (option.1.clone(), option.2);
+        }
+    }
+
+    fn start_here(&self) -> Option<(usize, String, u64, String, bool)> {
+        let session = self.viewed_session().filter(|s| s.is_connected())?;
+        let view = session.view.as_ref()?;
+        let index = self.bookmarks.find_address(&session.request.address)?;
+        let path = session::channel_path(view, view.own_channel)?;
+        let bookmark = &self.bookmarks.items[index];
+        let chosen = session::find_start_channel(view, &bookmark.channel, bookmark.channel_id);
+        Some((index, path, view.own_channel, session.own_channel_name(), chosen == Some(view.own_channel)))
+    }
+
+    pub fn toggle_start_here(&mut self, w: &Windows) {
+        let Some((index, path, channel, _, already)) = self.start_here() else {
+            return;
+        };
+        let bookmark = &mut self.bookmarks.items[index];
+        (bookmark.channel, bookmark.channel_id) = if already { (String::new(), 0) } else { (path, channel) };
+        self.save_bookmarks(w);
+        self.dirty.sessions = true;
+        if w.settings.get_bm_index() == index as i32 {
+            self.bookmark_picked(w, index as i32);
+        }
+    }
+
     pub fn bookmark_picked(&mut self, w: &Windows, index: i32) {
         let Some(bookmark) = self.bookmarks.items.get(index.max(0) as usize) else {
             return;
@@ -528,6 +713,8 @@ impl App {
             self.identity_index(&bookmark.identity_uid).map(|i| i as i32).unwrap_or(self.default_identity()),
         );
         w.settings.set_bm_note("".into());
+        self.bm_choice = (bookmark.channel.clone(), bookmark.channel_id);
+        self.publish_start_channels(w);
     }
 
     pub fn bookmark_new(&mut self, w: &Windows) {
@@ -537,6 +724,8 @@ impl App {
         w.settings.set_bm_nickname(self.default_nickname().into());
         w.settings.set_bm_identity(self.default_identity());
         w.settings.set_bm_note("".into());
+        self.bm_choice = (String::new(), 0);
+        self.publish_start_channels(w);
     }
 
     pub fn bookmark_saved(&mut self, w: &Windows) {
@@ -556,6 +745,8 @@ impl App {
             address,
             nickname: w.settings.get_bm_nickname().trim().to_string(),
             identity_uid,
+            channel: self.bm_choice.0.clone(),
+            channel_id: self.bm_choice.1,
         };
         let index = w.settings.get_bm_index();
         let saved_at = if index >= 0 && (index as usize) < self.bookmarks.items.len() {
@@ -673,6 +864,8 @@ impl App {
             address: bookmark.address.clone(),
             nickname: if bookmark.nickname.trim().is_empty() { self.default_nickname() } else { bookmark.nickname.clone() },
             identity_uid,
+            channel: bookmark.channel.clone(),
+            channel_id: bookmark.channel_id,
             ..ConnectRequest::default()
         }
     }
@@ -703,7 +896,10 @@ impl App {
         if !start.nickname.trim().is_empty() {
             request.nickname = start.nickname.trim().to_string();
         }
-        request.channel = start.channel.trim().to_string();
+        if !start.channel.trim().is_empty() {
+            request.channel = start.channel.trim().to_string();
+            request.channel_id = 0;
+        }
         self.begin(w, request);
     }
 
@@ -725,6 +921,8 @@ impl App {
             }
         };
         let mut session = Session::new(id, request.clone(), self.trace);
+        session.folds.mode = FoldMode::from_index(self.settings.fold_mode);
+        session.allow_whispers = self.settings.allow_whispers;
         session.push_line(ChatKind::System, "", &format!("Connecting to {}", request.address));
         self.sessions.push(session);
         match self.launch(id) {
@@ -759,7 +957,11 @@ impl App {
         options.log_commands = self.trace;
         let (events_tx, events_rx) = mpsc::channel();
         let shared = self.engine.shared().clone();
+        let allow_whispers = self.allow_whispers.clone();
         let sink: VoiceSink = Box::new(move |packet| {
+            if packet.whisper && !allow_whispers.load(Ordering::Relaxed) {
+                return;
+            }
             if let Ok(mut playback) = shared.playback.lock() {
                 playback.push(id, packet.client_id, packet.voice_id, packet.codec, packet.data);
             }
@@ -777,6 +979,7 @@ impl App {
             self.viewed = Some(id);
             self.chat_shown = None;
             self.own_talking = false;
+            self.unheard = None;
             self.prompt = None;
             w.main.set_prompt_open(false);
             w.main.set_chat_input("".into());
@@ -810,20 +1013,43 @@ impl App {
 
     fn route_mic(&mut self) {
         let desired = self.viewed.filter(|id| self.session(*id).is_some_and(|s| s.is_connected()));
-        if let MicMove::Switch { end_talk_on, send_to } =
-            mic_move(self.mic_target, desired, self.engine.is_transmitting())
-        {
-            let sink = send_to.and_then(|id| self.session(id)).and_then(|s| s.client.clone()).map(|client| {
-                let sink: FrameSink = Box::new(move |codec, data| client.send_voice(codec, data));
+        let shared = self.engine.shared().clone();
+        let paused = if desired == self.mic_target { None } else { shared.sink.lock().ok() };
+        if let Some(mut slot) = paused {
+            *slot = None;
+            let on_air = shared.on_air_lane();
+            if let MicMove::Switch { end_talk_on, send_to } = mic_move(self.mic_target, desired, on_air.is_some()) {
+                if let Some(left) = end_talk_on.and_then(|id| self.session(id)) {
+                    if let Some(client) = &left.client {
+                        match on_air {
+                            Some(lane) if lane != 0 => {
+                                if let Ok(table) = self.lanes.lock() {
+                                    if let Route::Whisper(target) = route(lane, &table) {
+                                        client.send_whisper(target, CODEC_OPUS_VOICE, &[]);
+                                    }
+                                }
+                            }
+                            _ => client.send_voice(left.own_codec().0, &[]),
+                        }
+                    }
+                }
+                self.mic_target = send_to;
+            }
+            self.rebuild_lanes(true);
+            let lanes = &self.lanes;
+            *slot = self.mic_target.and_then(|id| self.session(id)).and_then(|s| s.client.clone()).map(|client| {
+                let lanes = lanes.clone();
+                let sink: FrameSink = Box::new(move |lane, codec, data| {
+                    if lane == 0 {
+                        client.send_voice(codec, data);
+                    } else if let Ok(table) = lanes.lock() {
+                        if let Route::Whisper(target) = route(lane, &table) {
+                            client.send_whisper(target, codec, data);
+                        }
+                    }
+                });
                 sink
             });
-            self.engine.set_frame_sink(sink);
-            if let Some(left) = end_talk_on.and_then(|id| self.session(id)) {
-                if let Some(client) = &left.client {
-                    client.send_voice(left.own_codec().0, &[]);
-                }
-            }
-            self.mic_target = send_to;
         }
         if let Some(target) = self.mic_target.and_then(|id| self.session(id)) {
             let (codec, quality) = target.own_codec();
@@ -833,7 +1059,6 @@ impl App {
 
     fn apply_mute(&mut self, w: &Windows) {
         let (mic, sound) = (self.mic_muted, self.sound_muted);
-        let stop_talk = (mic || sound) && self.engine.is_transmitting();
         let target = self
             .mic_target
             .and_then(|id| self.session(id))
@@ -841,11 +1066,19 @@ impl App {
         let clients: Vec<ClientHandle> =
             self.sessions.iter().filter(|s| s.is_connected()).filter_map(|s| s.client.clone()).collect();
         let engine = &self.engine;
+        let lanes = &self.lanes;
         engine.pause_transmit(|| {
+            let on_air = engine.shared().on_air_lane();
             engine.set_mic_muted(mic);
             engine.set_speaker_muted(sound);
-            if let (true, Some((client, codec))) = (stop_talk, &target) {
-                client.send_voice(*codec, &[]);
+            if let (true, Some(lane), Some((client, codec))) = (mic || sound, on_air, &target) {
+                if lane == 0 {
+                    client.send_voice(*codec, &[]);
+                } else if let Ok(table) = lanes.lock() {
+                    if let Route::Whisper(aim) = route(lane, &table) {
+                        client.send_whisper(aim, CODEC_OPUS_VOICE, &[]);
+                    }
+                }
             }
             for client in &clients {
                 client.set_mute_state(mic, sound);
@@ -863,6 +1096,66 @@ impl App {
     pub fn toggle_sound(&mut self, w: &Windows) {
         self.sound_muted = !self.sound_muted;
         self.apply_mute(w);
+    }
+
+    fn remember_folds(&mut self, id: u16) {
+        let Some(session) = self.session(id).filter(|s| !s.server_uid.is_empty()) else {
+            return;
+        };
+        let uid = session.server_uid.clone();
+        let chosen = session::remembered(&session.folds, session.view.as_ref());
+        if chosen.is_empty() {
+            self.settings.folds.remove(&uid);
+        } else {
+            let full = self.settings.folds.len() >= settings::MAX_REMEMBERED_SERVERS;
+            if full && !self.settings.folds.contains_key(&uid) {
+                let in_use = |known: &String| self.sessions.iter().any(|s| s.server_uid == *known);
+                let spare = self.settings.folds.keys().find(|known| !in_use(known)).cloned();
+                if let Some(spare) = spare {
+                    self.settings.folds.remove(&spare);
+                }
+            }
+            self.settings.folds.insert(uid, chosen);
+        }
+        self.mark_settings_dirty();
+    }
+
+    pub fn toggle_fold(&mut self, _w: &Windows, id: i32) {
+        let Some(viewed) = self.viewed else {
+            return;
+        };
+        let Some(session) = self.session_mut(viewed) else {
+            return;
+        };
+        if let (Some(view), Ok(channel)) = (&session.view, u64::try_from(id)) {
+            session::toggle_fold(view, &mut session.folds, channel);
+            self.dirty.tree = true;
+            self.remember_folds(viewed);
+        }
+    }
+
+    pub fn toggle_commander(&mut self, _w: &Windows) {
+        let Some(session) = self.viewed_session().filter(|s| s.is_connected()) else {
+            return;
+        };
+        let own = session.view.as_ref().and_then(|v| v.client(v.own_id));
+        if let (Some(own), Some(client)) = (own, &session.client) {
+            client.set_channel_commander(!own.is_channel_commander);
+        }
+    }
+
+    pub fn view_changed(&mut self, w: &Windows) {
+        let mode = w.settings.get_fold_mode().clamp(0, 2);
+        if mode != self.settings.fold_mode {
+            self.settings.fold_mode = mode;
+            self.settings.folds.clear();
+            for session in &mut self.sessions {
+                session.folds.mode = FoldMode::from_index(mode);
+                session.folds.chosen.clear();
+            }
+            self.mark_settings_dirty();
+            self.dirty.tree = true;
+        }
     }
 
     pub fn row_activated(&mut self, w: &Windows, row: TreeRow) {
@@ -1048,6 +1341,26 @@ impl App {
         if outcome.channel && self.mic_target == Some(id) {
             self.route_mic();
         }
+        if self.mic_target == Some(id) {
+            if outcome.tree || outcome.whisper_from.is_some() {
+                self.rebuild_lanes(false);
+            }
+            if outcome.whisper_unheard {
+                self.note_unheard();
+            }
+        }
+        if viewed && (outcome.tree || outcome.groups) && self.editor.is_some() {
+            self.dirty.shortcuts = true;
+        }
+        if outcome.folds {
+            self.remember_folds(id);
+        }
+        if let Some((channel, locked)) = outcome.start_channel {
+            self.enter_start_channel(w, id, channel, locked);
+        }
+        if outcome.tree && w.settings.window().is_visible() && w.settings.get_tab() == 3 {
+            self.dirty.bookmarks = true;
+        }
         if let Some(text) = outcome.notice {
             w.main.set_notice(text.into());
         }
@@ -1065,9 +1378,13 @@ impl App {
     }
 
     fn on_connected(&mut self, w: &Windows, id: u16) {
+        let kept = self.session(id).and_then(|s| self.settings.folds.get(&s.server_uid)).cloned();
         let Some(session) = self.session_mut(id) else {
             return;
         };
+        if let Some(kept) = kept {
+            session.folds.chosen = kept.into_iter().collect();
+        }
         let save = std::mem::take(&mut session.request.save_bookmark);
         let request = session.request.clone();
         let name = session.name.clone();
@@ -1076,17 +1393,35 @@ impl App {
             client.set_mute_state(self.mic_muted, self.sound_muted);
         }
         if save {
-            let kept = self.bookmarks.find_address(&request.address).map(|i| self.bookmarks.items[i].name.clone());
+            let kept = self.bookmarks.find_address(&request.address).map(|i| self.bookmarks.items[i].clone());
+            let (channel, channel_id) = kept.as_ref().map(|b| (b.channel.clone(), b.channel_id)).unwrap_or_default();
             self.bookmarks.upsert(Bookmark {
-                name: kept.unwrap_or(name),
+                name: kept.map(|b| b.name).unwrap_or(name),
                 address: request.address.clone(),
                 nickname: request.nickname.clone(),
                 identity_uid: request.identity_uid.clone(),
+                channel,
+                channel_id,
             });
             self.save_bookmarks(w);
         }
         self.route_mic();
         self.dirty = Dirty::everything();
+    }
+
+    fn talk_key_wording(&self) -> String {
+        let names: Vec<String> =
+            self.settings.talk_keys.iter().map(|chord| chord_name(chord, &platform::key_char)).collect();
+        match names.as_slice() {
+            [] => "Choose a talk key in settings".to_string(),
+            [one] => format!("Sends while I hold {one}"),
+            [one, two] => format!("Sends while I hold {one} or {two}"),
+            more => format!("Sends while I hold one of {} keys", more.len()),
+        }
+    }
+
+    fn status_allows_whisper(&self) -> bool {
+        self.viewed_session().is_some_and(|s| s.is_connected()) && !self.sound_muted && !self.mic_muted
     }
 
     fn status_text(&self) -> String {
@@ -1106,10 +1441,7 @@ impl App {
             return "Talking".to_string();
         }
         match self.settings.tx_mode {
-            1 => match platform::PTT_KEYS.get(self.settings.ptt_key.max(0) as usize) {
-                Some((name, code)) if *code != 0 => format!("Sends while I hold {name}"),
-                _ => "Choose a talk key in settings".to_string(),
-            },
+            1 => self.talk_key_wording(),
             2 => "Always sends".to_string(),
             _ => "Sends when I speak".to_string(),
         }
@@ -1129,14 +1461,13 @@ impl App {
             }
         }
         self.poll_level_jobs(w);
-
-        let key = platform::PTT_KEYS.get(self.settings.ptt_key.max(0) as usize).map(|k| k.1).unwrap_or(0);
-        self.engine.set_ptt(platform::key_down(key));
+        self.poll_capture(w);
+        self.watch_whispers();
 
         let level = self.engine.shared().input_level();
         let position = level_position(level);
         let transmitting = self.engine.is_transmitting();
-        let on_air = transmitting && self.mic_target.is_some();
+        let on_air = transmitting && self.mic_target.is_some() && !self.whisper_goes_nowhere();
         if on_air != self.own_talking {
             self.own_talking = on_air;
             self.dirty.tree = true;
@@ -1148,10 +1479,31 @@ impl App {
             transmitting || (self.settings.tx_mode == 0 && level >= self.settings.vad_threshold),
         );
 
-        let status = self.status_text();
-        if status != self.shown_status {
+        let whisper = self.whisper_status().filter(|_| self.status_allows_whisper());
+        let wide = whisper.is_some();
+        let status = whisper.unwrap_or_else(|| self.status_text());
+        if status != self.shown_status || wide != self.shown_wide {
             w.main.set_status_text(status.as_str().into());
+            w.main.set_status_wide(wide);
             self.shown_status = status;
+            self.shown_wide = wide;
+        }
+
+        let echo = if !self.settings.echo_cancel {
+            "Turn this on when you listen through speakers, so that others do not hear themselves. A headset does not need it. It delays your voice by about 11 ms."
+                .to_string()
+        } else {
+            match self.engine.shared().echo_reduction() {
+                Some(db) if db >= 3.0 => {
+                    format!("On. Taking about {:.0} dB of the speakers' sound out of your microphone.", db.min(60.0))
+                }
+                Some(_) => "On. Listening to what the speakers play.".to_string(),
+                None => "On. Nothing is playing right now.".to_string(),
+            }
+        };
+        if echo != self.shown_echo {
+            w.settings.set_echo_status(echo.as_str().into());
+            self.shown_echo = echo;
         }
 
         let devices = self.engine.status();
@@ -1269,6 +1621,18 @@ impl App {
         let others: Vec<ServerTile> = tiles.iter().filter(|t| !t.viewed).take(HEADER_TILES).cloned().collect();
         w.main.set_sessions(ModelRc::new(VecModel::from(tiles)));
         w.main.set_others(ModelRc::new(VecModel::from(others)));
+        let own = self
+            .viewed_session()
+            .filter(|s| s.is_connected())
+            .and_then(|s| s.view.as_ref())
+            .and_then(|v| v.client(v.own_id));
+        w.main.set_viewed_connected(own.is_some());
+        w.main.set_start_here(match self.start_here() {
+            Some((_, _, _, name, true)) => format!("Stop starting in {name}").into(),
+            Some((_, _, _, name, false)) => format!("Start in {name} next time").into(),
+            None => SharedString::new(),
+        });
+        w.main.set_commander(own.is_some_and(|c| c.is_channel_commander));
         let nickname = match self.viewed_session() {
             Some(session) => {
                 w.main.set_viewing(true);
@@ -1299,15 +1663,22 @@ impl App {
         let rows = self.bookmark_rows(false);
         w.main.set_bookmarks(ModelRc::new(VecModel::from(rows.clone())));
         w.settings.set_bookmarks(ModelRc::new(VecModel::from(rows)));
+        self.publish_start_channels(w);
         w.main.set_menu_bookmarks(ModelRc::new(VecModel::from(self.bookmark_rows(true))));
     }
 
     fn publish_tree(&mut self) {
-        let rows: Vec<TreeRow> = match self.viewed_session().and_then(|s| s.view.as_ref()) {
-            Some(view) => build_rows(view, self.own_talking).iter().map(tree_row).collect(),
+        let shown = self.viewed_session().and_then(|s| s.view.as_ref().map(|view| (view, &s.folds)));
+        let rows: Vec<TreeRow> = match shown {
+            Some((view, folds)) => build_rows_folded(view, self.own_talking, folds).iter().map(tree_row).collect(),
             None => Vec::new(),
         };
-        sync_rows(&self.tree, rows);
+        if self.tree_shown == self.viewed {
+            sync_rows(&self.tree, rows);
+        } else {
+            self.tree.set_vec(rows);
+            self.tree_shown = self.viewed;
+        }
     }
 
     fn publish_chat(&mut self, w: &Windows) {
@@ -1362,6 +1733,9 @@ impl App {
         if dirty.chat {
             self.publish_chat(w);
         }
+        if dirty.shortcuts {
+            self.publish_shortcuts(w);
+        }
     }
 
     pub fn shutdown(&mut self) {
@@ -1383,5 +1757,39 @@ impl App {
             std::thread::sleep(Duration::from_millis(20));
         }
         let _ = self.settings.save();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn synced(old: &[i32], new: &[i32]) -> Vec<i32> {
+        let model = VecModel::from(old.to_vec());
+        sync_rows(&model, new.to_vec());
+        (0..model.row_count()).filter_map(|index| model.row_data(index)).collect()
+    }
+
+    #[test]
+    fn rows_are_patched_where_they_changed() {
+        let cases: [(&[i32], &[i32]); 12] = [
+            (&[], &[]),
+            (&[], &[1, 2, 3]),
+            (&[1, 2, 3], &[]),
+            (&[1, 2, 3], &[1, 2, 3]),
+            (&[1, 2, 3], &[1, 9, 3]),
+            (&[1, 2, 3], &[1, 3]),
+            (&[1, 3], &[1, 2, 3]),
+            (&[1, 2, 3, 4, 5], &[1, 5]),
+            (&[1, 5], &[1, 2, 3, 4, 5]),
+            (&[1, 1, 1], &[1, 1]),
+            (&[1, 2, 3], &[7, 8, 9, 10]),
+            (&[4, 5, 6, 7], &[6, 7, 4, 5, 6]),
+        ];
+        for (old, new) in cases {
+            assert_eq!(synced(old, new), new, "{old:?} -> {new:?}");
+        }
+        assert_eq!(level_position(-70.0), 0.0);
+        assert_eq!(level_position(0.0), 1.0);
     }
 }

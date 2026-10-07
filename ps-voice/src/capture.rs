@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::Ordering;
 
 use crate::codec::{Encoder, CODEC_OPUS_MUSIC, CODEC_OPUS_VOICE, FRAME_SAMPLES, MAX_PACKET_BYTES, SAMPLE_RATE};
+use crate::echo::EchoCanceller;
 use crate::resample::Resampler;
 use crate::state::{Shared, TxMode};
 
@@ -21,6 +22,13 @@ pub fn level_db(frame: &[f32]) -> f32 {
     }
 }
 
+struct EchoPath {
+    canceller: EchoCanceller,
+    resampler: Resampler,
+    raw: Vec<f32>,
+    ready: Vec<f32>,
+}
+
 pub struct Transmitter {
     resampler: Resampler,
     input_rate: u32,
@@ -35,6 +43,8 @@ pub struct Transmitter {
     packet: [u8; MAX_PACKET_BYTES],
     stereo: Vec<f32>,
     resampled: Vec<f32>,
+    far: Option<(rtrb::Consumer<f32>, u32)>,
+    echo: Option<Box<EchoPath>>,
 }
 
 impl Transmitter {
@@ -53,7 +63,43 @@ impl Transmitter {
             packet: [0; MAX_PACKET_BYTES],
             stereo: Vec::new(),
             resampled: Vec::new(),
+            far: None,
+            echo: None,
         }
+    }
+
+    pub fn set_far(&mut self, consumer: rtrb::Consumer<f32>, rate: u32) {
+        self.far = Some((consumer, rate));
+        self.echo = None;
+    }
+
+    pub fn restart_echo(&mut self) {
+        self.echo = None;
+    }
+
+    fn cancel_echo(&mut self, frame: &mut [f32], shared: &Shared) {
+        let Some((consumer, rate)) = self.far.as_mut() else {
+            return;
+        };
+        let path = self.echo.get_or_insert_with(|| {
+            while consumer.pop().is_ok() {}
+            Box::new(EchoPath {
+                canceller: EchoCanceller::new(),
+                resampler: Resampler::new(*rate, SAMPLE_RATE, 1),
+                raw: Vec::new(),
+                ready: Vec::new(),
+            })
+        });
+        path.raw.clear();
+        while let Ok(sample) = consumer.pop() {
+            path.raw.push(sample);
+        }
+        path.ready.clear();
+        path.resampler.process(&path.raw, &mut path.ready);
+        path.canceller.push_far(&path.ready);
+        path.canceller.process(frame);
+        shared.set_echo_reduction(path.canceller.reduction_db());
+        shared.set_echo_details(path.canceller.echo_delay_ms(), path.canceller.clock_drift_ppm());
     }
 
     pub fn set_input_rate(&mut self, input_rate: u32) {
@@ -62,6 +108,7 @@ impl Transmitter {
             self.resampler = Resampler::new(input_rate, SAMPLE_RATE, 1);
             self.pending.clear();
             self.lookback.clear();
+            self.echo = None;
         }
     }
 
@@ -120,6 +167,11 @@ impl Transmitter {
     }
 
     fn process_frame(&mut self, frame: &mut [f32], shared: &Shared, sink: &mut dyn FnMut(u8, u8, &[u8])) {
+        if shared.echo_cancel() {
+            self.cancel_echo(frame, shared);
+        } else if self.echo.take().is_some() {
+            shared.set_echo_reduction(None);
+        }
         let gain = shared.input_gain();
         if (gain - 1.0).abs() > 1e-3 {
             for s in frame.iter_mut() {
@@ -297,6 +349,63 @@ mod tests {
         shared.mic_muted.store(false, Ordering::Relaxed);
         shared.tx_enabled.store(false, Ordering::Relaxed);
         assert!(lanes(&mut tx, &shared, &one).is_empty());
+    }
+
+    #[test]
+    fn echo_of_the_speakers_is_taken_out_of_the_microphone() {
+        let shared = Shared::default();
+        shared.set_tx_mode(TxMode::Continuous);
+        shared.tx_enabled.store(true, Ordering::Relaxed);
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut noise = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            ((seed >> 40) as f32 / (1u64 << 23) as f32) - 1.0
+        };
+        let mut low = 0.0f32;
+        let played: Vec<f32> = (0..48_000 * 6)
+            .map(|_| {
+                low += 0.15 * (noise() - low);
+                0.5 * low
+            })
+            .collect();
+        let heard: Vec<f32> = (0..played.len()).map(|n| if n >= 2400 { 0.6 * played[n - 2400] } else { 0.0 }).collect();
+
+        let mut plain = Transmitter::new(48_000);
+        let mut loudest = SILENCE_DB;
+        for frame in heard.chunks(960) {
+            plain.process(frame, &shared, &mut |_, _, _| {});
+            loudest = loudest.max(shared.input_level());
+        }
+        assert!(shared.echo_reduction().is_none());
+
+        shared.set_echo_cancel(true);
+        let (mut speaker, consumer) = rtrb::RingBuffer::<f32>::new(48_000);
+        let mut tx = Transmitter::new(48_000);
+        tx.set_far(consumer, 48_000);
+        let mut sent = 0;
+        let mut late = Vec::new();
+        for (index, (out, frame)) in played.chunks(960).zip(heard.chunks(960)).enumerate() {
+            for sample in out {
+                speaker.push(*sample).unwrap();
+            }
+            tx.process(frame, &shared, &mut |_, _, data| sent += usize::from(!data.is_empty()));
+            if index >= 250 {
+                late.push(shared.input_level());
+            }
+        }
+        let quietest = late.iter().copied().fold(0.0f32, f32::min);
+        let typical = late.iter().sum::<f32>() / late.len() as f32;
+        assert_eq!(sent, 300);
+        assert!(typical < loudest - 25.0, "{typical:.1} dB with cancelling against {loudest:.1} dB without");
+        assert!(quietest < typical + 1.0);
+        assert!(shared.echo_reduction().is_some_and(|db| db > 20.0));
+
+        shared.set_echo_cancel(false);
+        tx.process(&heard[48_000..48_960], &shared, &mut |_, _, _| {});
+        assert!(shared.input_level() > loudest - 6.0);
+        assert!(shared.echo_reduction().is_none());
     }
 
     #[test]

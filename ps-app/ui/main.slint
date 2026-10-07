@@ -1,9 +1,9 @@
 import { ListView, ScrollView } from "std-widgets.slint";
-import { Theme, Icons } from "theme.slint";
-import { Icon, Pressable, Btn, IconButton, Tile, Meter, Field, Dropdown, Check, Segmented, TreeRowView, ChatRowView, TreeRow, ServerTile, BookmarkRow, ChatRow, IdentityRow } from "widgets.slint";
+import { Theme, Icons, Frame } from "theme.slint";
+import { Icon, Pressable, Btn, IconButton, Tile, Meter, Field, Dropdown, Check, Segmented, TreeRowView, ChatRowView, TreeRow, ServerTile, BookmarkRow, ChatRow, IdentityRow, WhisperKeyRow, PickRow } from "widgets.slint";
 import { SettingsWindow } from "settings.slint";
 
-export { SettingsWindow, TreeRow, ServerTile, BookmarkRow, ChatRow, IdentityRow }
+export { SettingsWindow, TreeRow, ServerTile, BookmarkRow, ChatRow, IdentityRow, WhisperKeyRow, PickRow }
 
 component Dim inherits Text {
     color: Theme.drift;
@@ -145,12 +145,16 @@ export component PhishSpeakApp inherits Window {
     in property <string> nickname;
     in property <string> initials;
     in property <string> status-text: "Not connected";
+    in property <bool> status-wide;
     in property <string> ping-text;
     in property <float> input-level;
     in property <float> threshold-position: -1;
     in property <bool> transmitting;
     in property <bool> mic-muted;
     in property <bool> sound-muted;
+    in property <bool> viewed-connected;
+    in property <bool> commander;
+    in property <string> start-here;
     in property <[string]> identity-names;
     in-out property <bool> menu-open;
     in-out property <bool> dialog-open;
@@ -179,8 +183,17 @@ export component PhishSpeakApp inherits Window {
     callback toggle-mic();
     callback toggle-sound();
     callback open-settings(tab: int);
+    callback toggle-fold(id: int);
+    callback toggle-commander();
+    callback toggle-start-here();
 
     forward-focus: keys;
+    init => {
+        Frame.height = self.height;
+    }
+    changed height => {
+        Frame.height = self.height;
+    }
     changed menu-open => {
         if (root.menu-open) {
             keys.focus();
@@ -344,6 +357,9 @@ export component PhishSpeakApp inherits Window {
                         entry: item;
                         activated => {
                             root.row-activated(item);
+                        }
+                        fold-clicked => {
+                            root.toggle-fold(item.id);
                         }
                     }
                 }
@@ -561,7 +577,7 @@ export component PhishSpeakApp inherits Window {
                             spacing: 1px;
                             horizontal-stretch: 1;
 
-                            Text {
+                            if !root.status-wide: Text {
                                 text: root.nickname;
                                 color: Theme.foam;
                                 font-size: Theme.text;
@@ -569,9 +585,19 @@ export component PhishSpeakApp inherits Window {
                                 overflow: elide;
                             }
 
-                            Dim {
+                            if !root.status-wide: Dim {
                                 text: root.status-text;
                                 overflow: elide;
+                            }
+
+                            if root.status-wide: Text {
+                                height: 34px;
+                                text: root.status-text;
+                                color: Theme.foam;
+                                font-size: Theme.small;
+                                wrap: word-wrap;
+                                overflow: elide;
+                                vertical-alignment: center;
                             }
                         }
 
@@ -726,6 +752,24 @@ export component PhishSpeakApp inherits Window {
                     clicked => {
                         root.menu-open = false;
                         root.open-settings(3);
+                    }
+                }
+
+                if root.start-here != "": MenuAction {
+                    icon: Icons.bookmark;
+                    text: root.start-here;
+                    clicked => {
+                        root.menu-open = false;
+                        root.toggle-start-here();
+                    }
+                }
+
+                if root.viewed-connected: MenuAction {
+                    icon: Icons.commander;
+                    text: root.commander ? "Stop being a channel commander" : "Be a channel commander";
+                    clicked => {
+                        root.menu-open = false;
+                        root.toggle-commander();
                     }
                 }
 

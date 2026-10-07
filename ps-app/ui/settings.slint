@@ -1,5 +1,6 @@
-import { Theme, Icons } from "theme.slint";
-import { Pressable, Btn, Tile, Field, Dropdown, Check, Segmented, Slide, BookmarkRow, IdentityRow } from "widgets.slint";
+import { ListView, ScrollView } from "std-widgets.slint";
+import { Theme, Icons, Frame } from "theme.slint";
+import { Pressable, Btn, Tile, Field, Dropdown, Check, Segmented, Slide, KeyChip, PickRowView, BookmarkRow, IdentityRow, WhisperKeyRow, PickRow } from "widgets.slint";
 
 component Caption inherits Text {
     width: 150px;
@@ -29,12 +30,17 @@ component Heading inherits Text {
     font-weight: 600;
 }
 
+component Divider inherits Rectangle {
+    height: 1px;
+    background: Theme.hairline;
+}
+
 export component SettingsWindow inherits Window {
     title: "PhishSpeak settings";
     preferred-width: 700px;
-    preferred-height: 480px;
+    preferred-height: 540px;
     min-width: 640px;
-    min-height: 440px;
+    min-height: 520px;
     background: Theme.reef;
     default-font-size: Theme.text;
 
@@ -53,6 +59,9 @@ export component SettingsWindow inherits Window {
     in property <bool> transmitting;
     in property <string> mic-status;
     in property <string> sound-status;
+    in property <string> talk-hint;
+    in-out property <bool> echo-cancel;
+    in property <string> echo-status;
 
     in property <[IdentityRow]> identities;
     in-out property <string> import-path;
@@ -65,12 +74,43 @@ export component SettingsWindow inherits Window {
     in-out property <string> bm-address;
     in-out property <string> bm-nickname;
     in-out property <int> bm-identity;
+    in property <[string]> bm-channels;
+    in-out property <int> bm-channel;
+    in property <string> bm-channel-hint;
     in property <string> bm-note;
 
-    in property <[string]> ptt-keys;
-    in-out property <int> ptt-key-index;
+    in property <[string]> talk-keys;
+    in property <bool> can-add-talk: true;
+    in property <int> listening: -1;
+    in-out property <float> talk-release;
+    in property <string> talk-release-text: "Off";
+    in property <string> shortcut-note;
+    in property <int> shortcut-note-place;
+    in property <[WhisperKeyRow]> whisper-keys;
+    in property <bool> can-add-whisper: true;
+    in property <string> reply-key;
+    in-out property <bool> allow-whispers: true;
+
+    in property <bool> editor-open;
+    in property <string> editor-title;
+    in property <string> editor-key;
+    in-out property <int> editor-kind;
+    in property <string> editor-hint;
+    in property <[PickRow]> editor-rows;
+    in-out property <int> editor-who;
+    in property <[string]> editor-groups;
+    in-out property <int> editor-group: -1;
+    in-out property <int> editor-scope;
+    in property <string> editor-note;
+    in property <bool> editor-can-save;
+
+    in-out property <int> fold-mode: 1;
 
     in property <string> version;
+
+    property <bool> editing: root.tab == 4 && root.editor-open;
+    property <[string]> scope-names: ["Everywhere", "My channel", "The channel above mine", "Every channel above mine", "My channel and all below it", "My whole branch, from the top", "The channels right below mine"];
+    property <[string]> scope-hints: ["Reaches every channel on the server.", "Reaches your channel only.", "Reaches the channel yours is inside, and no other.", "Reaches the channel yours is inside, the one that is inside, and so on up. Not your own channel.", "Reaches your channel and every channel under it, however deep.", "Reaches the top-level channel you are under and everything inside it, including the branches beside yours.", "Reaches the channels directly under yours. Not the ones under those."];
 
     callback audio-changed();
     callback input-device-selected();
@@ -81,14 +121,48 @@ export component SettingsWindow inherits Window {
     callback bookmark-new();
     callback bookmark-saved();
     callback bookmark-removed();
+    callback bookmark-channel-selected();
+    callback talk-key-change(index: int);
+    callback talk-key-add();
+    callback talk-key-remove(index: int);
+    callback shortcut-changed();
+    callback whisper-key-add();
+    callback whisper-key-edit(index: int);
+    callback whisper-key-remove(index: int);
+    callback whisper-key-change(index: int);
+    callback reply-key-change();
+    callback reply-key-clear();
+    callback editor-key-change();
+    callback editor-key-clear();
+    callback editor-toggle(index: int);
+    callback editor-changed();
+    callback editor-save();
+    callback editor-cancel();
+    callback view-changed();
     callback done();
 
     forward-focus: keys;
+    init => {
+        Frame.height = self.height;
+    }
+    changed height => {
+        Frame.height = self.height;
+    }
 
     keys := FocusScope {
+        capture-key-pressed(event) => {
+            if (root.listening >= 0) {
+                return accept;
+            }
+            return reject;
+        }
         key-pressed(event) => {
             if (event.text == Key.Escape) {
-                root.done();
+                if (root.editing) {
+                    root.editor-cancel();
+                } else {
+                    root.done();
+                }
                 return accept;
             }
             return reject;
@@ -100,7 +174,7 @@ export component SettingsWindow inherits Window {
                 padding-left: 14px;
                 spacing: 2px;
 
-                for label[i] in ["Microphone", "Sound", "Identities", "Bookmarks", "Shortcuts", "About"]: Pressable {
+                for label[i] in ["Microphone", "Sound", "Identities", "Bookmarks", "Shortcuts", "Channels", "About"]: Pressable {
                     min-width: caption.preferred-width + 24px;
                     clicked => {
                         root.tab = i;
@@ -129,10 +203,7 @@ export component SettingsWindow inherits Window {
                 }
             }
 
-            Rectangle {
-                height: 1px;
-                background: Theme.hairline;
-            }
+            Divider { }
 
             Rectangle {
                 vertical-stretch: 1;
@@ -230,7 +301,7 @@ export component SettingsWindow inherits Window {
                         }
 
                         Hint {
-                            text: root.ptt-key-index > 0 ? "Hold \{root.ptt-keys[root.ptt-key-index]} to talk. Change the key under Shortcuts." : "No talk key is set yet. Choose one under Shortcuts.";
+                            text: root.talk-hint;
                             vertical-alignment: center;
                         }
                     }
@@ -254,6 +325,30 @@ export component SettingsWindow inherits Window {
 
                         Reading {
                             text: "\{round(root.mic-gain)}%";
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 16px;
+
+                        Caption {
+                            text: "Echo";
+                        }
+
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            Check {
+                                text: "Take my speakers' sound out of my microphone";
+                                checked <=> root.echo-cancel;
+                                toggled => {
+                                    root.audio-changed();
+                                }
+                            }
+
+                            Hint {
+                                text: root.echo-status;
+                            }
                         }
                     }
 
@@ -511,6 +606,22 @@ export component SettingsWindow inherits Window {
                             placeholder: "No identity yet";
                         }
 
+                        Hint {
+                            text: "Channel to join";
+                        }
+
+                        Dropdown {
+                            model: root.bm-channels;
+                            current-index <=> root.bm-channel;
+                            selected => {
+                                root.bookmark-channel-selected();
+                            }
+                        }
+
+                        if root.bm-channel-hint != "": Hint {
+                            text: root.bm-channel-hint;
+                        }
+
                         if root.bm-note != "": Hint {
                             text: root.bm-note;
                             color: Theme.coral;
@@ -541,7 +652,439 @@ export component SettingsWindow inherits Window {
                     }
                 }
 
-                if root.tab == 4: VerticalLayout {
+                if root.tab == 4 && !root.editor-open: shortcut-scroll := ScrollView {
+                    content-width: self.visible-width;
+                    content-height: max(shortcut-list.preferred-height, self.visible-height);
+
+                    shortcut-list := VerticalLayout {
+                        width: shortcut-scroll.visible-width;
+                        alignment: start;
+                        padding: 20px;
+                        spacing: 12px;
+
+                        HorizontalLayout {
+                            spacing: 16px;
+
+                            Caption {
+                                text: "Talk keys";
+                            }
+
+                            VerticalLayout {
+                                spacing: 6px;
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+
+                                    for name[i] in root.talk-keys: KeyChip {
+                                        text: name;
+                                        listening: root.listening == i;
+                                        clicked => {
+                                            root.talk-key-change(i);
+                                        }
+                                        removed => {
+                                            root.talk-key-remove(i);
+                                        }
+                                    }
+
+                                    if root.listening == 50: KeyChip {
+                                        listening: true;
+                                        removable: false;
+                                        clicked => {
+                                            root.talk-key-add();
+                                        }
+                                    }
+
+                                    if root.listening != 50 && root.can-add-talk: VerticalLayout {
+                                        alignment: center;
+                                        horizontal-stretch: 0;
+
+                                        Btn {
+                                            text: "Add a key";
+                                            clicked => {
+                                                root.talk-key-add();
+                                            }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+
+                                if root.shortcut-note != "" && root.shortcut-note-place == 0: Hint {
+                                    text: root.shortcut-note;
+                                    color: Theme.coral;
+                                }
+
+                                Hint {
+                                    text: "Click a key, then press the key, mouse button or combination you want. Esc cancels. Works while PhishSpeak is in the background.";
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 16px;
+
+                            Caption {
+                                text: "After I let go";
+                            }
+
+                            VerticalLayout {
+                                spacing: 4px;
+
+                                HorizontalLayout {
+                                    spacing: 10px;
+
+                                    Slide {
+                                        minimum: 0;
+                                        maximum: 1000;
+                                        step: 50;
+                                        value <=> root.talk-release;
+                                        changed => {
+                                            root.shortcut-changed();
+                                        }
+                                    }
+
+                                    Reading {
+                                        text: root.talk-release-text;
+                                    }
+                                }
+
+                                Hint {
+                                    text: "Keeps sending for this long after you let go of a talk key or a whisper key, so the end of a word is not cut off.";
+                                }
+                            }
+                        }
+
+                        Divider { }
+
+                        Heading {
+                            text: "Whisper keys";
+                        }
+
+                        Hint {
+                            text: "While you hold a whisper key, your voice goes to the people that key is aimed at, and not to your channel.";
+                        }
+
+                        for item[i] in root.whisper-keys: HorizontalLayout {
+                            height: 34px;
+                            spacing: 10px;
+
+                            KeyChip {
+                                width: 200px;
+                                text: item.key;
+                                empty-text: "No key yet";
+                                removable: false;
+                                listening: root.listening == 100 + i;
+                                clicked => {
+                                    root.whisper-key-change(i);
+                                }
+                            }
+
+                            Text {
+                                text: item.summary;
+                                color: Theme.foam;
+                                font-size: Theme.text;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+
+                            if item.note != "": Text {
+                                text: item.note;
+                                color: Theme.drift;
+                                font-size: Theme.small;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+
+                                Btn {
+                                    text: "Edit";
+                                    clicked => {
+                                        root.whisper-key-edit(i);
+                                    }
+                                }
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+
+                                Btn {
+                                    text: "Remove";
+                                    danger: true;
+                                    clicked => {
+                                        root.whisper-key-remove(i);
+                                    }
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 12px;
+
+                            Btn {
+                                text: "Add a whisper key";
+                                enabled: root.can-add-whisper;
+                                clicked => {
+                                    root.whisper-key-add();
+                                }
+                            }
+
+                            if !root.can-add-whisper: Hint {
+                                text: "Twelve is the most.";
+                                vertical-alignment: center;
+                            }
+
+                            if root.shortcut-note != "" && root.shortcut-note-place == 1: Hint {
+                                text: root.shortcut-note;
+                                color: Theme.coral;
+                                vertical-alignment: center;
+                            }
+
+                            Rectangle {
+                                horizontal-stretch: 1;
+                            }
+                        }
+
+                        Divider { }
+
+                        HorizontalLayout {
+                            spacing: 16px;
+
+                            Caption {
+                                text: "Reply key";
+                            }
+
+                            VerticalLayout {
+                                spacing: 6px;
+
+                                HorizontalLayout {
+                                    KeyChip {
+                                        text: root.reply-key;
+                                        listening: root.listening == 60;
+                                        clicked => {
+                                            root.reply-key-change();
+                                        }
+                                        removed => {
+                                            root.reply-key-clear();
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+
+                                if root.shortcut-note != "" && root.shortcut-note-place == 2: Hint {
+                                    text: root.shortcut-note;
+                                    color: Theme.coral;
+                                }
+
+                                Hint {
+                                    text: "Talks to whoever whispered to you last.";
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 16px;
+
+                            Caption {
+                                text: "Incoming whispers";
+                            }
+
+                            Check {
+                                text: "Let others whisper to me";
+                                checked <=> root.allow-whispers;
+                                toggled => {
+                                    root.shortcut-changed();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.editing: VerticalLayout {
+                    padding: 20px;
+                    padding-bottom: 16px;
+                    spacing: 10px;
+
+                    Heading {
+                        text: root.editor-title;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 16px;
+
+                        Caption {
+                            text: "Whisper key";
+                        }
+
+                        KeyChip {
+                            text: root.editor-key;
+                            listening: root.listening == 70;
+                            clicked => {
+                                root.editor-key-change();
+                            }
+                            removed => {
+                                root.editor-key-clear();
+                            }
+                        }
+
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 16px;
+
+                        Caption {
+                            text: "Whisper to";
+                        }
+
+                        Segmented {
+                            options: ["Channels and people", "A group"];
+                            current <=> root.editor-kind;
+                            selected => {
+                                root.editor-changed();
+                            }
+                        }
+
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+                    }
+
+                    if root.editor-kind == 0: Hint {
+                        text: root.editor-hint;
+                    }
+
+                    if root.editor-kind == 0: Rectangle {
+                        vertical-stretch: 1;
+                        min-height: 84px;
+                        border-radius: 8px;
+                        background: Theme.trench;
+                        border-width: 1px;
+                        border-color: Theme.hairline;
+                        clip: true;
+
+                        ListView {
+                            x: 4px;
+                            y: 4px;
+                            width: parent.width - 8px;
+                            height: parent.height - 8px;
+
+                            for row[i] in root.editor-rows: PickRowView {
+                                entry: row;
+                                clicked => {
+                                    root.editor-toggle(i);
+                                }
+                            }
+                        }
+
+                        if root.editor-rows.length == 0: Text {
+                            text: "Nothing to choose from yet";
+                            color: Theme.drift;
+                            font-size: Theme.text;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    if root.editor-kind == 1: HorizontalLayout {
+                        spacing: 16px;
+
+                        Caption {
+                            text: "Who";
+                        }
+
+                        Dropdown {
+                            model: ["Everyone", "Channel commanders", "A server group", "A channel group"];
+                            current-index <=> root.editor-who;
+                            selected => {
+                                root.editor-changed();
+                            }
+                        }
+                    }
+
+                    if root.editor-kind == 1 && root.editor-who >= 2: HorizontalLayout {
+                        spacing: 16px;
+
+                        Caption {
+                            text: "Group";
+                        }
+
+                        Dropdown {
+                            model: root.editor-groups;
+                            current-index <=> root.editor-group;
+                            placeholder: root.editor-groups.length == 0 ? "Connect to a server to choose a group" : "Choose a group";
+                            selected => {
+                                root.editor-changed();
+                            }
+                        }
+                    }
+
+                    if root.editor-kind == 1: HorizontalLayout {
+                        spacing: 16px;
+
+                        Caption {
+                            text: "Where";
+                        }
+
+                        VerticalLayout {
+                            spacing: 5px;
+
+                            Dropdown {
+                                model: root.scope-names;
+                                current-index <=> root.editor-scope;
+                                selected => {
+                                    root.editor-changed();
+                                }
+                            }
+
+                            Hint {
+                                text: root.scope-hints[root.editor-scope];
+                            }
+                        }
+                    }
+
+                    if root.editor-kind == 1: Rectangle {
+                        vertical-stretch: 1;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+
+                        Hint {
+                            text: root.editor-note;
+                            color: Theme.coral;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+
+                        Btn {
+                            text: "Cancel";
+                            clicked => {
+                                root.editor-cancel();
+                            }
+                        }
+
+                        Btn {
+                            text: "Save whisper key";
+                            primary: true;
+                            enabled: root.editor-can-save;
+                            clicked => {
+                                root.editor-save();
+                            }
+                        }
+                    }
+                }
+
+                if root.tab == 5: VerticalLayout {
                     alignment: start;
                     padding: 20px;
                     spacing: 12px;
@@ -550,28 +1093,38 @@ export component SettingsWindow inherits Window {
                         spacing: 16px;
 
                         Caption {
-                            text: "Talk key";
+                            text: "Channels start";
                         }
 
                         VerticalLayout {
                             spacing: 6px;
 
-                            Dropdown {
-                                model: root.ptt-keys;
-                                current-index <=> root.ptt-key-index;
-                                selected => {
-                                    root.audio-changed();
+                            HorizontalLayout {
+                                Segmented {
+                                    options: ["All open", "Empty ones folded", "All folded"];
+                                    current <=> root.fold-mode;
+                                    selected => {
+                                        root.view-changed();
+                                    }
+                                }
+
+                                Rectangle {
+                                    horizontal-stretch: 1;
                                 }
                             }
 
                             Hint {
-                                text: "Used when Send my voice is set to While I hold a key. It works while PhishSpeak is in the background, so you can talk from inside a game.";
+                                text: root.fold-mode == 0 ? "Every channel shows the channels and people inside it." : (root.fold-mode == 2 ? "Every channel shows as one row with a count of the people inside. The way to your own channel stays open." : "A channel with other channels inside it shows as one row while nobody is in any of them.");
+                            }
+
+                            Hint {
+                                text: "Click the arrow beside a channel to fold or open it yourself. PhishSpeak remembers that for each server, until you change this setting.";
                             }
                         }
                     }
                 }
 
-                if root.tab == 5: VerticalLayout {
+                if root.tab == 6: VerticalLayout {
                     alignment: start;
                     padding: 20px;
                     spacing: 10px;
@@ -599,12 +1152,9 @@ export component SettingsWindow inherits Window {
                 }
             }
 
-            Rectangle {
-                height: 1px;
-                background: Theme.hairline;
-            }
+            if !root.editing: Divider { }
 
-            HorizontalLayout {
+            if !root.editing: HorizontalLayout {
                 alignment: end;
                 padding: 12px;
                 padding-right: 18px;

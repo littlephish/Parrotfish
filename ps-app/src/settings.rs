@@ -12,6 +12,8 @@ pub const DEFAULT_WINDOW_HEIGHT: f32 = 740.0;
 pub const MIN_WINDOW_WIDTH: f32 = 340.0;
 pub const MIN_WINDOW_HEIGHT: f32 = 520.0;
 const MAX_WINDOW_SIDE: f32 = 8000.0;
+pub const MAX_REMEMBERED_FOLDS: usize = 512;
+pub const MAX_REMEMBERED_SERVERS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
@@ -25,10 +27,13 @@ pub struct Settings {
     pub vad_threshold: f32,
     pub mic_gain: f32,
     pub output_volume: f32,
+    pub echo_cancel: bool,
     pub talk_keys: Vec<Chord>,
     pub talk_release_ms: u32,
     pub reply_key: Chord,
     pub allow_whispers: bool,
+    pub fold_mode: i32,
+    pub folds: BTreeMap<String, BTreeMap<u64, bool>>,
     pub window_width: f32,
     pub window_height: f32,
     pub key_offsets: BTreeMap<String, u64>,
@@ -47,10 +52,13 @@ impl Default for Settings {
             vad_threshold: -40.0,
             mic_gain: 100.0,
             output_volume: 100.0,
+            echo_cancel: false,
             talk_keys: Vec::new(),
             talk_release_ms: 0,
             reply_key: Chord::default(),
             allow_whispers: true,
+            fold_mode: 1,
+            folds: BTreeMap::new(),
             window_width: DEFAULT_WINDOW_WIDTH,
             window_height: DEFAULT_WINDOW_HEIGHT,
             key_offsets: BTreeMap::new(),
@@ -95,6 +103,28 @@ impl Settings {
                 }
                 continue;
             }
+            if let Some(rest) = line.trim().strip_prefix("folds.") {
+                if let Some((uid, list)) = rest.rsplit_once('=') {
+                    let mut chosen = BTreeMap::new();
+                    for pair in list.split(',') {
+                        let Some((id, state)) = pair.trim().split_once(':') else {
+                            continue;
+                        };
+                        let folded = match state.trim() {
+                            "1" => true,
+                            "0" => false,
+                            _ => continue,
+                        };
+                        if let (Ok(id), true) = (id.trim().parse::<u64>(), chosen.len() < MAX_REMEMBERED_FOLDS) {
+                            chosen.insert(id, folded);
+                        }
+                    }
+                    if !uid.is_empty() && !chosen.is_empty() && s.folds.len() < MAX_REMEMBERED_SERVERS {
+                        s.folds.insert(uid.to_string(), chosen);
+                    }
+                }
+                continue;
+            }
             let Some((key, value)) = line.split_once('=') else {
                 continue;
             };
@@ -110,6 +140,7 @@ impl Settings {
                 "vad_threshold" => s.vad_threshold = number(value, -40.0, -70.0, 0.0),
                 "mic_gain" => s.mic_gain = number(value, 100.0, 0.0, 300.0),
                 "output_volume" => s.output_volume = number(value, 100.0, 0.0, 200.0),
+                "echo_cancel" => s.echo_cancel = value == "1",
                 "ptt_key" => legacy = value.parse::<usize>().ok(),
                 "talk_key" => {
                     let chord = Chord::parse(value);
@@ -120,6 +151,7 @@ impl Settings {
                 "talk_release_ms" => s.talk_release_ms = value.parse::<u32>().unwrap_or(0).min(1000),
                 "reply_key" => s.reply_key = Chord::parse(value),
                 "allow_whispers" => s.allow_whispers = value != "0",
+                "fold_mode" => s.fold_mode = value.parse().unwrap_or(1).clamp(0, 2),
                 "window_width" => {
                     s.window_width = number(value, DEFAULT_WINDOW_WIDTH, MIN_WINDOW_WIDTH, MAX_WINDOW_SIDE)
                 }
@@ -155,16 +187,25 @@ impl Settings {
         put("vad_threshold", format!("{:.1}", self.vad_threshold));
         put("mic_gain", format!("{:.0}", self.mic_gain));
         put("output_volume", format!("{:.0}", self.output_volume));
+        put("echo_cancel", u8::from(self.echo_cancel).to_string());
         for chord in &self.talk_keys {
             put("talk_key", chord.to_text());
         }
         put("talk_release_ms", self.talk_release_ms.to_string());
         put("reply_key", self.reply_key.to_text());
         put("allow_whispers", u8::from(self.allow_whispers).to_string());
+        put("fold_mode", self.fold_mode.to_string());
         put("window_width", format!("{:.0}", self.window_width));
         put("window_height", format!("{:.0}", self.window_height));
         for (uid, offset) in &self.key_offsets {
             put(&format!("key_offset.{uid}"), offset.to_string());
+        }
+        for (uid, chosen) in &self.folds {
+            if !chosen.is_empty() {
+                let list: Vec<String> =
+                    chosen.iter().map(|(id, folded)| format!("{id}:{}", u8::from(*folded))).collect();
+                put(&format!("folds.{uid}"), list.join(","));
+            }
         }
         out
     }
@@ -194,6 +235,7 @@ mod tests {
         s.vad_threshold = -33.5;
         s.mic_gain = 150.0;
         s.output_volume = 80.0;
+        s.echo_cancel = true;
         s.talk_keys = vec![Chord::new(&[0xA4])];
         s.talk_release_ms = 150;
         s.window_width = 512.0;
@@ -225,6 +267,35 @@ mod tests {
     }
 
     #[test]
+    fn channel_folding_is_remembered() {
+        assert_eq!(Settings::default().fold_mode, 1);
+        assert_eq!(Settings::parse("fold_mode=0\n").fold_mode, 0);
+        assert_eq!(Settings::parse("fold_mode=2\n").fold_mode, 2);
+        assert_eq!(Settings::parse("fold_mode=9\n").fold_mode, 2);
+        assert_eq!(Settings::parse("fold_mode=x\n").fold_mode, 1);
+        let mut s = Settings::default();
+        s.fold_mode = 2;
+        s.folds.insert("lks7QL5OVMKo4pZ79cEOI5r5oEA=".into(), BTreeMap::from([(4, true), (17, false)]));
+        s.folds.insert("test/9PZ9vww/Bpf5vJxtJhpz80=".into(), BTreeMap::from([(1, false)]));
+        s.folds.insert("nothing chosen".into(), BTreeMap::new());
+        let text = s.serialize();
+        assert!(text.contains("folds.lks7QL5OVMKo4pZ79cEOI5r5oEA==4:1,17:0\n"));
+        assert!(!text.contains("nothing chosen"));
+        let back = Settings::parse(&text);
+        assert_eq!(back.fold_mode, 2);
+        assert_eq!(back.folds.len(), 2);
+        assert_eq!(back.folds["lks7QL5OVMKo4pZ79cEOI5r5oEA="], BTreeMap::from([(4, true), (17, false)]));
+        assert_eq!(back.folds["test/9PZ9vww/Bpf5vJxtJhpz80="], BTreeMap::from([(1, false)]));
+        let damaged = Settings::parse("folds.=1:1\nfolds.one=\nfolds.two=abc,7:1,8:x,9, 10 : 0 \nfolds.three\n");
+        assert_eq!(damaged.folds.len(), 1);
+        assert_eq!(damaged.folds["two"], BTreeMap::from([(7, true), (10, false)]));
+        let many: Vec<String> = (0..2000).map(|n| format!("{n}:1")).collect();
+        assert_eq!(Settings::parse(&format!("folds.big={}\n", many.join(","))).folds["big"].len(), MAX_REMEMBERED_FOLDS);
+        let crowd: String = (0..200).map(|n| format!("folds.server{n}=1:1\n")).collect();
+        assert_eq!(Settings::parse(&crowd).folds.len(), MAX_REMEMBERED_SERVERS);
+    }
+
+    #[test]
     fn tolerates_garbage_and_clamps() {
         let s = Settings::parse("nonsense\ntx_mode=9\nvad_threshold=abc\nmic_gain=9999\nkey_offset.x=notanumber\n=\n");
         assert_eq!(s.tx_mode, 2);
@@ -232,6 +303,8 @@ mod tests {
         assert_eq!(s.mic_gain, 300.0);
         assert!(s.key_offsets.is_empty());
         assert_eq!(Settings::parse(""), Settings::default());
+        assert!(!Settings::default().echo_cancel && !Settings::parse("echo_cancel=yes\n").echo_cancel);
+        assert!(Settings::parse("echo_cancel=1\n").echo_cancel);
         let s = Settings::parse("vad_threshold=NaN\nmic_gain=inf\noutput_volume=-inf\n");
         assert_eq!(s.vad_threshold, -40.0);
         assert_eq!(s.mic_gain, 100.0);

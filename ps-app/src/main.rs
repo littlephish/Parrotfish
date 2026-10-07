@@ -80,6 +80,12 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_toggle_sound(move || with_app(&a, |s, w| s.toggle_sound(w)));
     let a = app.clone();
     ui.on_open_settings(move |tab| with_app(&a, |s, w| s.open_settings(w, tab)));
+    let a = app.clone();
+    ui.on_toggle_fold(move |id| with_app(&a, |s, w| s.toggle_fold(w, id)));
+    let a = app.clone();
+    ui.on_toggle_commander(move || with_app(&a, |s, w| s.toggle_commander(w)));
+    let a = app.clone();
+    ui.on_toggle_start_here(move || with_app(&a, |s, w| s.toggle_start_here(w)));
 
     let a = app.clone();
     settings_window.on_audio_changed(move || with_app(&a, |s, w| s.apply_audio(w)));
@@ -100,11 +106,47 @@ fn main() -> Result<(), slint::PlatformError> {
     let a = app.clone();
     settings_window.on_bookmark_removed(move || with_app(&a, |s, w| s.bookmark_removed(w)));
     let a = app.clone();
+    settings_window.on_bookmark_channel_selected(move || with_app(&a, |s, w| s.bookmark_channel_selected(w)));
+    let a = app.clone();
+    settings_window.on_talk_key_change(move |index| with_app(&a, |s, w| s.talk_key_change(w, index)));
+    let a = app.clone();
+    settings_window.on_talk_key_add(move || with_app(&a, |s, w| s.talk_key_add(w)));
+    let a = app.clone();
+    settings_window.on_talk_key_remove(move |index| with_app(&a, |s, w| s.talk_key_remove(w, index)));
+    let a = app.clone();
+    settings_window.on_shortcut_changed(move || with_app(&a, |s, w| s.shortcut_changed(w)));
+    let a = app.clone();
+    settings_window.on_whisper_key_add(move || with_app(&a, |s, w| s.whisper_key_add(w)));
+    let a = app.clone();
+    settings_window.on_whisper_key_edit(move |index| with_app(&a, |s, w| s.whisper_key_edit(w, index)));
+    let a = app.clone();
+    settings_window.on_whisper_key_remove(move |index| with_app(&a, |s, w| s.whisper_key_remove(w, index)));
+    let a = app.clone();
+    settings_window.on_whisper_key_change(move |index| with_app(&a, |s, w| s.whisper_key_change(w, index)));
+    let a = app.clone();
+    settings_window.on_reply_key_change(move || with_app(&a, |s, w| s.reply_key_change(w)));
+    let a = app.clone();
+    settings_window.on_reply_key_clear(move || with_app(&a, |s, w| s.reply_key_clear(w)));
+    let a = app.clone();
+    settings_window.on_editor_key_change(move || with_app(&a, |s, w| s.editor_key_change(w)));
+    let a = app.clone();
+    settings_window.on_editor_key_clear(move || with_app(&a, |s, w| s.editor_key_clear(w)));
+    let a = app.clone();
+    settings_window.on_editor_toggle(move |index| with_app(&a, |s, w| s.editor_toggle(w, index)));
+    let a = app.clone();
+    settings_window.on_editor_changed(move || with_app(&a, |s, w| s.editor_changed(w)));
+    let a = app.clone();
+    settings_window.on_editor_save(move || with_app(&a, |s, w| s.editor_save(w)));
+    let a = app.clone();
+    settings_window.on_editor_cancel(move || with_app(&a, |s, w| s.editor_cancel(w)));
+    let a = app.clone();
+    settings_window.on_view_changed(move || with_app(&a, |s, w| s.view_changed(w)));
+    let a = app.clone();
     settings_window.on_done(move || with_app(&a, |s, w| s.close_settings(w)));
 
     let a = app.clone();
     settings_window.window().on_close_requested(move || {
-        with_app(&a, |s, w| s.stop_mic_test(w));
+        with_app(&a, |s, w| s.settings_hidden(w));
         CloseRequestResponse::HideWindow
     });
     let a = app.clone();

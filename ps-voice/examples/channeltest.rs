@@ -3,7 +3,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use ps_client::{ClientHandle, ConnectOptions, Event, VoiceSink};
+use ps_client::{ClientHandle, ConnectOptions, Event, VoiceSink, WhisperGroup, WhisperScope, WhisperTarget};
 use ps_identity::Identity;
 use ps_voice::codec::{Encoder, CODEC_OPUS_VOICE, FRAME_SAMPLES, MAX_PACKET_BYTES, SAMPLE_RATE};
 
@@ -11,11 +11,26 @@ const TONE_HZ: f32 = 440.0;
 const AMPLITUDE: f32 = 0.3;
 const FRAME: Duration = Duration::from_millis(20);
 
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone)]
 struct Heard {
     packets: u64,
+    whispers: u64,
     run: u64,
+    run_is_whisper: bool,
     ends: u64,
+    whisper_ends: u64,
+    codecs: Vec<u8>,
+}
+
+fn whisper_target(spec: &str) -> Option<WhisperTarget> {
+    let everywhere = |who| WhisperTarget::Group { who, scope: WhisperScope::AllChannels };
+    match spec.split_once(':') {
+        Some(("client", id)) => id.parse().ok().map(|id| WhisperTarget::List { channels: Vec::new(), clients: vec![id] }),
+        Some(("channel", id)) => id.parse().ok().map(|id| WhisperTarget::List { channels: vec![id], clients: Vec::new() }),
+        None if spec == "commanders" => Some(everywhere(WhisperGroup::Commanders)),
+        None if spec == "everyone" => Some(everywhere(WhisperGroup::Everyone)),
+        _ => None,
+    }
 }
 
 fn arg_value(args: &[String], name: &str) -> Option<String> {
@@ -32,7 +47,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "--help") {
         eprintln!(
-            "usage: channeltest <host> [--port N] [--nick NAME] [--join CHANNEL_ID] [--seconds N]\n                   [--talk SECONDS] [--talk-after SECONDS]\nListens for voice in one channel and reports who was heard; with --talk it also sends a tone."
+            "usage: channeltest <host> [--port N] [--nick NAME] [--join CHANNEL_ID] [--seconds N]\n                   [--talk SECONDS] [--talk-after SECONDS]\n                   [--whisper client:ID|channel:ID|commanders|everyone] [--commander]\nListens for voice and whispers and reports who was heard; with --talk it also sends a tone, as a whisper when --whisper is given."
         );
         std::process::exit(2);
     }
@@ -43,6 +58,14 @@ fn main() {
     let seconds: f32 = arg_value(&args, "--seconds").and_then(|p| p.parse().ok()).unwrap_or(20.0);
     let talk: f32 = arg_value(&args, "--talk").and_then(|p| p.parse().ok()).unwrap_or(0.0);
     let talk_after: f32 = arg_value(&args, "--talk-after").and_then(|p| p.parse().ok()).unwrap_or(1.5);
+    let whisper = arg_value(&args, "--whisper").map(|spec| match whisper_target(&spec) {
+        Some(target) => target,
+        None => {
+            eprintln!("--whisper takes client:ID, channel:ID, commanders or everyone");
+            std::process::exit(2);
+        }
+    });
+    let commander = args.iter().any(|a| a == "--commander");
 
     let heard: Arc<Mutex<BTreeMap<u16, Heard>>> = Arc::new(Mutex::new(BTreeMap::new()));
     let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -53,21 +76,36 @@ fn main() {
             return;
         };
         let entry = map.entry(packet.client_id).or_default();
+        let kind = if packet.whisper { "whisper" } else { "voice" };
         if packet.data.is_empty() {
-            entry.ends += 1;
+            if packet.whisper {
+                entry.whisper_ends += 1;
+            } else {
+                entry.ends += 1;
+            }
             out.push(format!(
-                "{} end-of-talk packet from client {} after {} packets",
+                "{} end-of-{} packet from client {} after {} packets",
                 clock(),
+                if packet.whisper { "whisper" } else { "talk" },
                 packet.client_id,
                 entry.run
             ));
             entry.run = 0;
         } else {
-            if entry.run == 0 {
-                out.push(format!("{} first voice packet from client {}", clock(), packet.client_id));
+            if entry.run == 0 || entry.run_is_whisper != packet.whisper {
+                out.push(format!("{} first {kind} packet from client {}", clock(), packet.client_id));
+                entry.run = 0;
             }
+            entry.run_is_whisper = packet.whisper;
             entry.run += 1;
-            entry.packets += 1;
+            if packet.whisper {
+                entry.whispers += 1;
+            } else {
+                entry.packets += 1;
+            }
+            if !entry.codecs.contains(&packet.codec) {
+                entry.codecs.push(packet.codec);
+            }
         }
     });
 
@@ -91,7 +129,7 @@ fn main() {
     let mut sent = 0u64;
     let mut talk_done = talk <= 0.0;
     let mut last_report = Instant::now();
-    let mut last_counts: BTreeMap<u16, u64> = BTreeMap::new();
+    let mut last_counts: BTreeMap<u16, (u64, u64)> = BTreeMap::new();
     let mut leaving = false;
     let started = Instant::now();
 
@@ -129,6 +167,9 @@ fn main() {
                 if let Some(channel) = join {
                     handle.join_channel(channel, "");
                 }
+                if commander {
+                    handle.set_channel_commander(true);
+                }
             }
             if !talk_done && since >= talk_after {
                 let due = *next_frame.get_or_insert_with(Instant::now);
@@ -140,18 +181,23 @@ fn main() {
                         })
                         .collect();
                     phase += FRAME_SAMPLES;
+                    let send = |data: &[u8]| match &whisper {
+                        Some(target) => handle.send_whisper(target, CODEC_OPUS_VOICE, data),
+                        None => handle.send_voice(CODEC_OPUS_VOICE, data),
+                    };
                     if let Ok(n) = encoder.encode(&pcm, &mut packet) {
-                        handle.send_voice(CODEC_OPUS_VOICE, &packet[..n]);
+                        send(&packet[..n]);
                         sent += 1;
                     }
                     next_frame = Some(due + FRAME);
+                    let doing = if whisper.is_some() { "whispering" } else { "talking" };
                     if sent == 1 {
-                        println!("{} {nick} starts talking", clock());
+                        println!("{} {nick} starts {doing}", clock());
                     }
                     if sent as f32 * 0.02 >= talk {
-                        handle.send_voice(CODEC_OPUS_VOICE, &[]);
+                        send(&[]);
                         talk_done = true;
-                        println!("{} {nick} stops talking after {sent} packets", clock());
+                        println!("{} {nick} stops {doing} after {sent} packets", clock());
                     }
                 }
             }
@@ -166,9 +212,14 @@ fn main() {
             if let Ok(map) = heard.lock() {
                 let mut parts = Vec::new();
                 for (client, entry) in map.iter() {
-                    let before = last_counts.insert(*client, entry.packets).unwrap_or(0);
-                    if entry.packets != before {
-                        parts.push(format!("client {client}: +{}", entry.packets - before));
+                    let now = (entry.packets, entry.whispers);
+                    let before = last_counts.insert(*client, now).unwrap_or((0, 0));
+                    if now != before {
+                        parts.push(format!(
+                            "client {client}: +{} voice, +{} whisper",
+                            now.0 - before.0,
+                            now.1 - before.1
+                        ));
                     }
                 }
                 if !parts.is_empty() {
@@ -189,8 +240,8 @@ fn main() {
     }
     for (client, entry) in &totals {
         println!(
-            "TOTAL {nick}: client {client}: {} voice packets, {} end-of-talk packets",
-            entry.packets, entry.ends
+            "TOTAL {nick}: client {client}: {} voice packets, {} end-of-talk packets, {} whisper packets, {} end-of-whisper packets, codecs {:?}",
+            entry.packets, entry.ends, entry.whispers, entry.whisper_ends, entry.codecs
         );
     }
 }

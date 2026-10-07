@@ -6,9 +6,19 @@ chat, and carries voice in both directions with Opus.
 
 - A compact window: the channel tree, a chat drawer, and a dock with mute buttons and the
   microphone level. Spacer channels such as `[cspacer]Games` are drawn as dividers.
-- Bookmarks for one-click connections.
+- Channels fold and open from an arrow. A setting chooses how they start (all open, empty ones
+  folded, all folded), and the channels you fold or open yourself are remembered for each server.
+- Bookmarks for one-click connections, each with the channel to join if you want one.
 - Several servers at once. You hear all of them; your microphone goes to the one you are viewing.
-- One settings window with tabs: microphone, sound, identities, bookmarks, shortcuts, about.
+- Talk keys you choose by pressing them: any key, mouse button 3 to 5, or a combination, and
+  more than one if you like. They work while PhishSpeak is in the background.
+- Whisper keys that send your voice to the channels and people you tick, or to everyone, the
+  channel commanders or a server or channel group in the channels above, below or around yours,
+  plus a key that replies to whoever whispered to you last.
+- Echo cancelling for when you listen through speakers, so the people you talk to do not hear
+  themselves. It is off by default and has not been tried in a real room yet.
+- One settings window with tabs: microphone, sound, identities, bookmarks, shortcuts, channels,
+  about.
 
 It is early software. It has been tested against a TeamSpeak 3.13.8 server, but not yet in a
 conversation with the official client or on a public server. [PLAN.md](PLAN.md) lists what works,
@@ -35,8 +45,28 @@ and apply to the `--connect` before them.
 
 On first start PhishSpeak creates an identity for you. To use one from the TeamSpeak client,
 export it there and add the file under Settings, Identities; PhishSpeak reads the file where it
-is and never changes it. Settings, bookmarks and identities created in the app are stored in
-`%APPDATA%\PhishSpeak`. Server and channel passwords are never saved.
+is and never changes it. Settings, bookmarks, whisper keys and identities created in the app are
+stored in `%APPDATA%\PhishSpeak`. Server and channel passwords are never saved.
+
+## Releases
+
+Pushing a tag builds a release; nothing else does. Set the version in `Cargo.toml`
+(`[workspace.package]`), commit, then:
+
+```
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The `Release` workflow checks that the tag is `v` plus that version, runs the tests, builds the
+program with the C runtime linked in, and publishes an installer
+(`PhishSpeak-<version>-setup.exe`, per user, no administrator prompt), a zip of the program and
+`SHA256SUMS.txt` on the repository's Releases page. Ordinary pushes and pull requests only run
+the tests (the `Check` workflow).
+
+To make the same files on your own PC, install [Inno Setup 6](https://jrsoftware.org/isinfo.php)
+and run `python tools/package_release.py`; they land in `dist/`. Add `--skip-installer` for the
+zip alone. The files are not code-signed, so Windows will ask before running the installer.
 
 ## Tests
 
@@ -44,8 +74,9 @@ is and never changes it. Settings, bookmarks and identities created in the app a
 cargo test --workspace
 ```
 
-The unit tests need no server. The tools under `ps-client/examples` and `ps-voice/examples`
-exercise a real server and the local sound devices; PLAN.md explains how to use them.
+The unit tests need no server. The tools under `ps-client/examples`, `ps-voice/examples` and
+`tools/` exercise a real server, the talk and whisper keys and the local sound devices; PLAN.md
+explains how to use them.
 
 ## Layout
 
@@ -87,6 +118,15 @@ supplied the protocol knowledge, and in one case test data.
 - [landave/TSIdentityTool](https://github.com/landave/TSIdentityTool) (MIT). The identity
   obfuscation used in TeamSpeak's identity exports was published there; tsclientlib credits it,
   tsdeclarations documents the algorithm, and `ps-identity` implements it.
+
+**Echo cancelling**
+
+- The echo canceller is PhishSpeak's own code. It is a multidelay block frequency-domain
+  adaptive filter (J.-S. Soo and K. K. Pang, 1990) with the learning-rate control described by
+  Jean-Marc Valin in "On Adjusting the Learning Rate in Frequency Domain Echo Cancellation With
+  Double-Talk" (2007), which is how the echo canceller in
+  [Speex](https://www.speex.org) (Xiph.Org Foundation, BSD-3-Clause) works. The Speex source was
+  the reference for the structure of that part and for its constants.
 
 **Libraries**
 

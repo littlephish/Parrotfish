@@ -116,8 +116,18 @@ pub fn describe(aim: &Aim) -> String {
     }
 }
 
+pub fn phrase(aim: &Aim) -> String {
+    match aim {
+        Aim::Group { who: Who::Everyone, scope } => format!("everyone, {}", scope_label(*scope)),
+        Aim::Group { who: Who::Commanders, scope } => format!("channel commanders, {}", scope_label(*scope)),
+        other => describe(other),
+    }
+}
+
 pub fn resolve(key: &WhisperKey, view: &ServerView) -> Result<WhisperTarget, Unusable> {
-    if !key.server_uid.is_empty() && key.server_uid != view.server.uid {
+    let tied = !matches!(&key.aim, Aim::Group { who: Who::Everyone | Who::Commanders, .. });
+    let elsewhere = !key.server_uid.is_empty() && key.server_uid != view.server.uid;
+    if elsewhere || (tied && key.server_uid.is_empty()) {
         return Err(Unusable::OtherServer);
     }
     match &key.aim {
@@ -126,12 +136,14 @@ pub fn resolve(key: &WhisperKey, view: &ServerView) -> Result<WhisperTarget, Unu
                 .iter()
                 .map(|(id, _)| *id)
                 .filter(|id| view.channels.iter().any(|node| node.channel.id == *id))
+                .take(MAX_LIST_CHANNELS)
                 .collect();
             let mut clients: Vec<u16> = Vec::new();
             for node in &view.channels {
                 for client in &node.clients {
                     let listed = people.iter().any(|(uid, _)| !uid.is_empty() && *uid == client.uid);
-                    if listed && client.id != view.own_id && !clients.contains(&client.id) {
+                    let room = clients.len() < MAX_LIST_PEOPLE;
+                    if listed && room && client.id != view.own_id && !clients.contains(&client.id) {
                         clients.push(client.id);
                     }
                 }
@@ -369,6 +381,11 @@ mod tests {
             Ok(WhisperTarget::Group { who: WhisperGroup::ServerGroup(6), scope: WhisperScope::AllChannels })
         );
         assert_eq!(resolve(&admins, &view("serverB")), Err(Unusable::OtherServer));
+
+        let untied = group_key("", Who::ServerGroup { id: 6, name: "Server Admin".into() }, WhisperScope::AllChannels);
+        assert_eq!(resolve(&untied, &view("serverA")), Err(Unusable::OtherServer));
+        assert_eq!(resolve(&list_key(""), &view("serverA")), Err(Unusable::OtherServer));
+        assert_eq!(resolve(&list_key(""), &view("")), Err(Unusable::OtherServer));
     }
 
     #[test]
@@ -418,6 +435,19 @@ mod tests {
         assert_eq!(scope_label(WhisperScope::AllParentChannels), "every channel above mine");
         assert_eq!(scope_label(WhisperScope::ChannelFamily), "my channel and all below it");
         assert_eq!(scope_label(WhisperScope::Subchannels), "the channels right below mine");
+        assert_eq!(
+            phrase(&Aim::Group { who: Who::Everyone, scope: WhisperScope::ParentChannel }),
+            "everyone, the channel above mine"
+        );
+        assert_eq!(
+            phrase(&Aim::Group { who: Who::Commanders, scope: WhisperScope::AllChannels }),
+            "channel commanders, everywhere"
+        );
+        assert_eq!(
+            phrase(&Aim::Group { who: Who::ServerGroup { id: 6, name: "Server Admin".into() }, scope: WhisperScope::AllChannels }),
+            "Server Admin, everywhere"
+        );
+        assert_eq!(phrase(&Aim::List { channels: names(2), people: vec![] }), "Lobby and Deep Rock");
     }
 
     #[test]
@@ -462,5 +492,34 @@ mod tests {
             Aim::List { channels, people } => assert_eq!((channels.len(), people.len()), (MAX_LIST_CHANNELS, MAX_LIST_PEOPLE)),
             other => panic!("expected a list, got {other:?}"),
         }
+
+        let mut crowd = view("s");
+        crowd.channels[1].clients = (0..200u16)
+            .map(|n| ClientInfo { id: 100 + n, channel: 2, uid: "uidTwin".into(), ..ClientInfo::default() })
+            .collect();
+        for n in 0..60u64 {
+            crowd.channels.push(ChannelNode {
+                channel: Channel { id: 500 + n, ..Channel::default() },
+                depth: 0,
+                clients: vec![],
+            });
+        }
+        let wide = WhisperKey {
+            chord: Chord::default(),
+            server_uid: "s".into(),
+            server_name: String::new(),
+            aim: Aim::List {
+                channels: (0..60u64).map(|n| (500 + n, String::new())).collect(),
+                people: vec![("uidTwin".into(), String::new())],
+            },
+        };
+        let target = resolve(&wide, &crowd).unwrap();
+        match &target {
+            WhisperTarget::List { channels, clients } => {
+                assert_eq!((channels.len(), clients.len()), (MAX_LIST_CHANNELS, MAX_LIST_PEOPLE))
+            }
+            other => panic!("expected a list, got {other:?}"),
+        }
+        assert!(target.frame_room() >= 122);
     }
 }

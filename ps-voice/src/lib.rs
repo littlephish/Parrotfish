@@ -1,6 +1,7 @@
 pub mod capture;
 pub mod codec;
 mod device;
+pub mod echo;
 pub mod playback;
 pub mod resample;
 pub mod state;
@@ -15,7 +16,7 @@ pub use device::{list_input_devices, list_output_devices, DeviceInfo};
 pub use state::{DeviceStatus, FrameSink, Shared, TxMode, LANES, LOOPBACK_CLIENT_ID, LOOPBACK_SESSION};
 
 use capture::Transmitter;
-use device::{Ctl, InputSource};
+use device::{Ctl, FarSource, InputSource};
 
 pub struct AudioEngine {
     shared: Arc<Shared>,
@@ -25,7 +26,12 @@ pub struct AudioEngine {
     manager_thread: Option<JoinHandle<()>>,
 }
 
-fn transmit_loop(shared: Arc<Shared>, sources: Receiver<InputSource>, stop: Arc<AtomicBool>) {
+fn transmit_loop(
+    shared: Arc<Shared>,
+    sources: Receiver<InputSource>,
+    far_sources: Receiver<FarSource>,
+    stop: Arc<AtomicBool>,
+) {
     let mut source: Option<InputSource> = None;
     let mut transmitter = Transmitter::new(codec::SAMPLE_RATE);
     let mut chunk: Vec<f32> = Vec::with_capacity(4800);
@@ -33,7 +39,11 @@ fn transmit_loop(shared: Arc<Shared>, sources: Receiver<InputSource>, stop: Arc<
     while !stop.load(Ordering::Relaxed) {
         while let Ok(next) = sources.try_recv() {
             transmitter.set_input_rate(next.rate);
+            transmitter.restart_echo();
             source = Some(next);
+        }
+        while let Ok(next) = far_sources.try_recv() {
+            transmitter.set_far(next.consumer, next.rate);
         }
         chunk.clear();
         if let Some(src) = source.as_mut() {
@@ -75,12 +85,13 @@ impl AudioEngine {
         let stop = Arc::new(AtomicBool::new(false));
         let (ctl, ctl_rx) = mpsc::channel();
         let (source_tx, source_rx) = mpsc::channel();
+        let (far_tx, far_rx) = mpsc::channel();
 
         let tx_shared = shared.clone();
         let tx_stop = stop.clone();
         let tx_thread = std::thread::Builder::new()
             .name("ps-voice-tx".into())
-            .spawn(move || transmit_loop(tx_shared, source_rx, tx_stop))
+            .spawn(move || transmit_loop(tx_shared, source_rx, far_rx, tx_stop))
             .expect("failed to spawn audio transmit thread");
 
         let manager_shared = shared.clone();
@@ -88,7 +99,7 @@ impl AudioEngine {
         let waker = tx_thread.thread().clone();
         let manager_thread = std::thread::Builder::new()
             .name("ps-voice-devices".into())
-            .spawn(move || device::manage(manager_shared, ctl_rx, manager_ctl, source_tx, waker))
+            .spawn(move || device::manage(manager_shared, ctl_rx, manager_ctl, source_tx, far_tx, waker))
             .expect("failed to spawn audio device thread");
 
         Self {

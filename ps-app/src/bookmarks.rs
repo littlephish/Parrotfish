@@ -9,6 +9,8 @@ pub struct Bookmark {
     pub address: String,
     pub nickname: String,
     pub identity_uid: String,
+    pub channel: String,
+    pub channel_id: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -71,6 +73,8 @@ impl Bookmarks {
                 "address" => entry.address = value,
                 "nickname" => entry.nickname = value,
                 "identity" => entry.identity_uid = value,
+                "channel" => entry.channel = value,
+                "channel_id" => entry.channel_id = value.parse().unwrap_or(0),
                 _ => {}
             }
         }
@@ -85,7 +89,9 @@ impl Bookmarks {
             out.push_str(&format!("name={}\n", one_line(&b.name)));
             out.push_str(&format!("address={}\n", one_line(&b.address)));
             out.push_str(&format!("nickname={}\n", one_line(&b.nickname)));
-            out.push_str(&format!("identity={}\n\n", one_line(&b.identity_uid)));
+            out.push_str(&format!("identity={}\n", one_line(&b.identity_uid)));
+            out.push_str(&format!("channel={}\n", one_line(&b.channel)));
+            out.push_str(&format!("channel_id={}\n\n", b.channel_id));
         }
         out
     }
@@ -134,6 +140,7 @@ mod tests {
             address: address.into(),
             nickname: nickname.into(),
             identity_uid: uid.into(),
+            ..Bookmark::default()
         }
     }
 
@@ -147,6 +154,19 @@ mod tests {
             ],
         };
         assert_eq!(Bookmarks::parse(&list.serialize()), list);
+    }
+
+    #[test]
+    fn the_channel_to_join_is_kept() {
+        let mut home = bookmark("Reef Runners", "reef.example.net", "", "");
+        home.channel = "Deep Rock/Radio = loud".into();
+        home.channel_id = 4;
+        let list = Bookmarks { items: vec![home.clone(), bookmark("Other", "other.example.net", "", "")] };
+        let text = list.serialize();
+        assert!(text.contains("channel=Deep Rock/Radio = loud\nchannel_id=4\n"));
+        assert_eq!(Bookmarks::parse(&text), list);
+        let old = Bookmarks::parse("[bookmark]\nname=Old\naddress=old.example.net\nchannel_id=x\n");
+        assert_eq!((old.items[0].channel.as_str(), old.items[0].channel_id), ("", 0));
     }
 
     #[test]

@@ -8,9 +8,9 @@
 
 **Tech Stack:** Rust stable, Slint 1.18, existing workspace crates, two more Win32 calls through the FFI block `platform.rs` already has. No new dependencies.
 
-**Spec:** none yet. Nothing here is built. The next two sections are the scope and the decisions I made for you; change them before anyone starts.
+**Spec:** none. The next two sections, the scope and the decisions, served as one.
 
-**Status:** decisions 1 to 5 confirmed on 2026-10-06; 6 to 10 still open. Nothing is built.
+**Status:** built and checked on 2026-10-06. Every step is done except Task 9 Step 9, the check with the official client, which only you can do. What was decided on the way, and what you added while it ran, is in `2026-10-06-talk-and-whisper-keys.ledger.md`.
 
 **How to read the tasks:** tests and the functions where a mistake would send voice to the wrong people are given in full. Steps that connect existing code are described by what they must do and are held to the tests and live checks listed with them. Every Rust block below was compiled on 2026-10-06 in a throwaway copy of the workspace with the changes it describes, and every test in this plan passed there (protocol 34, client 12, audio 34, and the app-side tests); the `whispertest` example printed twelve `PASS` lines against the test server. Nothing was changed in the repository. Part A (Tasks 1 to 3) is usable on its own; Part B (Tasks 4 to 9) needs Part A. This plan does not depend on the custom-icons plan; both touch `session.rs`, `app.rs` and `widgets.slint`, so whichever runs second merges by hand.
 
@@ -66,7 +66,7 @@ Also in Part B, because whisper keys are of little use without them:
 4. **The release delay is a setting and starts at 0.** It is the slider "After I let go" on the Shortcuts tab, from 0 to 1 second (TeamSpeak allows 3). At 0 nothing changes from today. It applies to talk keys and whisper keys alike.
 5. **Left and right mouse buttons cannot be talk keys.** They are needed to click. Middle, 4 and 5 can.
 
-**Still open:**
+**Accepted when you said "go" on 2026-10-06, with game controllers left out for now:**
 
 6. **Keys are read by asking Windows 200 times a second whether each of your keys is down** (polling). That is what the talk key does today. The other way is a keyboard hook, which passes every key press on the PC through PhishSpeak as it happens. For keyboard and mouse both work while a game has the focus. Polling is simpler, cannot leave a key stuck, and is not the kind of system-wide hook that anti-cheat and antivirus tools sometimes flag; a hook would react the instant a key moves, not up to 5 ms later, which nobody can hear. You answered "not sure"; the recommendation is polling. Two limits apply whichever way is chosen, so they are not a reason to prefer either: a game that runs as administrator may hide the keys from PhishSpeak unless PhishSpeak also runs as administrator (not tested), and buttons on game controllers, joysticks and pedals are not keyboard keys, so neither way sees them. Controller buttons are not in this plan; they can be added later as their own task without redoing this design.
 7. **Whispers are always sent in the speech sound format (Opus Voice), also when you sit in a channel set to music quality.** A whisper packet has to carry the list of who it is for as well as the sound, and a packet holds 500 bytes. A music-quality piece of sound can take most of that, so with a long list the packet would be too big and nobody would hear the whisper. What you would notice: a whisper sent from a music channel sounds like ordinary speech, not hi-fi stereo. Ordinary talk in that channel is unaffected.
@@ -188,7 +188,7 @@ Conditions the scope implies that are most likely to bite, each pinned to a task
 `pub enum CaptureStep { Waiting, Done(Chord), Cancelled }`, `pub struct Capture` with `new()` and `feed(&mut self, down: &[u16]) -> CaptureStep`.
 Keys are Windows virtual-key codes.
 
-- [ ] **Step 1: Write the failing tests** in `hotkeys.rs`:
+- [x] **Step 1: Write the failing tests** in `hotkeys.rs`:
 
 ```rust
 #[cfg(test)]
@@ -306,8 +306,8 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2:** Run `cargo test -p ps-app hotkeys`; expect a compile failure.
-- [ ] **Step 3: Implement.**
+- [x] **Step 2:** Run `cargo test -p ps-app hotkeys`; expect a compile failure.
+- [x] **Step 3: Implement.**
 
 ```rust
 use std::time::{Duration, Instant};
@@ -527,7 +527,7 @@ impl Capture {
 }
 ```
 
-- [ ] **Step 4:** Run `cargo test -p ps-app hotkeys`; expect 5 pass.
+- [x] **Step 4:** Run `cargo test -p ps-app hotkeys`; expect 5 pass.
 
 ### Task 2: The key watcher
 
@@ -538,7 +538,7 @@ in `ps-voice`: `pub const LANES: usize = 16;`, `Shared::set_keys(&self, talk: bo
 in `platform.rs`: `pub fn key_char(vk: u16) -> Option<char>` (`MapVirtualKeyW(vk, 2)`, low 16 bits, `None` for 0; a stub returning `None` off Windows), and `key_down` keeps its signature;
 in `keywatch.rs`: `pub struct WatchState` with `set_bindings(&self, Bindings)`, `set_release_delay(&self, ms: u32)`, `begin_capture(&self)`, `cancel_capture(&self)`, `take_captured(&self) -> Option<CaptureStep>`; `pub struct WatchCore` with `step(&mut self, state: &WatchState, now: Instant, down: &dyn Fn(u16) -> bool) -> Held`; `pub struct KeyWatcher` with `start(audio: Arc<ps_voice::Shared>) -> Self` and `state(&self) -> &WatchState`, which stops and joins its thread when dropped.
 
-- [ ] **Step 1: Write the failing tests.** In `keywatch.rs`:
+- [x] **Step 1: Write the failing tests.** In `keywatch.rs`:
 
 ```rust
 #[cfg(test)]
@@ -593,8 +593,8 @@ fn held_keys_are_stored_for_the_transmitter() {
 }
 ```
 
-- [ ] **Step 2:** Run `cargo test -p ps-app keywatch` and `cargo test -p ps-voice held_keys`; expect compile failures.
-- [ ] **Step 3: Implement.** `Shared` gets `whisper_lane: AtomicU8`. In `keywatch.rs`:
+- [x] **Step 2:** Run `cargo test -p ps-app keywatch` and `cargo test -p ps-voice held_keys`; expect compile failures.
+- [x] **Step 3: Implement.** `Shared` gets `whisper_lane: AtomicU8`. In `keywatch.rs`:
 
 ```rust
 #[derive(Default)]
@@ -638,8 +638,8 @@ impl WatchCore {
 ```
 
   `begin_capture` clears `captured` and sets `capturing`; `cancel_capture` clears both. The thread, named `ps-keys`, loops until `stop`: `let held = core.step(&state, Instant::now(), &|vk| platform::key_down(i32::from(vk)));`, `audio.set_keys(held.talk, held.lane);`, `sleep(5 ms)`; on exit it calls `audio.set_keys(false, 0)`.
-- [ ] **Step 4:** In `app.rs`, `App` owns a `KeyWatcher` started after the audio engine, and the two lines in `tick` that read `PTT_KEYS` and call `set_ptt` are deleted. Until Task 3 the bindings are built from the old setting: `platform::PTT_KEYS[settings.ptt_key]` as a one-key talk chord.
-- [ ] **Step 5:** Run `cargo test --workspace`; expect all pass (2 new). `cargo build --workspace --all-targets`; expect no warnings.
+- [x] **Step 4:** In `app.rs`, `App` owns a `KeyWatcher` started after the audio engine, and the two lines in `tick` that read `PTT_KEYS` and call `set_ptt` are deleted. Until Task 3 the bindings are built from the old setting: `platform::PTT_KEYS[settings.ptt_key]` as a one-key talk chord.
+- [x] **Step 5:** Run `cargo test --workspace`; expect all pass (2 new). `cargo build --workspace --all-targets`; expect no warnings.
 
 ### Task 3: Talk keys in settings, and the first live check
 
@@ -647,7 +647,7 @@ impl WatchCore {
 
 **Interfaces:** Consumes Tasks 1 and 2. Produces `Settings::talk_keys: Vec<Chord>`, `Settings::talk_release_ms: u32` (0 to 1000), and removes `Settings::ptt_key` and `platform::PTT_KEYS`. In Slint: a `KeyChip` widget (`text`, `listening`, `removable`, callbacks `clicked`, `removed`), and on `SettingsWindow`: `in property <[string]> talk-keys;`, `in property <int> listening: -1;` (index of the talk key being chosen; 50 is "a new talk key"), `in-out property <float> talk-release;`, callbacks `talk-key-change(int)`, `talk-key-add()`, `talk-key-remove(int)`, `shortcut-changed()`; `ptt-keys` and `ptt-key-index` are removed.
 
-- [ ] **Step 1: Write the failing test** in `settings.rs`, and change `round_trip` to set `talk_keys = vec![Chord::new(&[0xA4])]` and `talk_release_ms = 150` where it set `ptt_key`:
+- [x] **Step 1: Write the failing test** in `settings.rs`, and change `round_trip` to set `talk_keys = vec![Chord::new(&[0xA4])]` and `talk_release_ms = 150` where it set `ptt_key`:
 
 ```rust
 #[test]
@@ -667,10 +667,10 @@ fn old_talk_key_setting_is_carried_over() {
 }
 ```
 
-- [ ] **Step 2:** Run `cargo test -p ps-app settings`; expect a compile failure.
-- [ ] **Step 3: Implement.** The seventeen key codes of today's list move into `settings.rs` as a private `LEGACY_TALK_KEYS: [u16; 17]` in their current order (index 0 is "no key"). `parse` collects every non-empty `talk_key=` line; if there was none and `ptt_key` named a valid index above 0, that one key becomes the talk key. `serialize` writes one `talk_key=` line per key and never `ptt_key`. The dock wording becomes "Sends while I hold Left Ctrl" for one key, "Sends while I hold Left Ctrl or Mouse 4" for two, "Sends while I hold one of 3 keys" for more, and "Choose a talk key in settings" for none, using `chord_name` with `platform::key_char`.
-- [ ] **Step 4: The Shortcuts tab.** Replace the dropdown with a row of `KeyChip`s (34 px high, the key name, a small remove button, amber focus ring and the text "Press a key…" while `listening`), an "Add a key" button, and the release slider (`Slide`, 0 to 1000, step 50, read-out "0.2 s"). The hint under the chips: "Click a key, then press the key, mouse button or combination you want. Esc cancels. Works while PhishSpeak is in the background." Rust side: `talk-key-change(i)` and `talk-key-add()` call `begin_capture` and remember what is being chosen; the 33 ms tick calls `take_captured`: `Done(chord)` stores it (a combination already used for another talk key is refused with a note under the chips: "That key is already a talk key."), `Cancelled` changes nothing; either way `listening` returns to -1 and the bindings are sent to the watcher. Closing the settings window, pressing Done or changing tab calls `cancel_capture`.
-- [ ] **Step 5: Write `tools/hold_keys.py`**, which can press only keys no keyboard has:
+- [x] **Step 2:** Run `cargo test -p ps-app settings`; expect a compile failure.
+- [x] **Step 3: Implement.** The seventeen key codes of today's list move into `settings.rs` as a private `LEGACY_TALK_KEYS: [u16; 17]` in their current order (index 0 is "no key"). `parse` collects every non-empty `talk_key=` line; if there was none and `ptt_key` named a valid index above 0, that one key becomes the talk key. `serialize` writes one `talk_key=` line per key and never `ptt_key`. The dock wording becomes "Sends while I hold Left Ctrl" for one key, "Sends while I hold Left Ctrl or Mouse 4" for two, "Sends while I hold one of 3 keys" for more, and "Choose a talk key in settings" for none, using `chord_name` with `platform::key_char`.
+- [x] **Step 4: The Shortcuts tab.** Replace the dropdown with a row of `KeyChip`s (34 px high, the key name, a small remove button, amber focus ring and the text "Press a key…" while `listening`), an "Add a key" button, and the release slider (`Slide`, 0 to 1000, step 50, read-out "0.2 s"). The hint under the chips: "Click a key, then press the key, mouse button or combination you want. Esc cancels. Works while PhishSpeak is in the background." Rust side: `talk-key-change(i)` and `talk-key-add()` call `begin_capture` and remember what is being chosen; the 33 ms tick calls `take_captured`: `Done(chord)` stores it (a combination already used for another talk key is refused with a note under the chips: "That key is already a talk key."), `Cancelled` changes nothing; either way `listening` returns to -1 and the bindings are sent to the watcher. Closing the settings window, pressing Done or changing tab calls `cancel_capture`.
+- [x] **Step 5: Write `tools/hold_keys.py`**, which can press only keys no keyboard has:
 
 ```python
 import ctypes
@@ -697,10 +697,10 @@ def main():
 main()
 ```
 
-- [ ] **Step 6:** `cargo test --workspace` and `cargo build --workspace --all-targets`; expect all pass (1 new, `hotkey_table_is_sane` reduced to its two `key_down` assertions) and no warnings.
-- [ ] **Step 7: Live check, the old setting.** Throwaway profile with `tx_mode=1` and `ptt_key=14` (F8 in the old list) and no `talk_key`. Start the app; the dock must read "Sends while I hold F8"; close it; the file must now contain `talk_key=119` and no `ptt_key`.
-- [ ] **Step 8: Live check, a talk key.** Profile with `tx_mode=1`, `talk_key=135` (F24), output volume 0. Test server up, `channeltest` listening in Lobby, the app connected there. Run `python tools/hold_keys.py F24 2`. Expected from the listener: a first voice packet within 60 ms of the press, about 100 packets, then an end-of-talk packet. Repeat with `talk_release_ms=300`: about 115 packets. Repeat with `talk_key=134+135` and `hold_keys.py F23+F24 2`: about 100 packets; `hold_keys.py F24 2` alone: none.
-- [ ] **Step 9: Live check, choosing a key.** With the software renderer, open Settings, Shortcuts, click "Add a key", run `hold_keys.py F23 0.3`, and take a screenshot: a chip named "F23". Click it again and close the settings window without pressing anything; run `hold_keys.py F24 2` with a listener: voice must flow, proving nothing was left waiting for a key.
+- [x] **Step 6:** `cargo test --workspace` and `cargo build --workspace --all-targets`; expect all pass (1 new, `hotkey_table_is_sane` reduced to its two `key_down` assertions) and no warnings.
+- [x] **Step 7: Live check, the old setting.** Throwaway profile with `tx_mode=1` and `ptt_key=14` (F8 in the old list) and no `talk_key`. Start the app; the dock must read "Sends while I hold F8"; close it; the file must now contain `talk_key=119` and no `ptt_key`.
+- [x] **Step 8: Live check, a talk key.** Profile with `tx_mode=1`, `talk_key=135` (F24), output volume 0. Test server up, `channeltest` listening in Lobby, the app connected there. Run `python tools/hold_keys.py F24 2`. Expected from the listener: a first voice packet within 60 ms of the press, about 100 packets, then an end-of-talk packet. Repeat with `talk_release_ms=300`: about 115 packets. Repeat with `talk_key=134+135` and `hold_keys.py F23+F24 2`: about 100 packets; `hold_keys.py F24 2` alone: none.
+- [x] **Step 9: Live check, choosing a key.** With the software renderer, open Settings, Shortcuts, click "Add a key", run `hold_keys.py F23 0.3`, and take a screenshot: a chip named "F23". Click it again and close the settings window without pressing anything; run `hold_keys.py F24 2` with a listener: voice must flow, proving nothing was left waiting for a key.
 
 ## Part B: whisper keys
 
@@ -717,7 +717,7 @@ in `ps-client`: `pub const ERROR_NO_WHISPER_TARGETS: u32 = 0x070c;`,
 `ClientHandle::send_whisper(&self, target: &WhisperTarget, codec: u8, data: &[u8])`, `ClientHandle::set_channel_commander(&self, on: bool)`,
 `Event::Talking { client_id: u16, talking: bool, whisper: bool }`, `ClientInfo::whispering: bool`.
 
-- [ ] **Step 1: Write the failing tests.** In `ps-protocol/src/voice.rs`:
+- [x] **Step 1: Write the failing tests.** In `ps-protocol/src/voice.rs`:
 
 ```rust
 #[test]
@@ -797,12 +797,12 @@ fn whispers_are_marked_on_the_person() {
 }
 ```
 
-- [ ] **Step 2:** Run `cargo test -p ps-protocol whisper` and `cargo test -p ps-client whisper`; expect compile failures.
-- [ ] **Step 3: Implement.** The two encoders write exactly the layouts in "Facts". `WhisperGroup` maps to `(0, id)`, `(1, id)`, `(2, 0)`, `(3, 0)`; `WhisperScope` to 0 through 6 in declaration order. `Book::set_talking(id, talking, whisper)` returns true when either flag changes and clears `whispering` when talking stops; the existing call in `client_lifecycle` gains `false`. In `conn.rs`: `on_voice` passes `ptype == PacketType::VoiceWhisper` to `set_talking`, which emits `Event::Talking { client_id, talking, whisper }`; the talk timeout passes `false`; a new `Request::Whisper { payload: Vec<u8>, group: bool }` is sent with `self.send_packet(PacketType::VoiceWhisper, if group { FLAG_NEWPROTOCOL } else { 0 }, &payload)` when connected and the payload is at most `MAX_C2S_PAYLOAD` bytes. `send_whisper` builds the payload with `target.payload` and sends nothing when that is `None`. `set_channel_commander` sends `clientupdate client_is_channel_commander=0|1`. Every existing match on `Event::Talking` gains `..` or the new field.
-- [ ] **Step 4:** Run `cargo test --workspace`; expect all pass (4 new).
-- [ ] **Step 5: `channeltest` says what it heard.** Its sink keeps separate counts for talk and whisper and prints "first whisper packet from client N" or "first voice packet from client N", "end-of-talk" or "end-of-whisper", and both counts in the per-second and total lines.
-- [ ] **Step 6: Write `tools/seed_whisper_tree.py`**: over ServerQuery, with `--password`, look up channels by name, create `Booth` under `Radio` and `Drift` under `Deep Rock` if missing (`channelcreate channel_name=Booth channel_flag_permanent=1 cpid=<Radio>`), grant guests the commander permission (`servergroupaddperm sgid=<Guest, the one with type=1> permsid=b_client_use_channel_commander permvalue=1 permnegated=0 permskip=0`), and print `--booth <cid> --drift <cid>`. These exact commands were used on 2026-10-06.
-- [ ] **Step 7: Write `ps-client/examples/whispertest.rs`**, which re-runs the table from "Facts" and fails loudly if a server behaves differently:
+- [x] **Step 2:** Run `cargo test -p ps-protocol whisper` and `cargo test -p ps-client whisper`; expect compile failures.
+- [x] **Step 3: Implement.** The two encoders write exactly the layouts in "Facts". `WhisperGroup` maps to `(0, id)`, `(1, id)`, `(2, 0)`, `(3, 0)`; `WhisperScope` to 0 through 6 in declaration order. `Book::set_talking(id, talking, whisper)` returns true when either flag changes and clears `whispering` when talking stops; the existing call in `client_lifecycle` gains `false`. In `conn.rs`: `on_voice` passes `ptype == PacketType::VoiceWhisper` to `set_talking`, which emits `Event::Talking { client_id, talking, whisper }`; the talk timeout passes `false`; a new `Request::Whisper { payload: Vec<u8>, group: bool }` is sent with `self.send_packet(PacketType::VoiceWhisper, if group { FLAG_NEWPROTOCOL } else { 0 }, &payload)` when connected and the payload is at most `MAX_C2S_PAYLOAD` bytes. `send_whisper` builds the payload with `target.payload` and sends nothing when that is `None`. `set_channel_commander` sends `clientupdate client_is_channel_commander=0|1`. Every existing match on `Event::Talking` gains `..` or the new field.
+- [x] **Step 4:** Run `cargo test --workspace`; expect all pass (4 new).
+- [x] **Step 5: `channeltest` says what it heard.** Its sink keeps separate counts for talk and whisper and prints "first whisper packet from client N" or "first voice packet from client N", "end-of-talk" or "end-of-whisper", and both counts in the per-second and total lines.
+- [x] **Step 6: Write `tools/seed_whisper_tree.py`**: over ServerQuery, with `--password`, look up channels by name, create `Booth` under `Radio` and `Drift` under `Deep Rock` if missing (`channelcreate channel_name=Booth channel_flag_permanent=1 cpid=<Radio>`), grant guests the commander permission (`servergroupaddperm sgid=<Guest, the one with type=1> permsid=b_client_use_channel_commander permvalue=1 permnegated=0 permskip=0`), and print `--booth <cid> --drift <cid>`. These exact commands were used on 2026-10-06.
+- [x] **Step 7: Write `ps-client/examples/whispertest.rs`**, which re-runs the table from "Facts" and fails loudly if a server behaves differently:
 
 ```rust
 use std::sync::mpsc::{self, Receiver};
@@ -927,7 +927,7 @@ fn main() {
 }
 ```
 
-- [ ] **Step 8: Live check.** Test server up, `python3 tools/seed_whisper_tree.py --password <the test server's query password>` inside WSL, then `cargo run -p ps-client --example whispertest -- <server ip> --booth <cid> --drift <cid>`. Expected: twelve `PASS` lines and exit code 0.
+- [x] **Step 8: Live check.** Test server up, `python3 tools/seed_whisper_tree.py --password <the test server's query password>` inside WSL, then `cargo run -p ps-client --example whispertest -- <server ip> --booth <cid> --drift <cid>`. Expected: twelve `PASS` lines and exit code 0.
 
 ### Task 5: Lanes in the audio engine
 
@@ -938,7 +938,7 @@ fn main() {
 `Shared::set_lane_room(&self, lane: u8, bytes: usize)` (clamped to 24..=`MAX_PACKET_BYTES`), `Shared::lane_room(&self, lane: u8) -> usize` (`MAX_PACKET_BYTES` until set), `Shared::on_air_lane(&self) -> Option<u8>` (the lane frames are going out on right now), `Shared::set_on_air(&self, lane: Option<u8>)` (crate-internal, used by the transmitter),
 and `Transmitter::process(&mut self, input: &[f32], shared: &Shared, sink: &mut dyn FnMut(u8, u8, &[u8]))`.
 
-- [ ] **Step 1: Write the failing tests** in the `tests` module of `capture.rs`. Change the existing `collect` helper to take the three-argument closure and drop the lane, then add:
+- [x] **Step 1: Write the failing tests** in the `tests` module of `capture.rs`. Change the existing `collect` helper to take the three-argument closure and drop the lane, then add:
 
 ```rust
 fn lanes(tx: &mut Transmitter, shared: &Shared, input: &[f32]) -> Vec<(u8, u8, usize)> {
@@ -1028,8 +1028,8 @@ fn muting_stops_whispers_too() {
 }
 ```
 
-- [ ] **Step 2:** Run `cargo test -p ps-voice`; expect compile failures.
-- [ ] **Step 3: Implement.** `Shared` gets `lane_room: [AtomicU16; LANES]` (0 meaning unset) and `on_air: AtomicU8` (255 meaning none). `Transmitter` gets a `lane: u8` field. The decision part of `process_frame` becomes:
+- [x] **Step 2:** Run `cargo test -p ps-voice`; expect compile failures.
+- [x] **Step 3: Implement.** `Shared` gets `lane_room: [AtomicU16; LANES]` (0 meaning unset) and `on_air: AtomicU8` (255 meaning none). `Transmitter` gets a `lane: u8` field. The decision part of `process_frame` becomes:
 
 ```rust
 let lane = shared.whisper_lane();
@@ -1096,7 +1096,7 @@ shared.set_on_air(if active { Some(lane) } else { None });
 ```
 
   `encode_and_emit(frame, lane, room, sink)` encodes into `&mut self.packet[..room]` and calls `sink(lane, codec, &self.packet[..n])`. One thing the first test relies on: in voice-activation mode a held whisper key must not disturb `hangover`, so the `lane != 0` test comes first and short-circuits. In `lib.rs` the transmit loop passes the lane through to the sink; the microphone test (loopback) plays back every lane. In `app.rs` the sink becomes `move |lane, codec, data| if lane == 0 { client.send_voice(codec, data) }`, which already satisfies "a whisper key never sends to the channel" before whisper keys exist.
-- [ ] **Step 4:** Run `cargo test --workspace`; expect all pass (4 new) and the six existing transmitter tests unchanged in what they assert. `cargo build --workspace --all-targets`; expect no warnings.
+- [x] **Step 4:** Run `cargo test --workspace`; expect all pass (4 new) and the six existing transmitter tests unchanged in what they assert. `cargo build --workspace --all-targets`; expect no warnings.
 
 ### Task 6: Whisper keys
 
@@ -1113,7 +1113,7 @@ shared.set_on_air(if active { Some(lane) } else { None });
 `pub enum Route<'a> { Talk, Whisper(&'a WhisperTarget), Nothing }`, `pub fn route(lane: u8, table: &[Option<WhisperTarget>]) -> Route<'_>`,
 `pub fn lane_table(keys: &[WhisperKey], view: Option<&ServerView>, reply_to: Option<u16>) -> Vec<Option<WhisperTarget>>` (14 entries: index 0 unused, 1 to 12 the keys in order, 13 the reply target).
 
-- [ ] **Step 1: Write the failing tests** in `whisper.rs`:
+- [x] **Step 1: Write the failing tests** in `whisper.rs`:
 
 ```rust
 #[cfg(test)]
@@ -1284,8 +1284,8 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2:** Run `cargo test -p ps-app whisper`; expect a compile failure.
-- [ ] **Step 3: Implement.**
+- [x] **Step 2:** Run `cargo test -p ps-app whisper`; expect a compile failure.
+- [x] **Step 3: Implement.**
   - File `whisper.ini` next to `settings.ini`: one `[whisper]` section per key with `key=` (the chord text, may be empty), `kind=` (`list`, `everyone`, `commanders`, `server_group`, `channel_group`), `scope=` (`all`, `current`, `parent`, `all_parents`, `family`, `whole_family`, `subchannels`; missing or unknown means `all`), `server=` and `server_name=`, `group=` and `group_name=`, and repeated `channel=<id> <name>` and `person=<uid> <name>` lines split at the first space. A section with an unknown `kind` is skipped; a group kind that needs an id and has none is skipped; values are written on one line as `bookmarks.rs` does.
   - `resolve`, in full because it decides who hears you:
 
@@ -1355,7 +1355,7 @@ pub fn lane_table(keys: &[WhisperKey], view: Option<&ServerView>, reply_to: Opti
 ```
 
   The `view` helper in the tests gives client 8 to Marlin, which is why the reply lane resolves there.
-- [ ] **Step 4:** Run `cargo test -p ps-app whisper`; expect 5 pass.
+- [x] **Step 4:** Run `cargo test -p ps-app whisper`; expect 5 pass.
 
 ### Task 7: Wiring the app
 
@@ -1363,7 +1363,7 @@ pub fn lane_table(keys: &[WhisperKey], view: Option<&ServerView>, reply_to: Opti
 
 **Interfaces:** Consumes everything above. Produces `Settings::reply_key: Chord`, `Settings::allow_whispers: bool` (default true), `RowData::whispering: bool`, `RowData::commander: bool`, `Outcome::whisper_unheard: bool`, `Outcome::whisper_from: Option<u16>`.
 
-- [ ] **Step 1: Write the failing tests.** In `session.rs`, a new test:
+- [x] **Step 1: Write the failing tests.** In `session.rs`, a new test:
 
 ```rust
 #[test]
@@ -1393,9 +1393,9 @@ fn whispers_and_unheard_whispers_are_noted() {
 ```
 
   In `settings.rs`, extend `old_talk_key_setting_is_carried_over` with: `reply_key=96` and `allow_whispers=0` parse and round-trip, and `Settings::default().allow_whispers` is true.
-- [ ] **Step 2:** Run `cargo test -p ps-app`; expect failures.
-- [ ] **Step 3: Implement in `session.rs`.** `Event::Talking` stores both flags on the person in the view. When a whisper starts from someone who has not whispered in the last 60 seconds, add one dim line "<name> is whispering to you"; set `whisper_from` every time a whisper starts. `ServerError` with `ERROR_NO_WHISPER_TARGETS` adds no chat line and sets `whisper_unheard`. `build_rows` copies `whispering` and `is_channel_commander` onto person rows; a whispering person's tag reads "whispers to you".
-- [ ] **Step 4: Implement in `app.rs`.**
+- [x] **Step 2:** Run `cargo test -p ps-app`; expect failures.
+- [x] **Step 3: Implement in `session.rs`.** `Event::Talking` stores both flags on the person in the view. When a whisper starts from someone who has not whispered in the last 60 seconds, add one dim line "<name> is whispering to you"; set `whisper_from` every time a whisper starts. `ServerError` with `ERROR_NO_WHISPER_TARGETS` adds no chat line and sets `whisper_unheard`. `build_rows` copies `whispering` and `is_channel_commander` onto person rows; a whispering person's tag reads "whispers to you".
+- [x] **Step 4: Implement in `app.rs`.**
   - `App` owns `WhisperKeys` (loaded at start), a lane table behind `Arc<Mutex<Vec<Option<WhisperTarget>>>>`, `reply_to: Option<(u16, u16)>` (session id, client id) and `unheard_at: Option<Instant>`.
   - The frame sink installed by `route_mic` becomes: lock the table, `match route(lane, &table) { Route::Talk => client.send_voice(codec, data), Route::Whisper(target) => client.send_whisper(target, codec, data), Route::Nothing => {} }`.
   - The table is rebuilt with `lane_table(&keys, viewed session's view, reply_to for that session)` whenever the viewed session changes, its view arrives, the keys are edited or a whisper arrives; the same moment sets `set_lane_room(lane, target.frame_room())` for every lane that has a target, and sends the whisper chords and reply chord to the key watcher. Because the sink is replaced and the table rebuilt in `route_mic` before the new session becomes the microphone's target, a whisper key pressed during a server switch can only reach the new server's table.
@@ -1403,7 +1403,7 @@ fn whispers_and_unheard_whispers_are_noted() {
   - `allow_whispers` lives in an `Arc<AtomicBool>` read by every session's voice sink: when false, packets with `packet.whisper` are not pushed to the mixer, and `whisper_from` is ignored.
   - Dock wording, checked in this order after "Not connected", "Connecting", "Sound muted" and "Microphone muted": if `shared.whisper_lane()` is not 0 and its table entry is empty, "That whisper key is for <server name>" (other server), "Nobody on that whisper key is here" (`NobodyThere`) or "Nobody has whispered to you yet" (reply lane); if `on_air_lane()` is a whisper lane and `unheard_at` is under 2 seconds old, "Nobody is there to hear that whisper"; if it is a whisper lane, "Whispering to <describe>" (for the reply lane, "Whispering to <name>"); then "Talking" and the send-mode wording as today.
   - `toggle_commander`: calls `set_channel_commander(!own.is_channel_commander)` on the viewed session. A refusal arrives as error `0x0a08`, which already reads "You do not have permission to do that here." in the chat drawer.
-- [ ] **Step 5:** `cargo test --workspace`; expect all pass (1 new, 1 extended). `cargo build --workspace --all-targets`; expect no warnings.
+- [x] **Step 5:** `cargo test --workspace`; expect all pass (1 new, 1 extended). `cargo build --workspace --all-targets`; expect no warnings.
 
 ### Task 8: The Shortcuts tab and the marks
 
@@ -1415,15 +1415,15 @@ on `SettingsWindow`: `in property <[WhisperKeyRow]> whisper-keys;`, `in property
 callbacks `whisper-key-add()`, `whisper-key-edit(int)`, `whisper-key-remove(int)`, `reply-key-change()`, `reply-key-clear()`, `editor-key-change()`, `editor-toggle(int)`, `editor-changed()`, `editor-save()`, `editor-cancel()`;
 on `TreeRow`: `whispering: bool`, `commander: bool`; on `PhishSpeakApp`: `in property <bool> commander;`, `callback toggle-commander();`; `Icons.commander`.
 
-- [ ] **Step 1: The list.** Under the talk keys: a heading "Whisper keys", one 34 px row per key (a `KeyChip`, the summary, a dim note such as "for Reef Runners" or "no key yet", "Edit" and "Remove"), then "Add a whisper key" (disabled at twelve, with the note "Twelve is the most."). Then the reply key chip with the hint "Talks to whoever whispered to you last.", and the tick box "Let others whisper to me".
-- [ ] **Step 2: The editor** replaces the tab's content while `editor-open`:
+- [x] **Step 1: The list.** Under the talk keys: a heading "Whisper keys", one 34 px row per key (a `KeyChip`, the summary, a dim note such as "for Reef Runners" or "no key yet", "Edit" and "Remove"), then "Add a whisper key" (disabled at twelve, with the note "Twelve is the most."). Then the reply key chip with the hint "Talks to whoever whispered to you last.", and the tick box "Let others whisper to me".
+- [x] **Step 2: The editor** replaces the tab's content while `editor-open`:
   - "Whisper key": a `KeyChip`. A combination already used by a talk key or another whisper key is refused with "That key is already used for <what>."
   - "Whisper to": a `Segmented` with "Channels and people" and "A group".
   - Channels and people: the hint "From <server>. Tick the channels and the people your voice should go to." and a scrolling list of the viewed server's tree, one 28 px row per channel and, indented under it, per person, each with a tick box. Entries the key holds that are not on the server now are listed first, dimmed, marked "not here now", and can be unticked. With no server viewed: "Connect to a server to choose channels and people from it." Ticking a 31st channel or a 61st person is refused with a note.
   - A group: "Who" as a `Dropdown` (Everyone, Channel commanders, A server group, A channel group); for the last two a second `Dropdown` with the viewed server's groups by name; "Where" as a `Dropdown` with the seven places, and under it one line that says what the choice reaches, taken from the table in "What this builds".
   - "Save" (the one amber button, disabled until there is a target) and "Cancel". Saving writes `whisper.ini`.
-- [ ] **Step 3: The main window.** A person row with `commander` shows `Icons.commander` (a small chevron mark, 14 px, tinted Drift) left of the mute marks. The servers menu gains, while viewing a connected server, "Be a channel commander" or "Stop being a channel commander". A whispering person keeps the amber talking dot and shows the tag "whispers to you".
-- [ ] **Step 4:** `cargo build -p ps-app`; expect no warnings. Screenshots with the software renderer of: the Shortcuts tab with two talk keys and three whisper keys, the editor in both modes, a row with the commander mark, a row marked "whispers to you". Check each against the constraints: sentence case, 28 px controls, one amber button.
+- [x] **Step 3: The main window.** A person row with `commander` shows `Icons.commander` (a small chevron mark, 14 px, tinted Drift) left of the mute marks. The servers menu gains, while viewing a connected server, "Be a channel commander" or "Stop being a channel commander". A whispering person keeps the amber talking dot and shows the tag "whispers to you".
+- [x] **Step 4:** `cargo build -p ps-app`; expect no warnings. Screenshots with the software renderer of: the Shortcuts tab with two talk keys and three whisper keys, the editor in both modes, a row with the commander mark, a row marked "whispers to you". Check each against the constraints: sentence case, 28 px controls, one amber button.
 
 ### Task 9: Live checks and documents
 
@@ -1431,16 +1431,16 @@ on `TreeRow`: `whispering: bool`, `commander: bool`; on `PhishSpeakApp`: `in pro
 
 All checks use the test server seeded by `tools/seed_whisper_tree.py`, the software renderer, a throwaway profile with output volume 0, generated identities, `tools/hold_keys.py` for the keys, and `channeltest` listeners.
 
-- [ ] **Step 1: A group key.** The app in Radio with "When I speak" selected and a silent microphone. Whisper keys: F23 "Everyone, the channel above mine", F22 "Everyone, the channels right below mine". Listeners in Deep Rock, Radio and Booth. `hold_keys.py F23 2`: Deep Rock hears about 100 whisper packets and an end-of-whisper; Radio and Booth hear nothing. `hold_keys.py F22 2`: only Booth hears it. The dock reads "Whispering to everyone, the channel above mine" in a screenshot taken during the first.
-- [ ] **Step 2: A list key.** F21 aimed at Lobby and at one listener in Tide Pool, picked in the editor with clicks. `hold_keys.py F21 2`: the Lobby listener and that one listener hear whispers; a second listener in Tide Pool hears nothing.
-- [ ] **Step 3: Never to the channel.** With the list key from Step 2 saved, stop the Tide Pool listener, delete nothing else, and view a second connection whose server UID differs (or, with one test server, edit `whisper.ini` so the key's `server=` names another UID). Listener in the app's own channel. `hold_keys.py F21 2`: that listener hears nothing at all, and the dock reads "That whisper key is for <name>". Then aim a key at a channel id that does not exist: nothing is heard and the dock reads "Nobody on that whisper key is here".
-- [ ] **Step 4: Changing audience mid-sentence.** Send mode "While I hold a key", talk key F24, whisper key F23 to the parent channel. Listeners in the app's channel and in the parent. Run `hold_keys.py F24 3` and, one second in, `hold_keys.py F23 1` from a second shell. Expected: the channel listener gets about 50 voice packets, an end-of-talk, then about 50 more voice packets and an end-of-talk; the parent listener gets about 50 whisper packets and an end-of-whisper; neither gets a packet of the other kind.
-- [ ] **Step 5: Nobody there.** A key "Everyone, the channel above mine" pressed while the app is in a top-level channel: the dock reads "Nobody is there to hear that whisper" and the chat drawer gains no line.
-- [ ] **Step 6: Being whispered to.** `whispertest`-style sender whispering to the app's client: the sender's row shows the amber dot and "whispers to you", one dim chat line appears, and with the reply key bound to F20, `hold_keys.py F20 2` makes a listener running as that sender's identity hear whisper packets. Turn off "Let others whisper to me" and repeat: no mark, no line, and the mixer's talker count for that client stays at zero (visible as no talking dot).
-- [ ] **Step 7: Channel commander.** With the permission granted by the seed script, the menu entry sets the mark on the app's own row; a key "Channel commanders, everywhere" from a second client reaches the app and nobody else. Remove the permission through ServerQuery and try again: the chat drawer shows "You do not have permission to do that here." and no mark appears.
-- [ ] **Step 8: From a music channel, with a long list.** The app in Radio (Opus Music), a list key with 30 channels (29 of them ids that do not exist, written into `whisper.ini`) and Lobby: the Lobby listener hears whisper packets, each of codec 4.
+- [x] **Step 1: A group key.** The app in Radio with "When I speak" selected and a silent microphone. Whisper keys: F23 "Everyone, the channel above mine", F22 "Everyone, the channels right below mine". Listeners in Deep Rock, Radio and Booth. `hold_keys.py F23 2`: Deep Rock hears about 100 whisper packets and an end-of-whisper; Radio and Booth hear nothing. `hold_keys.py F22 2`: only Booth hears it. The dock reads "Whispering to everyone, the channel above mine" in a screenshot taken during the first.
+- [x] **Step 2: A list key.** F21 aimed at Lobby and at one listener in Tide Pool, picked in the editor with clicks. `hold_keys.py F21 2`: the Lobby listener and that one listener hear whispers; a second listener in Tide Pool hears nothing.
+- [x] **Step 3: Never to the channel.** With the list key from Step 2 saved, stop the Tide Pool listener, delete nothing else, and view a second connection whose server UID differs (or, with one test server, edit `whisper.ini` so the key's `server=` names another UID). Listener in the app's own channel. `hold_keys.py F21 2`: that listener hears nothing at all, and the dock reads "That whisper key is for <name>". Then aim a key at a channel id that does not exist: nothing is heard and the dock reads "Nobody on that whisper key is here".
+- [x] **Step 4: Changing audience mid-sentence.** Send mode "While I hold a key", talk key F24, whisper key F23 to the parent channel. Listeners in the app's channel and in the parent. Run `hold_keys.py F24 3` and, one second in, `hold_keys.py F23 1` from a second shell. Expected: the channel listener gets about 50 voice packets, an end-of-talk, then about 50 more voice packets and an end-of-talk; the parent listener gets about 50 whisper packets and an end-of-whisper; neither gets a packet of the other kind.
+- [x] **Step 5: Nobody there.** A key "Everyone, the channel above mine" pressed while the app is in a top-level channel: the dock reads "Nobody is there to hear that whisper" and the chat drawer gains no line.
+- [x] **Step 6: Being whispered to.** `whispertest`-style sender whispering to the app's client: the sender's row shows the amber dot and "whispers to you", one dim chat line appears, and with the reply key bound to F20, `hold_keys.py F20 2` makes a listener running as that sender's identity hear whisper packets. Turn off "Let others whisper to me" and repeat: no mark, no line, and the mixer's talker count for that client stays at zero (visible as no talking dot).
+- [x] **Step 7: Channel commander.** With the permission granted by the seed script, the menu entry sets the mark on the app's own row; a key "Channel commanders, everywhere" from a second client reaches the app and nobody else. Remove the permission through ServerQuery and try again: the chat drawer shows "You do not have permission to do that here." and no mark appears.
+- [x] **Step 8: From a music channel, with a long list.** The app in Radio (Opus Music), a list key with 30 channels (29 of them ids that do not exist, written into `whisper.ini`) and Lobby: the Lobby listener hears whisper packets, each of codec 4.
 - [ ] **Step 9: One thing only you can do.** With the official TeamSpeak client on the same server: whisper from PhishSpeak to it and from it to PhishSpeak, and say what you heard. Everything above is PhishSpeak talking to PhishSpeak.
-- [ ] **Step 10: Documents.** In `PLAN.md`: a "Whisper" part in the protocol notes with the packet layouts, the who-hears-what table and the `0x070c` answer; the key-reading approach and its limits under "Known issues / decisions"; status, crates table, dev tools and test count. In `README.md`: two lines in the feature list. Run `build.bat`.
+- [x] **Step 10: Documents.** In `PLAN.md`: a "Whisper" part in the protocol notes with the packet layouts, the who-hears-what table and the `0x070c` answer; the key-reading approach and its limits under "Known issues / decisions"; status, crates table, dev tools and test count. In `README.md`: two lines in the feature list. Run `build.bat`.
 
 ## Not covered, on purpose
 

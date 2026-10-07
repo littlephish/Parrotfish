@@ -1,5 +1,5 @@
 import { ListView } from "std-widgets.slint";
-import { Theme, Icons } from "theme.slint";
+import { Theme, Icons, Frame } from "theme.slint";
 
 export struct TreeRow {
     kind: int,
@@ -17,6 +17,10 @@ export struct TreeRow {
     sound-muted: bool,
     away: bool,
     tag: string,
+    whispering: bool,
+    commander: bool,
+    foldable: bool,
+    folded: bool,
 }
 
 export struct ServerTile {
@@ -49,6 +53,20 @@ export struct IdentityRow {
     name: string,
     uid: string,
     detail: string,
+}
+
+export struct WhisperKeyRow {
+    key: string,
+    summary: string,
+    note: string,
+}
+
+export struct PickRow {
+    person: bool,
+    depth: int,
+    text: string,
+    ticked: bool,
+    gone: bool,
 }
 
 export component Icon inherits Image {
@@ -335,6 +353,27 @@ export component Field inherits Rectangle {
     }
 }
 
+component TickBox inherits Rectangle {
+    in property <bool> checked;
+    in property <bool> dim;
+
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    border-width: 1.5px;
+    border-color: root.checked && !root.dim ? Theme.foam : Theme.drift;
+    background: root.checked ? (root.dim ? Theme.drift : Theme.foam) : transparent;
+
+    if root.checked: Icon {
+        source: Icons.check;
+        tint: Theme.trench;
+        width: 14px;
+        height: 14px;
+        x: 2px;
+        y: 2px;
+    }
+}
+
 export component Check inherits Pressable {
     in-out property <bool> checked;
     in property <string> text;
@@ -355,22 +394,8 @@ export component Check inherits Pressable {
         VerticalLayout {
             alignment: center;
 
-            Rectangle {
-                width: 18px;
-                height: 18px;
-                border-radius: 5px;
-                border-width: 1.5px;
-                border-color: root.checked ? Theme.foam : Theme.drift;
-                background: root.checked ? Theme.foam : transparent;
-
-                if root.checked: Icon {
-                    source: Icons.check;
-                    tint: Theme.trench;
-                    width: 14px;
-                    height: 14px;
-                    x: 2px;
-                    y: 2px;
-                }
+            TickBox {
+                checked: root.checked;
             }
         }
 
@@ -424,11 +449,16 @@ export component Dropdown inherits Pressable {
     in property <string> placeholder: "Nothing to choose from";
     callback selected();
 
+    property <length> list-height: min(246px, root.model.length * 30px + 8px);
+    property <bool> opens-up: root.absolute-position.y + root.height + root.list-height + 10px > Frame.height && root.absolute-position.y - root.list-height - 10px >= 0px;
+
     height: 34px;
     border-radius: 8px;
     background: Theme.trench;
     clicked => {
-        popup.show();
+        if (root.model.length > 0) {
+            popup.show();
+        }
     }
 
     Rectangle {
@@ -444,7 +474,7 @@ export component Dropdown inherits Pressable {
 
         Text {
             text: root.current-index >= 0 && root.current-index < root.model.length ? root.model[root.current-index] : root.placeholder;
-            color: root.model.length > 0 ? Theme.foam : Theme.drift;
+            color: root.current-index >= 0 && root.current-index < root.model.length ? Theme.foam : Theme.drift;
             font-size: Theme.text;
             vertical-alignment: center;
             overflow: elide;
@@ -462,9 +492,9 @@ export component Dropdown inherits Pressable {
 
     popup := PopupWindow {
         x: 0px;
-        y: root.height + 4px;
+        y: root.opens-up ? -root.list-height - 4px : root.height + 4px;
         width: root.width;
-        height: min(246px, root.model.length * 30px + 8px);
+        height: root.list-height;
 
         Rectangle {
             background: Theme.shoal;
@@ -508,6 +538,118 @@ export component Dropdown inherits Pressable {
     }
 }
 
+export component KeyChip inherits Rectangle {
+    in property <string> text;
+    in property <string> empty-text: "Choose a key";
+    in property <bool> listening;
+    in property <bool> removable: true;
+    callback clicked();
+    callback removed();
+
+    height: 34px;
+    horizontal-stretch: 0;
+    border-radius: 8px;
+    background: Theme.trench;
+
+    HorizontalLayout {
+        Pressable {
+            border-radius: 8px;
+            horizontal-stretch: 1;
+            min-width: 64px;
+            preferred-width: label.preferred-width + 26px;
+            background: self.hovered ? Theme.current.with-alpha(0.5) : transparent;
+            clicked => {
+                root.clicked();
+            }
+
+            label := Text {
+                x: 13px;
+                width: parent.width - 26px;
+                text: root.listening ? "Press a key…" : (root.text == "" ? root.empty-text : root.text);
+                color: root.listening || root.text == "" ? Theme.drift-bright : Theme.foam;
+                font-size: Theme.text;
+                font-weight: root.listening || root.text == "" ? 400 : 600;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        if root.removable && root.text != "" && !root.listening: Pressable {
+            width: 28px;
+            border-radius: 8px;
+            background: self.hovered ? Theme.current.with-alpha(0.5) : transparent;
+            clicked => {
+                root.removed();
+            }
+
+            Icon {
+                source: Icons.close;
+                tint: parent.hovered ? Theme.foam : Theme.drift;
+                width: 12px;
+                height: 12px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+        }
+    }
+
+    Rectangle {
+        border-radius: 8px;
+        border-width: root.listening ? 2px : 1px;
+        border-color: root.listening ? Theme.lure : Theme.hairline;
+    }
+}
+
+export component PickRowView inherits Pressable {
+    in property <PickRow> entry;
+
+    height: 28px;
+    border-radius: 6px;
+    background: self.hovered ? Theme.shoal : transparent;
+
+    HorizontalLayout {
+        padding-left: 8px + root.entry.depth * 16px;
+        padding-right: 10px;
+        spacing: 9px;
+
+        VerticalLayout {
+            alignment: center;
+
+            TickBox {
+                checked: root.entry.ticked;
+                dim: root.entry.gone;
+            }
+        }
+
+        if !root.entry.person: VerticalLayout {
+            alignment: center;
+
+            Icon {
+                source: Icons.speaker;
+                width: 14px;
+                height: 14px;
+            }
+        }
+
+        Text {
+            text: root.entry.text;
+            color: root.entry.gone ? Theme.drift : Theme.foam;
+            font-size: Theme.text;
+            font-weight: root.entry.person ? 400 : 600;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+
+        if root.entry.gone: Text {
+            text: "not here now";
+            color: Theme.drift;
+            font-size: 11.5px;
+            vertical-alignment: center;
+        }
+    }
+}
+
 component Rule inherits VerticalLayout {
     alignment: center;
     horizontal-stretch: 1;
@@ -540,9 +682,36 @@ component Dashes inherits Rectangle {
     }
 }
 
+component FoldArrow inherits Rectangle {
+    in property <bool> active;
+    in property <bool> folded;
+    out property <bool> hovered: touch.has-hover && root.active;
+    callback clicked();
+
+    width: 20px;
+
+    if root.active: Icon {
+        source: root.folded ? Icons.chevron-right : Icons.chevron;
+        tint: root.hovered ? Theme.foam : Theme.drift;
+        width: 14px;
+        height: 14px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+
+    touch := TouchArea {
+        enabled: root.active;
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
 export component TreeRowView inherits Rectangle {
     in property <TreeRow> entry;
     callback activated();
+    callback fold-clicked();
 
     height: Theme.row;
 
@@ -602,21 +771,35 @@ export component TreeRowView inherits Rectangle {
     if root.entry.kind == 3: Pressable {
         focusable: false;
         border-radius: 6px;
-        background: root.entry.current ? Theme.current : (self.hovered ? Theme.shoal : transparent);
+        background: root.entry.current ? Theme.current : (self.hovered || arrow.hovered ? Theme.shoal : transparent);
         double-clicked => {
             root.activated();
         }
 
         HorizontalLayout {
-            padding-left: 10px + root.entry.depth * 16px;
+            padding-left: 2px + root.entry.depth * 16px;
             padding-right: 10px;
             spacing: 8px;
 
-            VerticalLayout {
-                alignment: center;
+            HorizontalLayout {
+                spacing: 2px;
+                horizontal-stretch: 0;
 
-                Icon {
-                    source: root.entry.icon == 1 ? Icons.lock : (root.entry.icon == 2 ? Icons.note : Icons.speaker);
+                arrow := FoldArrow {
+                    active: root.entry.foldable;
+                    folded: root.entry.folded;
+                    clicked => {
+                        root.fold-clicked();
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+
+                    Icon {
+                        source: root.entry.icon == 1 ? Icons.lock : (root.entry.icon == 2 ? Icons.note : Icons.speaker);
+                        tint: root.entry.talking ? Theme.lure : Theme.drift;
+                    }
                 }
             }
 
@@ -640,7 +823,7 @@ export component TreeRowView inherits Rectangle {
     }
 
     if root.entry.kind == 4: HorizontalLayout {
-        padding-left: 30px + root.entry.depth * 16px;
+        padding-left: 44px + root.entry.depth * 16px;
         padding-right: 10px;
         spacing: 6px;
 
@@ -685,6 +868,16 @@ export component TreeRowView inherits Rectangle {
             vertical-alignment: center;
             overflow: elide;
             horizontal-stretch: 1;
+        }
+
+        if root.entry.commander: VerticalLayout {
+            alignment: center;
+
+            Icon {
+                source: Icons.commander;
+                width: 14px;
+                height: 14px;
+            }
         }
 
         if root.entry.mic-muted: VerticalLayout {

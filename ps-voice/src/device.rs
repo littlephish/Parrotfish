@@ -56,6 +56,11 @@ pub(crate) enum Ctl {
     Stop,
 }
 
+pub(crate) struct FarSource {
+    pub consumer: rtrb::Consumer<f32>,
+    pub rate: u32,
+}
+
 pub(crate) struct InputSource {
     pub consumer: rtrb::Consumer<f32>,
     pub rate: u32,
@@ -69,6 +74,13 @@ fn find_device(host: &cpal::Host, id: &Option<String>, input: bool) -> Result<cp
             for device in devices {
                 if device.id().map(|d| d.to_string() == *wanted).unwrap_or(false) {
                     return Ok(device);
+                }
+            }
+            if input {
+                for device in host.output_devices().map_err(|e| format!("cannot list devices: {e}"))? {
+                    if device.id().map(|d| d.to_string() == *wanted).unwrap_or(false) {
+                        return Ok(device);
+                    }
                 }
             }
             Err("the selected device is not available".into())
@@ -147,7 +159,10 @@ fn open_input(
     tx_thread: &Thread,
 ) -> Result<(cpal::Stream, String), String> {
     let device = find_device(host, id, true)?;
-    let supported = device.default_input_config().map_err(|e| format!("no usable input format: {e}"))?;
+    let supported = device
+        .default_input_config()
+        .or_else(|_| device.default_output_config())
+        .map_err(|e| format!("no usable input format: {e}"))?;
     let format = supported.sample_format();
     if !is_supported(format) {
         return Err(format!("unsupported input sample format {format}"));
@@ -197,11 +212,15 @@ struct OutputRenderer {
     fifo: VecDeque<f32>,
     block: Vec<f32>,
     converted: Vec<f32>,
+    far: rtrb::Producer<f32>,
+    tap: bool,
 }
 
 impl OutputRenderer {
-    fn new(shared: Arc<Shared>, rate: u32) -> Self {
+    fn new(shared: Arc<Shared>, rate: u32, far: rtrb::Producer<f32>) -> Self {
         Self {
+            far,
+            tap: false,
             shared,
             resampler: Resampler::new(SAMPLE_RATE, rate, MIX_CHANNELS),
             fifo: VecDeque::new(),
@@ -211,6 +230,7 @@ impl OutputRenderer {
     }
 
     fn fill(&mut self, frames: usize) {
+        self.tap = self.shared.echo_cancel();
         let needed = frames * MIX_CHANNELS;
         let mut guard = 0;
         while self.fifo.len() < needed && guard < 64 {
@@ -242,6 +262,9 @@ impl OutputRenderer {
     fn next_frame(&mut self) -> (f32, f32) {
         let left = self.fifo.pop_front().unwrap_or(0.0);
         let right = self.fifo.pop_front().unwrap_or(0.0);
+        if self.tap {
+            let _ = self.far.push((left + right) * 0.5);
+        }
         (left, right)
     }
 }
@@ -315,6 +338,7 @@ fn open_output(
     id: &Option<String>,
     shared: &Arc<Shared>,
     ctl: &Sender<Ctl>,
+    far_sources: &Sender<FarSource>,
 ) -> Result<(cpal::Stream, String), String> {
     let device = find_device(host, id, false)?;
     let supported = device.default_output_config().map_err(|e| format!("no usable output format: {e}"))?;
@@ -325,7 +349,11 @@ fn open_output(
     let config: StreamConfig = supported.config();
     let channels = config.channels as usize;
     let rate = config.sample_rate;
-    let mut renderer = OutputRenderer::new(shared.clone(), rate);
+    let (far, consumer) = rtrb::RingBuffer::<f32>::new(rate as usize);
+    far_sources
+        .send(FarSource { consumer, rate })
+        .map_err(|_| "audio transmit thread is gone".to_string())?;
+    let mut renderer = OutputRenderer::new(shared.clone(), rate, far);
     let err_ctl = ctl.clone();
     let stream = device
         .build_output_stream_raw(
@@ -350,6 +378,7 @@ pub(crate) fn manage(
     rx: Receiver<Ctl>,
     ctl: Sender<Ctl>,
     sources: Sender<InputSource>,
+    far_sources: Sender<FarSource>,
     tx_thread: Thread,
 ) {
     let host = cpal::default_host();
@@ -364,7 +393,7 @@ pub(crate) fn manage(
         let now = Instant::now();
         if open_output_at.is_some_and(|t| now >= t) {
             output_stream = None;
-            match open_output(&host, &output_id, &shared, &ctl) {
+            match open_output(&host, &output_id, &shared, &ctl, &far_sources) {
                 Ok((stream, label)) => {
                     output_stream = Some(stream);
                     open_output_at = None;

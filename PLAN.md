@@ -7,13 +7,34 @@ joins a server, shows the channel tree, chats, and does voice (Opus) both ways.
 
 Working end to end against a real TeamSpeak 3.13.8 server: login, channel tree, channel
 switching (incl. password channels), text chat, microphone capture → Opus → server, and
-server → Opus → speakers, with and without voice encryption. 120 unit tests green.
+server → Opus → speakers, with and without voice encryption. 172 unit tests green.
 
 The window is the compact tree layout in the Twilight reef palette (design:
 `docs/superpowers/specs/2026-10-06-compact-window-design.md`): spacer channels are drawn as
 dividers, servers can be bookmarked, several servers can be connected at once (you hear all
 of them, the microphone goes to the one you are viewing), and every setting lives in a
 separate tabbed settings window.
+
+Talk keys are chosen by pressing them: any key, mouse button 3 to 5, or a combination of up to
+four keys, several at once if wanted, with an optional delay before the microphone closes.
+Whisper keys send your voice to chosen channels and people, or to a group of people in the
+channels above, below or around yours, and never to your own channel; there is a reply key,
+people whispering to you are marked, and incoming whispers can be switched off
+(plan and decisions: `docs/superpowers/plans/2026-10-06-talk-and-whisper-keys.md` and its
+`.ledger.md`).
+
+Channels fold: an arrow beside every channel that has people or channels inside it. A setting
+chooses how they start (all open, empty ones folded, all folded) and each channel you fold or
+open yourself is remembered per server.
+
+Echo cancelling (Settings, Microphone, off by default) takes the sound of your own speakers
+out of your microphone, so people do not hear themselves when you listen through speakers.
+
+Each bookmark can name the channel to join when you connect: pick it under Settings,
+Bookmarks, or use "Start in <channel> next time" in the server menu.
+
+Releases are built by GitHub Actions only when a `v*` tag is pushed (`.github/workflows/`,
+`tools/package_release.py`, `installer/phishspeak.iss`); ordinary pushes run the tests only.
 
 Run it:
 
@@ -24,15 +45,22 @@ cargo run --release -p ps-app -- --connect <bookmark name or host[:port]> [--nic
 
 `--connect` can be given more than once; `--nickname` and `--channel` apply to the one before them.
 
-Not done yet: ServerQuery browser (v1.1), whispers (send), private-chat tabs, permissions UI,
+Not done yet: ServerQuery browser (v1.1), private-chat tabs, permissions UI,
 channel create/edit, file transfer/avatars, SRV/TSDNS lookup (use `host:port`), legacy
-Speex/CELT codecs (reported in the log, not decoded), pre-3.1 servers (`initivexpand`).
+Speex/CELT codecs (reported in the log, not decoded), pre-3.1 servers (`initivexpand`),
+hotkeys for anything but talking, game controller buttons, noise suppression and automatic
+gain.
 
-Not yet verified by anyone: a conversation with the **official** TS3 client in the same
-channel (everything so far is PhishSpeak ↔ real server ↔ PhishSpeak), and voice on a real
+Not yet verified by anyone: a conversation or a whisper with the **official** TS3 client
+(everything so far is PhishSpeak ↔ real server ↔ PhishSpeak), and voice on a real
 internet server (signing in to one has worked). Do that first before trusting it for daily use.
-Also unverified: sound by ear, the hold-to-talk key, and two different servers at once (the
-multi-server test used two connections to one server).
+Also unverified: sound by ear, a talk key held on a real keyboard or mouse (the checks pressed
+F13 to F24 by program), keys while a game running as administrator has the focus, two different
+servers at once (the multi-server tests used two connections to one server), and the release
+workflow and installer script, which have never run (there is no Inno Setup on this PC and
+GitHub Actions cannot be run locally). Echo cancelling has been measured on simulated rooms
+and on a sound device's own digital loopback, never in a real room with loudspeakers, never
+by ear, and never with a microphone and speakers that are separate USB devices.
 
 ## Goals
 
@@ -51,13 +79,14 @@ multi-server test used two connections to one server).
 |---|---|---|
 | `ps-identity` | INI parse, identity (de)obfuscation, DER, P-256, UID, hashcash level, sign/verify, generate/save | done, 14 tests |
 | `ps-crypto` | EAX-AES128 (8-byte MAC), dummy key, per-packet key/nonce, license chain, Ed25519 shared secret, RSA puzzle | done, 16 tests |
-| `ps-protocol` | Packet headers, command escape/parse/build, QuickLZ + fragmentation, receive windows/generations, Init1 payloads, voice payloads | done, 32 tests |
-| `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client book, voice in/out, events; `spacer` recognises spacer channels | done, 10 tests + live tests |
-| `ps-voice` | Opus codec, resampler, jitter buffer + mixer (talkers keyed by connection and client), VAD/PTT gate, cpal device I/O (WASAPI) | done, 29 tests + live tests |
-| `ps-app` | The windows. `session.rs` one connection (events, tree rows, chat history), `app.rs` all sessions, the viewed one and where the microphone goes, `bookmarks.rs`, `settings.rs`, `platform.rs` (talk key), `ui/` theme, widgets, main and settings windows | done, 19 tests + live tests |
+| `ps-protocol` | Packet headers, command escape/parse/build, QuickLZ + fragmentation, receive windows/generations, Init1 payloads, voice and whisper payloads | done, 34 tests |
+| `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client/group book, voice and whispers in/out, events; `spacer` recognises spacer channels | done, 13 tests + live tests |
+| `ps-voice` | Opus codec, resampler, jitter buffer + mixer (talkers keyed by connection and client), VAD/PTT gate, lanes (which key is held decides where a frame goes), echo canceller (`echo.rs`), cpal device I/O (WASAPI) | done, 48 tests + live tests |
+| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history), `app.rs` all sessions, the viewed one and where the microphone goes, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main and settings windows | done, 47 tests + live tests |
 | `ps-serverquery` | Text protocol over TCP 10011 | not started |
 
 Threads: UI thread (Slint, 33 ms timer drains client events) · `ps-client` actor + UDP reader ·
+`ps-keys` (asks Windows every 5 ms which bound keys are down and tells the audio engine) ·
 `ps-voice-tx` (mic → resample → gate → Opus → client) · `ps-voice-devices` (owns cpal streams,
 reopens on device change) · cpal callbacks (capture into a ring buffer; playback pulls
 jitter-buffer → decode → mix → resample).
@@ -126,6 +155,44 @@ ConnectOk", "level 213"). What is actually on the wire:
   `channel_codec_is_unencrypted=0`; otherwise send with the Unencrypted flag + SharedMac.
 - Multi-item notifications (`a=1 b=2|b=3`) inherit missing keys from the first item.
 
+### Start channel
+- `client_default_channel` in `clientinit` takes the channel's path by names, joined with `/`,
+  with `\/` for a slash inside a name (`Deep Rock/Radio`). A bare sub-channel name, a path that
+  does not exist and the `/<id>` form all leave you in the server's default channel, without an
+  error. So does a locked channel when no password is sent (live, 3.13.8).
+
+### Whisper
+- To a list, packet type VoiceWhisper, `Newprotocol` flag clear:
+  `[voice id u16][codec u8][N u8][M u8][N channel ids, u64 each][M client ids, u16 each][opus]`.
+- To a group, packet type VoiceWhisper, `Newprotocol` flag set:
+  `[voice id u16][codec u8][who u8][where u8][id u64][opus]`. Who: 0 server group, 1 channel
+  group, 2 channel commanders, 3 everyone. Where: 0 all channels, 1 current, 2 parent, 3 all
+  parents, 4 channel family, 5 complete family, 6 subchannels. The id is the group id for who 0
+  and 1 and is ignored otherwise.
+- Received whispers look like voice (`[voice id][client id][codec][opus]`) and are told apart by
+  the packet type. An empty opus part ends the whisper. Encryption follows the voice rule.
+- Who hears what (live, 3.13.8; Deep Rock contains Radio and Drift, Radio contains Booth):
+
+  | Where | Sender in Radio | Sender in Booth | Sender in Deep Rock |
+  |---|---|---|---|
+  | all channels | everyone on the server | | |
+  | current | Radio | Booth | Deep Rock |
+  | parent | Deep Rock | Radio | nobody |
+  | all parents | Deep Rock | Radio, Deep Rock | nobody |
+  | channel family | Radio, Booth | Booth | Deep Rock, Radio, Booth, Drift |
+  | complete family | Deep Rock, Radio, Booth, Drift | the same four | the same four |
+  | subchannels | Booth | nobody | Radio, Drift (not Booth) |
+
+- A list reaches the people in the listed channels plus the listed people, and nobody else.
+  Unknown ids are skipped. The codec byte is passed through untouched.
+- When nobody hears a whisper the server answers `error id=1804 (0x070c) msg=no whisper targets
+  found`, once per burst. That covers an empty list, a group or place that matches nobody, and a
+  listener who requires more whisper power than the sender has; the cases cannot be told apart.
+- `clientupdate client_is_channel_commander=1` needs `b_client_use_channel_commander`; without
+  it the server answers `0x0a08`.
+- After login the server sends `notifyservergrouplist` and `notifychannelgrouplist` unasked:
+  group ids, names, `type` (1 is a regular group) and `sortid`.
+
 ## Verification done
 
 - Unit tests with third-party vectors: tsclientlib's license derivation, shared IV, key/nonce,
@@ -155,14 +222,75 @@ ConnectOk", "level 213"). What is actually on the wire:
 - Audio devices on this PC: capture runs at 48 kHz from the Arctis and webcam mics; a −48 dBFS
   test tone pushed through the playback path was read back from the headphone endpoint via
   WASAPI loopback at −48.0 dBFS.
+- Talk keys, live, with keys pressed by `tools/hold_keys.py` (F13 to F24, which no keyboard has)
+  and a listener in the channel: an old `ptt_key=` setting came up as its key and was rewritten
+  as `talk_key=`; a 2 s press gave a first packet 14 ms after the key went down, 100 packets and
+  an end-of-talk packet; with a 0.3 s release delay 115 packets; a two-key combination sent only
+  while both keys were down; a key chosen in the settings window by pressing it; choosing a key
+  and closing the window without pressing one left the talk key working.
+- Whisper keys, live, six listeners spread over the channels, keys made in the editor with
+  clicks: "everyone, the channel above mine" from Radio reached only Deep Rock and "the channels
+  right below mine" only Booth (100 whisper packets and one end marker each); a list of one
+  channel and one person reached exactly those; a key that belongs to another server and a key
+  whose channel is gone reached nobody, the dock said why, and the listener in the app's own
+  channel heard nothing in any whisper check; pressing a whisper key in the middle of a held talk
+  key gave the channel 50 voice packets, an end-of-talk, 50 more and an end-of-talk, and the
+  parent 50 whisper packets and an end-of-whisper; a whisper to the channel above from a top-level
+  channel showed "Nobody is there to hear that whisper" and added no chat line; a whisper from a
+  music-quality channel with thirty channels in the list arrived as codec 4 while talk in that
+  channel stayed codec 5; a whisper to the app marked the sender and added one chat line, the
+  reply key reached that sender, and with incoming whispers off nothing was marked or played;
+  becoming channel commander showed the mark, a whisper to all commanders reached only the app,
+  and without the permission the server's refusal was shown; muting or switching servers in the
+  middle of a whisper sent the end marker at once and nothing after it; with two connections the
+  whisper went out on the viewed one. `whispertest` reproduces the who-hears-what table (12 of 12).
+- Start channel, live: a bookmark with a path lands in that channel at login (also with a slash
+  in the name); after the channel was renamed the remembered id is used and the client moves
+  there right after connecting; a channel that no longer exists leaves you in the default
+  channel; a locked start channel opens the password prompt on arrival and joins with the right
+  password; setting and clearing it from the server menu and picking it in the bookmark editor
+  both end up in `bookmarks.ini` and are used at the next start.
+- Echo cancelling. On simulated rooms (a speech-like far end, a room echo of 30 ms after a
+  delay of 15 to 500 ms, my own voice on top, 14 tests): 47 dB of echo removed once settled, 38 dB
+  of it by the adaptive filter alone and 26 dB already in the second second; my voice is
+  untouched when nothing plays or when what plays does not reach the microphone (headset);
+  talking over the echo changes my level by 0.5 dB; a changed room is relearned (39 dB again
+  four seconds later);
+  a reference that arrives late or early, or stops and comes back, does not lose what was
+  learned; 60 ppm of clock difference between the two devices is measured as 59 ppm and followed
+  (34 dB); an echo half a second late is found and lined up (48 dB); 3 to 4 % of one processor
+  while something plays, 0.3 % otherwise. On real device timing, through the whole engine
+  (`echotest --loopback` on a silent virtual output, the device's own signal as the
+  microphone): the sound came back 5 to 16 ms after it was played and 52 dB of it was removed
+  after 16 seconds (31 dB within the first 8). The pair "Speakers (Steam Streaming Microphone)"
+  to "Microphone (Steam Streaming Microphone)" is not usable as a test: what comes back does not
+  line up with what was played at any one delay, and nothing is removed there.
+- Folding, on screen: a channel folds and opens from its arrow, an empty branch starts folded,
+  the three "Channels start" choices change the tree at once, a folded channel shows how many
+  people are inside and tints its icon while one of them talks, joining a folded channel opens
+  the way to it, and a fold made by hand was still there after a restart.
 
 Dev tools (examples): `cargo run -p ps-client --example probe -- <host> [--identity file] [--say TEXT]
 [--join CID] [--loss 0.2] [--auto-level] [--log]`, `cargo run -p ps-voice --example voicetest --
 <host> [--music] [--listen] [--burst 70000] [--loss 0.2]`, `cargo run -p ps-voice --example
 devicetest -- [--input NAME] [--tone]`, `cargo run -p ps-voice --example channeltest -- <host>
-[--nick NAME] [--join CID] [--seconds N] [--talk SECONDS]` (sits in one channel and reports
-every voice and end-of-talk packet it hears; with `--talk` it also sends a tone).
+[--nick NAME] [--join CID] [--seconds N] [--talk SECONDS] [--whisper client:ID|channel:ID|commanders|everyone]
+[--commander]` (sits in one channel and reports every voice, whisper and end packet it hears,
+and the sound formats; with `--talk` it also sends a tone, as a whisper with `--whisper`),
+`cargo run -p ps-voice --example echotest -- [--output NAME] [--input NAME | --loopback]
+[--seconds N] [--level DB]` (plays a speech-like test sound and reports how loudly the input
+hears it with echo cancelling off and on, when the sound came back and the clock difference;
+it is audible unless the output is a virtual device),
+`cargo run -p ps-client --example whispertest -- <host> --booth CID --drift CID` (re-runs the
+who-hears-what table and fails if a server behaves differently).
 `PHISHSPEAK_TRACE=1` makes the GUI show every command in the chat drawer.
+
+Scripts in `tools/`: `hold_keys.py F13..F24[+F13..F24] <seconds>` presses keys no keyboard has,
+for checking talk and whisper keys; `seed_whisper_tree.py --password <query password>` (run
+where the test server's query port is reachable) makes the Booth and Drift channels and lets
+guests be channel commanders; `package_release.py [--tag vX.Y.Z] [--skip-installer]` builds the
+release program with the C runtime linked in and writes the zip, the installer (needs Inno
+Setup 6) and their checksums to `dist/`.
 
 A local test server: official `teamspeak3-server_linux_amd64` in WSL
 (`./ts3server license_accepted=1`, which accepts TeamSpeak's server license), reachable from
@@ -193,6 +321,61 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   secondary text use lighter tints on raised and highlighted surfaces to keep 4.5:1 contrast.
 - The minimum window size (340 × 520) is declared in the UI; it has not been checked by
   dragging the window border.
+- Keys are read by asking Windows 200 times a second whether each bound key is down
+  (`GetAsyncKeyState`); no keyboard or mouse hook is installed. That works while another program
+  has the focus. Not seen: keys of a game that runs as administrator (unless PhishSpeak does
+  too), and buttons on controllers, joysticks and pedals. Left and right mouse buttons cannot be
+  bound; Esc alone cancels choosing a key. Old `ptt_key=<number>` settings are read once and
+  rewritten as `talk_key=<key codes joined with +>`.
+- A whisper key opens the microphone by itself whatever "Send my voice" says, acts on the server
+  being viewed, and never falls back to the channel: if its targets are gone, offline or on
+  another server, the frames are dropped and the dock says why. Whispers are always Opus Voice,
+  and a frame is encoded into the room the target list leaves in the packet (30 channels and 60
+  people at most, 122 bytes left). Every audience gets its end marker when the stream to it
+  stops: key released, another key pressed, mute, or a change of viewed server.
+- Whisper keys live in `%APPDATA%\PhishSpeak\whisper.ini`. People are stored by TeamSpeak UID
+  and last known name, channels by id and name, groups by id, name and the server's UID. A key
+  that names channels, people or a group only works on the server it was made for.
+- The reply target is the last person who whispered to you on the viewed server, checked by UID
+  so a client id that was handed to someone else is not used. It does not change while the reply
+  key is held.
+- Channel folding: the setting `fold_mode` (0 all open, 1 empty ones folded, 2 all folded) gives
+  the starting state; "empty" means a channel with channels inside it and nobody in any of them.
+  The way to your own channel is open when you arrive. What you fold or open by hand overrides
+  the setting, is stored per server UID as `folds.<uid>=<channel id>:<0|1>,…` in `settings.ini`
+  (512 channels a server, 64 servers), and is forgotten when the setting is changed.
+- Echo cancelling is PhishSpeak's own code in `ps-voice/src/echo.rs`, no new crate. The
+  reference is what is written to the output device (one channel, after volume), sent to the
+  transmit thread through a ring buffer. A block frequency-domain adaptive filter (blocks of
+  256 samples, 64 partitions, 341 ms) learns the path from the speakers to the microphone; a
+  second copy of the filter is only updated when the adapting one has proved better, so a wrong
+  turn during double talk does not reach your voice. What the filter leaves is turned down by a
+  suppressor that acts only on the part of the output that still moves with the echo estimate,
+  and never below the room's own noise. Three helpers keep the filter lined up: far and
+  microphone blocks are paired by count and a block is re-used or skipped (with the learned
+  filter shifted to match) when one side runs late or early; a delay finder compares loudness
+  over time and holds the reference back when the echo arrives more than about 130 ms late (up
+  to roughly 1.1 s); and the slow turning of the learned filter's phase gives the clock
+  difference between the two devices, which the reference is resampled to remove.
+  Costs and limits: your voice is delayed by 10.7 ms while it is on; the reference is mono, so
+  wide stereo music leaves more behind than speech; the echo must arrive at least a few
+  milliseconds after it is played (ordinary Windows devices are 30 ms and more); a device pair
+  whose delay keeps jumping cannot be cancelled; the level meter and "When I speak" work on the
+  cleaned signal, so your speakers no longer open the microphone. Off by default.
+- The audio engine can open an output device as its microphone (the device's loopback). The
+  app never offers that; `echotest --loopback` uses it.
+- A bookmark's start channel is stored as the channel's path and its id (`channel=`,
+  `channel_id=` in `bookmarks.ini`). The path is sent at login. If you land somewhere else, the
+  channel is looked up by path and then by id and joined, or its password prompt is opened;
+  the password is never stored. `--channel` on the command line overrides it for that start.
+- Release builds: the workflow `Release` runs only for a pushed tag `v<version>`, checks that
+  the tag matches the version in `Cargo.toml`, runs the tests, builds with the C runtime linked
+  in (`-C target-feature=+crt-static`, so no Visual C++ runtime has to be installed), and
+  publishes `PhishSpeak-<version>-setup.exe`, a zip of the program and `SHA256SUMS.txt` as a
+  GitHub release. The installer is per user (no administrator prompt) and leaves
+  `%APPDATA%\PhishSpeak` alone when uninstalling. The files are not code-signed, so Windows
+  SmartScreen will warn. Before publishing a build, choose the Slint licence it is distributed
+  under (see README).
 
 ## Milestones
 
@@ -207,10 +390,15 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
    spacer channels, compact window.
 9. Planned, not started: the icons a server defines for channels, people, groups and itself
    (`docs/superpowers/plans/2026-10-06-custom-icons.md`, waiting for review).
-10. Planned, not started: talk keys of your choice and TeamSpeak-style whisper keys
-    (`docs/superpowers/plans/2026-10-06-talk-and-whisper-keys.md`, waiting for review).
-11. Next: test against the official client and a public server; SRV/TSDNS resolution;
-   noise suppression / AGC; per-user volume in the UI (the mixer already supports it).
+10. ✅ Talk keys of your choice and TeamSpeak-style whisper keys
+    (`docs/superpowers/plans/2026-10-06-talk-and-whisper-keys.md`; what was decided on the way is
+    in the `.ledger.md` beside it).
+11. ✅ Folding channels with a starting-state setting and remembered choices; release workflow
+    and installer script (written, never run).
+12. ✅ A start channel per bookmark; echo cancelling for the microphone.
+13. Next: test against the official client and a public server; try echo cancelling in a real
+   room; SRV/TSDNS resolution; noise suppression / AGC; per-user volume in the UI (the mixer
+   already supports it).
 
 ## References
 
@@ -301,6 +489,24 @@ Learned while building the compact window:
 - A test script can drive the window by posting `WM_MOUSEMOVE`, `WM_LBUTTONDOWN/UP` and
   `WM_KEYDOWN/UP` to it (lower-case letters, digits and unshifted punctuation only), which
   works while the window is behind others.
+
+Learned while building the Shortcuts tab and folding:
+- `FocusScope` has `capture-key-pressed(event) -> EventResult`, called from the window down to
+  the focused element before `key-pressed`. Returning `accept` there swallows every key, which
+  is how nothing in the window reacts while a key is being chosen.
+- Popups are drawn inside the window and are cut off at its edge. Every element has
+  `absolute-position`; with the window height kept in a global (set from the window's `init`
+  and `changed height`) a dropdown can open upward when there is no room below.
+- An element inside an `if` can be named (`if cond: name := Elem { }`) and used by its siblings
+  inside that `if`; it cannot be reached from outside, so a part that others read (the fold
+  arrow's hover state) is always created and made inert instead.
+- A child `TouchArea` above a parent's takes the click, so an arrow inside a row can be clicked
+  without the row's double-click firing; the row loses its hover while the pointer is on the
+  child, so the row asks the child too.
+- A `Text` with `wrap: word-wrap`, `overflow: elide` and a fixed `height` shows as many lines as
+  fit and elides the last one.
+- Changing rows with `VecModel::insert` / `remove` / `set_row_data` instead of `set_vec` keeps a
+  `ListView` where it was scrolled.
 
 ## Conventions
 
