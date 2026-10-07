@@ -141,7 +141,7 @@ export component PhishSpeakApp inherits Window {
     title: "PhishSpeak";
     preferred-width: 400px;
     preferred-height: 740px;
-    min-width: 340px;
+    min-width: 340px + root.scale-nudge * 0.01px;
     min-height: 520px;
     background: Theme.reef;
     default-font-size: Theme.text;
@@ -206,6 +206,7 @@ export component PhishSpeakApp inherits Window {
     in property <bool> person-moderated;
     in-out property <bool> person-asking;
     in property <int> prompt-kind;
+    in property <float> scale-nudge;
     in-out property <bool> channel-open;
     in property <string> channel-title;
     in property <string> channel-topic;

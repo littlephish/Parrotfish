@@ -20,6 +20,7 @@ use crate::hotkeys::chord_name;
 use crate::icons::{IconStore, Lookup};
 use crate::keywatch::KeyWatcher;
 use crate::platform;
+use crate::scale::{ScaleWatch, Step};
 use crate::session::{
     self, build_rows_folded, connect_failure, mic_move, next_view, ChannelIcon, ChatKind, ChatLine, ConnectRequest,
     DialogField, FoldMode, MicMove, Outcome, Peer, RowData, RowKind, Session,
@@ -243,6 +244,7 @@ pub struct App {
     person: Option<(u16, u16)>,
     key_prompt: Option<u16>,
     channel_sheet: Option<(u16, u64)>,
+    scales: [ScaleWatch; 2],
     dirty: Dirty,
     silent_since: Option<Instant>,
     silence_warned: bool,
@@ -326,6 +328,7 @@ impl App {
             person: None,
             key_prompt: None,
             channel_sheet: None,
+            scales: [ScaleWatch::default(), ScaleWatch::default()],
             dirty: Dirty::everything(),
             silent_since: None,
             silence_warned: false,
@@ -1910,6 +1913,27 @@ impl App {
         self.viewed_session().is_some_and(|s| s.is_connected()) && !self.sound_muted && !self.mic_muted
     }
 
+    fn follow_scale(&mut self, w: &Windows) {
+        let windows = [w.main.window(), w.settings.window()];
+        for (index, window) in windows.into_iter().enumerate() {
+            let scale = window.scale_factor();
+            let size = window.size().to_logical(scale);
+            let free = !window.is_maximized() && !window.is_fullscreen() && !window.is_minimized();
+            match self.scales[index].step(scale, size.width, size.height, free) {
+                Step::Nothing => {}
+                Step::Refresh => {
+                    let nudge = self.scales[index].nudge();
+                    if index == 0 {
+                        w.main.set_scale_nudge(nudge);
+                    } else {
+                        w.settings.set_scale_nudge(nudge);
+                    }
+                }
+                Step::Restore(width, height) => window.set_size(slint::LogicalSize::new(width, height)),
+            }
+        }
+    }
+
     fn retry_lost_connections(&mut self, w: &Windows) {
         let now = Instant::now();
         let mut due: Vec<u16> = Vec::new();
@@ -1977,6 +2001,7 @@ impl App {
                 self.on_outcome(w, id, was_connecting, outcome);
             }
         }
+        self.follow_scale(w);
         self.retry_lost_connections(w);
         self.poll_level_jobs(w);
         self.poll_capture(w);

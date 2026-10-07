@@ -6,6 +6,7 @@ mod hotkeys;
 mod icons;
 mod keywatch;
 mod platform;
+mod scale;
 mod session;
 mod settings;
 mod whisper;

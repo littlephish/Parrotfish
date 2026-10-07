@@ -39,7 +39,7 @@ export component SettingsWindow inherits Window {
     title: "PhishSpeak settings";
     preferred-width: 700px;
     preferred-height: 600px;
-    min-width: 640px;
+    min-width: 640px + root.scale-nudge * 0.01px;
     min-height: 590px;
     background: Theme.reef;
     default-font-size: Theme.text;
@@ -115,6 +115,7 @@ export component SettingsWindow inherits Window {
     in-out property <int> fold-mode: 1;
 
     in property <string> version;
+    in property <float> scale-nudge;
 
     property <bool> editing: root.tab == 4 && root.editor-open;
     property <[string]> scope-names: ["Everywhere", "My channel", "The channel above mine", "Every channel above mine", "My channel and all below it", "My whole branch, from the top", "The channels right below mine"];
