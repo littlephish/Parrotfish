@@ -10,7 +10,7 @@
 
 **Spec:** none yet. Nothing here is built. The next two sections are the scope and the decisions I made for you; change them before anyone starts.
 
-**Status:** waiting for your review.
+**Status:** Tasks 1 to 5 are built and checked (2026-10-06); what changed on the way is in `2026-10-06-custom-icons.ledger.md`. Task 6 (GIF) waits for your yes.
 
 **How to read the tasks:** tests and the functions that guard against bad input are given in full. Steps that connect existing code are described by what they must do and are held to the tests and live checks listed with them.
 
@@ -118,7 +118,7 @@ Conditions the scope implies that are most likely to bite, each pinned to a task
 `Book::set_groups(&mut self, cmd: &Command, server: bool)`, `Book::group_member(&mut self, cmd: &Command, added: bool)`, `Book::channel_group_changed(&mut self, cmd: &Command)`.
 `Group` and `icon_id` are exported from `ps-client/src/lib.rs` next to `Channel`.
 
-- [ ] **Step 1: Write the failing tests** in the `tests` module of `book.rs`:
+- [x] **Step 1: Write the failing tests** in the `tests` module of `book.rs`:
 
 ```rust
 #[test]
@@ -177,8 +177,8 @@ fn people_carry_group_and_own_icons() {
 
 The second person in the sign-in message spells out all three icon fields on purpose: a multi-item message inherits missing keys from its first item.
 
-- [ ] **Step 2:** Run `cargo test -p ps-client icon`; expect a compile failure (`icon_id` not found).
-- [ ] **Step 3: Implement.**
+- [x] **Step 2:** Run `cargo test -p ps-client icon`; expect a compile failure (`icon_id` not found).
+- [x] **Step 3: Implement.**
 
 ```rust
 pub fn icon_id(raw: &str) -> u32 {
@@ -216,7 +216,7 @@ fn client_icons(&self, client: &ClientInfo) -> Vec<u32> {
 ```
 
 In `conn.rs` `on_command`, add arms that call these and set `self.view_dirty = true`: `notifyservergrouplist`, `notifychannelgrouplist`, `notifyservergroupclientadded`, `notifyservergroupclientdeleted`, `notifyclientchannelgroupchanged`. `notifyserveredited` already applies server fields.
-- [ ] **Step 4:** Run `cargo test -p ps-client`; expect all pass (12 tests).
+- [x] **Step 4:** Run `cargo test -p ps-client`; expect all pass (12 tests).
 
 ### Task 2: Downloading an icon in `ps-client`
 
@@ -232,7 +232,7 @@ In `conn.rs` `on_command`, add arms that call these and set `self.view_dirty = t
 `pub fn download(addr: SocketAddr, key: &str, size: u64, limit: u64, timeout: Duration) -> Result<Vec<u8>, String>`,
 and on the public API: `ClientHandle::request_icon(&self, id: u32)`, `Event::Icon { id: u32, data: Result<Vec<u8>, String> }`, `ConnectOptions::filetransfer_port: Option<u16>` (a test hook like `simulated_loss`, `None` by default: when set, downloads go to this port instead of the one the server names).
 
-- [ ] **Step 1: Write the failing tests** in `filetransfer.rs`:
+- [x] **Step 1: Write the failing tests** in `filetransfer.rs`:
 
 ```rust
 #[cfg(test)]
@@ -306,8 +306,8 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2:** Run `cargo test -p ps-client filetransfer`; expect a compile failure.
-- [ ] **Step 3: Implement `filetransfer.rs`.** `init_download` builds the command in the order shown in the test, with an empty value for `cpw`. `parse_start` returns `None` unless `clientftfid`, `ftkey`, `port` and `size` are all present and the key is not empty. `parse_status` reads `clientftfid`, `status` and `msg`.
+- [x] **Step 2:** Run `cargo test -p ps-client filetransfer`; expect a compile failure.
+- [x] **Step 3: Implement `filetransfer.rs`.** `init_download` builds the command in the order shown in the test, with an empty value for `cpw`. `parse_start` returns `None` unless `clientftfid`, `ftkey`, `port` and `size` are all present and the key is not empty. `parse_status` reads `clientftfid`, `status` and `msg`.
 
 ```rust
 pub fn download(addr: SocketAddr, key: &str, size: u64, limit: u64, timeout: Duration) -> Result<Vec<u8>, String> {
@@ -342,8 +342,8 @@ pub fn download(addr: SocketAddr, key: &str, size: u64, limit: u64, timeout: Dur
 }
 ```
 
-- [ ] **Step 4:** Run `cargo test -p ps-client filetransfer`; expect 3 pass.
-- [ ] **Step 5: Wire it into the connection.** In `conn.rs`:
+- [x] **Step 4:** Run `cargo test -p ps-client filetransfer`; expect 3 pass.
+- [x] **Step 5: Wire it into the connection.** In `conn.rs`:
   - `Request::Icon(u32)`; `ClientHandle::request_icon` sends it.
   - New `Conn` fields: `icon_queue: VecDeque<u32>`, `icon_asked: HashSet<u32>` (every id ever queued on this connection, so an id is requested once), `icon_active: Option<(u16, u32, Instant)>` (transfer id, icon id, when asked), `icon_job: Option<(u32, Receiver<Result<Vec<u8>, String>>)>`, `next_transfer: u16` (starts at 1), `next_icon_at: Instant`. The transfer thread gets its own channel; `Conn` must not hold a sender of its own request channel.
   - On `Request::Icon(id)`: ignore 0, the five standard ids and ids already in `icon_asked`; otherwise push to the queue. Ignore everything once the queue holds 600 ids.
@@ -352,8 +352,8 @@ pub fn download(addr: SocketAddr, key: &str, size: u64, limit: u64, timeout: Dur
   - `notifystatusfiletransfer` matching the active transfer: emit `Event::Icon { id, data: Err(message) }` and clear `icon_active`.
   - In `tick`, poll `icon_job` with `try_recv`; when it yields, emit `Event::Icon` and clear both. An active request with no answer after 10 s is reported as `Err("the server did not answer")` and cleared.
   - In `on_error` while connected: id `0x020c` (client is flooding) sets `next_icon_at = now + 15 s` and puts the active icon id back at the front of the queue.
-- [ ] **Step 6: Extend the probe.** `--icon ID` (repeatable) calls `request_icon` 700 ms after sign-in; each `Event::Icon` prints `[icon <id>] <n> bytes, starts <first 8 bytes in hex>` or `[icon <id>] failed: <reason>`. `--ft-port N` sets `filetransfer_port`.
-- [ ] **Step 7: Write `tools/seed_test_icons.py`.** It runs inside WSL against the test server's ServerQuery port. The upload and the three ways of assigning an icon below were tried by hand on 2026-10-06.
+- [x] **Step 6: Extend the probe.** `--icon ID` (repeatable) calls `request_icon` 700 ms after sign-in; each `Event::Icon` prints `[icon <id>] <n> bytes, starts <first 8 bytes in hex>` or `[icon <id>] failed: <reason>`. `--ft-port N` sets `filetransfer_port`.
+- [x] **Step 7: Write `tools/seed_test_icons.py`.** It runs inside WSL against the test server's ServerQuery port. The upload and the three ways of assigning an icon below were tried by hand on 2026-10-06.
 
 ```python
 import socket
@@ -475,11 +475,11 @@ main()
 ```
 
   The ServerQuery password is passed with `--password` and is never written into the file. If the server refuses the 600 KiB upload, note it in the ledger; the size limit is still covered by the unit tests.
-- [ ] **Step 8: Live check, happy path.** Start the test server, seed it, then
+- [x] **Step 8: Live check, happy path.** Start the test server, seed it, then
   `cargo run -p ps-client --example probe -- <server ip> --seconds 6 --icon <first> --icon <second> --icon 999`.
   Expected: two lines `92 bytes, starts 89504e470d0a1a0a` (the byte count may differ by a few), one `failed: invalid file path`, and at least 500 ms between requests in a `--log` run.
-- [ ] **Step 9: Live check, closed file port.** Same command with `--ft-port 9` added. Expected: each icon fails within 5 s with `cannot reach the file port`, the `[stats]` lines keep arriving every second, and the probe disconnects cleanly.
-- [ ] **Step 10: Live check, flood protection.** Put the defaults back through ServerQuery (`serveredit virtualserver_antiflood_points_tick_reduce=5 virtualserver_antiflood_points_needed_command_block=150 virtualserver_antiflood_points_needed_ip_block=250`), run the script with `--count 40`, and ask for all 40 ids with the probe. Expected: 40 icons received and no `[error 0x020c]` line. If the server complains, double the gap and repeat until it does not; put the gap that worked in the constant and in the ledger. Afterwards restore the relaxed values so other tests are not banned.
+- [x] **Step 9: Live check, closed file port.** Same command with `--ft-port 9` added. Expected: each icon fails within 5 s with `cannot reach the file port`, the `[stats]` lines keep arriving every second, and the probe disconnects cleanly.
+- [x] **Step 10: Live check, flood protection.** Put the defaults back through ServerQuery (`serveredit virtualserver_antiflood_points_tick_reduce=5 virtualserver_antiflood_points_needed_command_block=150 virtualserver_antiflood_points_needed_ip_block=250`), run the script with `--count 40`, and ask for all 40 ids with the probe. Expected: 40 icons received and no `[error 0x020c]` line. If the server complains, double the gap and repeat until it does not; put the gap that worked in the constant and in the ledger. Afterwards restore the relaxed values so other tests are not banned.
 
 ### Task 3: The icon store in `ps-app`
 
@@ -493,7 +493,7 @@ main()
 `pub enum Lookup { Standard(usize), Ready(slint::Image), Ask, Waiting, Nothing }`,
 `pub struct IconStore` with `new(root: PathBuf) -> Self`, `lookup(&mut self, server_uid: &str, id: u32, now: Instant) -> Lookup`, `arrived(&mut self, server_uid: &str, id: u32, data: &[u8], now: Instant) -> Result<(), Reject>`, `failed(&mut self, server_uid: &str, id: u32, now: Instant)`.
 
-- [ ] **Step 1: Write the failing tests** in `icons.rs`:
+- [x] **Step 1: Write the failing tests** in `icons.rs`:
 
 ```rust
 #[cfg(test)]
@@ -581,8 +581,8 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2:** Run `cargo test -p ps-app icons`; expect a compile failure.
-- [ ] **Step 3: Implement the checks.**
+- [x] **Step 2:** Run `cargo test -p ps-app icons`; expect a compile failure.
+- [x] **Step 3: Implement the checks.**
 
 ```rust
 pub fn sniff(data: &[u8]) -> Option<(Format, u32, u32)> {
@@ -668,7 +668,7 @@ pub fn standard_icon(id: u32) -> Option<usize> {
 }
 ```
 
-- [ ] **Step 4: Implement `IconStore`.**
+- [x] **Step 4: Implement `IconStore`.**
 
 ```rust
 const REFRESH_AFTER: Duration = Duration::from_secs(7 * 24 * 3600);
@@ -755,7 +755,7 @@ impl IconStore {
 }
 ```
 
-- [ ] **Step 5:** Run `cargo test -p ps-app icons`; expect 4 pass.
+- [x] **Step 5:** Run `cargo test -p ps-app icons`; expect 4 pass.
 
 ### Task 4: Icons in the rows and the header
 
@@ -763,7 +763,7 @@ impl IconStore {
 
 **Interfaces:** Consumes `ClientInfo::icons` and `Channel::icon` from Task 1. Produces `RowData::icons: Vec<u32>` (a channel row: its icon if any; a person row: at most four), and in Slint: `TreeRow.badges: int`, `TreeRow.badge-tint: int` (bit n set when slot n holds a standard icon), `TreeRow.badge-a`, `badge-b`, `badge-c`, `badge-d: image`; `Icons.group-100` to `Icons.group-600`; on `PhishSpeakApp`: `in property <image> server-icon;` and `in property <bool> has-server-icon;`.
 
-- [ ] **Step 1: Write the failing test** by extending `rows_follow_the_tree` in `session.rs`: in `sample_view`, give the `Squad Alpha` channel `icon: 2154984321`, give `marlin` `icons: vec![100, 300, 452340182, 2154984321, 7]` and leave the others empty, then assert
+- [x] **Step 1: Write the failing test** by extending `rows_follow_the_tree` in `session.rs`: in `sample_view`, give the `Squad Alpha` channel `icon: 2154984321`, give `marlin` `icons: vec![100, 300, 452340182, 2154984321, 7]` and leave the others empty, then assert
 
 ```rust
 assert_eq!(rows[6].icons, vec![2154984321]);
@@ -771,10 +771,10 @@ assert_eq!(rows[4].icons, vec![100, 300, 452340182, 2154984321]);
 assert!(rows[0].icons.is_empty() && rows[1].icons.is_empty() && rows[2].icons.is_empty());
 ```
 
-- [ ] **Step 2:** Run `cargo test -p ps-app rows_follow`; expect a compile failure.
-- [ ] **Step 3:** Add `icons` to `RowData` and fill it in `build_rows` (channel: `channel.icon` when not 0; person: the first four of `client.icons`; spacers: none). Run the test; expect pass.
-- [ ] **Step 4: Draw the five standard icons** as 24 x 24 stroke-only white SVG files in the style of `ui/icons/*.svg`: 100 channel admin (a shield with a star), 200 operator (a wrench), 300 server admin (a shield with a tick), 500 query admin (a prompt, `>_`), 600 voice (a speech bubble). Add them to the `Icons` global in `theme.slint`.
-- [ ] **Step 5: Draw the slots.** In `widgets.slint` add
+- [x] **Step 2:** Run `cargo test -p ps-app rows_follow`; expect a compile failure.
+- [x] **Step 3:** Add `icons` to `RowData` and fill it in `build_rows` (channel: `channel.icon` when not 0; person: the first four of `client.icons`; spacers: none). Run the test; expect pass.
+- [x] **Step 4: Draw the five standard icons** as 24 x 24 stroke-only white SVG files in the style of `ui/icons/*.svg`: 100 channel admin (a shield with a star), 200 operator (a wrench), 300 server admin (a shield with a tick), 500 query admin (a prompt, `>_`), 600 voice (a speech bubble). Add them to the `Icons` global in `theme.slint`.
+- [x] **Step 5: Draw the slots.** In `widgets.slint` add
 
 ```slint
 component Badge inherits Rectangle {
@@ -814,8 +814,8 @@ if root.entry.badges > 0: VerticalLayout {
 ```
 
   (`Math.mod(tint / 2, 2) >= 1` for the second, `/ 4` and `/ 8` for the others, using `floor`.) An empty `image` draws nothing, which is how a slot is held open while its icon is on the way.
-- [ ] **Step 6:** In `main.slint`, after the server name in the header, inside a centred `VerticalLayout`: `if root.has-server-icon: Badge { picture: root.server-icon; }`.
-- [ ] **Step 7:** `cargo build -p ps-app`; expect no warnings.
+- [x] **Step 6:** In `main.slint`, after the server name in the header, inside a centred `VerticalLayout`: `if root.has-server-icon: Badge { picture: root.server-icon; }`.
+- [x] **Step 7:** `cargo build -p ps-app`; expect no warnings.
 
 ### Task 5: Wiring, live checks and documents
 
@@ -823,13 +823,13 @@ if root.entry.badges > 0: VerticalLayout {
 
 **Interfaces:** Consumes everything above.
 
-- [ ] **Step 1: Wire the store.** `App` owns one `IconStore` rooted at `settings::config_dir().join("cache").join("icons")`. When rows are published for the viewed session, each id in `RowData::icons` and the server's icon go through `lookup(server.uid, id, now)`: `Ready` fills a slot; `Standard(n)` fills a slot from the `Icons` global and sets its tint bit; `Ask` calls `client.request_icon(id)` and holds the slot open; `Waiting` holds the slot open; `Nothing` takes no slot. `Event::Icon { id, data }` from a session calls `arrived` or `failed` with that session's server UID and marks the tree and the header dirty when that session is the viewed one. Sessions that are not viewed ask for nothing.
-- [ ] **Step 2:** `cargo test --workspace` and `cargo build --workspace --all-targets`; expect all tests pass (129) and no warnings.
-- [ ] **Step 3: Live check, what you see.** Seed the server, start the app with the software renderer and a throwaway profile (output volume 0), connect, and take screenshots. Expected: the coloured square on Deep Rock and Tide Pool, the Guest square on every person, the server icon after the server name, no icon and no error on Squad Alpha and Radio (the two bad files), row height unchanged at 26 px.
-- [ ] **Step 4: Live check, changes while connected.** With the app connected, through ServerQuery: add an icon to Lobby (`channeladdperm`), remove the one on Tide Pool (`channeldelperm cid=<id> permsid=i_icon_id`), add a connected test client to Server Admin (`servergroupaddclient sgid=<id> cldbid=<dbid>`). Expected in screenshots taken 2 s after each: Lobby gains the icon, Tide Pool loses it, the person gains the shield.
-- [ ] **Step 5: Live check, restart.** Close the app and start it again with `PHISHSPEAK_TRACE=1`, the server still up. Expected: the icons appear at once and the trace shows no `ftinitdownload` for icons already in the cache folder.
-- [ ] **Step 6: Live check, voice.** Connect twice (two identities, as in the compact-window test) with 40 icons seeded and a headless listener (`channeltest`) in the viewed channel. Expected: 50 voice packets per second throughout while the icons are fetched.
-- [ ] **Step 7: Documents.** In `PLAN.md` add an "Icons and file transfer" part to the protocol notes with the facts from this plan, and update the status, the crates table and the test count. In `README.md` add one line to the feature list. Run `build.bat`.
+- [x] **Step 1: Wire the store.** `App` owns one `IconStore` rooted at `settings::config_dir().join("cache").join("icons")`. When rows are published for the viewed session, each id in `RowData::icons` and the server's icon go through `lookup(server.uid, id, now)`: `Ready` fills a slot; `Standard(n)` fills a slot from the `Icons` global and sets its tint bit; `Ask` calls `client.request_icon(id)` and holds the slot open; `Waiting` holds the slot open; `Nothing` takes no slot. `Event::Icon { id, data }` from a session calls `arrived` or `failed` with that session's server UID and marks the tree and the header dirty when that session is the viewed one. Sessions that are not viewed ask for nothing.
+- [x] **Step 2:** `cargo test --workspace` and `cargo build --workspace --all-targets`; expect all tests pass (129) and no warnings.
+- [x] **Step 3: Live check, what you see.** Seed the server, start the app with the software renderer and a throwaway profile (output volume 0), connect, and take screenshots. Expected: the coloured square on Deep Rock and Tide Pool, the Guest square on every person, the server icon after the server name, no icon and no error on Squad Alpha and Radio (the two bad files), row height unchanged at 26 px.
+- [x] **Step 4: Live check, changes while connected.** With the app connected, through ServerQuery: add an icon to Lobby (`channeladdperm`), remove the one on Tide Pool (`channeldelperm cid=<id> permsid=i_icon_id`), add a connected test client to Server Admin (`servergroupaddclient sgid=<id> cldbid=<dbid>`). Expected in screenshots taken 2 s after each: Lobby gains the icon, Tide Pool loses it, the person gains the shield.
+- [x] **Step 5: Live check, restart.** Close the app and start it again with `PHISHSPEAK_TRACE=1`, the server still up. Expected: the icons appear at once and the trace shows no `ftinitdownload` for icons already in the cache folder.
+- [x] **Step 6: Live check, voice.** Connect twice (two identities, as in the compact-window test) with 40 icons seeded and a headless listener (`channeltest`) in the viewed channel. Expected: 50 voice packets per second throughout while the icons are fetched.
+- [x] **Step 7: Documents.** In `PLAN.md` add an "Icons and file transfer" part to the protocol notes with the facts from this plan, and update the status, the crates table and the test count. In `README.md` add one line to the feature list. Run `build.bat`.
 
 ### Task 6 (only if you want GIF icons): first frame of a GIF
 

@@ -1,7 +1,31 @@
 use std::fs;
 use std::path::PathBuf;
 
+use crate::platform;
 use crate::settings::config_dir;
+
+const SEALED: &str = "dpapi:";
+
+fn unhex(text: &str) -> Option<Vec<u8>> {
+    if text.len() % 2 != 0 || !text.is_ascii() {
+        return None;
+    }
+    (0..text.len()).step_by(2).map(|at| u8::from_str_radix(&text[at..at + 2], 16).ok()).collect()
+}
+
+fn keep(secret: &str) -> Option<String> {
+    let sealed = platform::protect(secret.as_bytes())?;
+    Some(format!("{SEALED}{}", sealed.iter().map(|byte| format!("{byte:02x}")).collect::<String>()))
+}
+
+fn reveal(stored: &str) -> String {
+    stored
+        .strip_prefix(SEALED)
+        .and_then(unhex)
+        .and_then(|sealed| platform::unprotect(&sealed))
+        .and_then(|plain| String::from_utf8(plain).ok())
+        .unwrap_or_default()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Bookmark {
@@ -11,6 +35,9 @@ pub struct Bookmark {
     pub identity_uid: String,
     pub channel: String,
     pub channel_id: u64,
+    pub server_password: String,
+    pub channel_password: String,
+    pub auto_connect: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -75,6 +102,9 @@ impl Bookmarks {
                 "identity" => entry.identity_uid = value,
                 "channel" => entry.channel = value,
                 "channel_id" => entry.channel_id = value.parse().unwrap_or(0),
+                "server_password" => entry.server_password = reveal(&value),
+                "channel_password" => entry.channel_password = reveal(&value),
+                "connect_on_start" => entry.auto_connect = value == "1",
                 _ => {}
             }
         }
@@ -91,7 +121,17 @@ impl Bookmarks {
             out.push_str(&format!("nickname={}\n", one_line(&b.nickname)));
             out.push_str(&format!("identity={}\n", one_line(&b.identity_uid)));
             out.push_str(&format!("channel={}\n", one_line(&b.channel)));
-            out.push_str(&format!("channel_id={}\n\n", b.channel_id));
+            out.push_str(&format!("channel_id={}\n", b.channel_id));
+            if let Some(sealed) = keep(&b.server_password) {
+                out.push_str(&format!("server_password={sealed}\n"));
+            }
+            if let Some(sealed) = keep(&b.channel_password) {
+                out.push_str(&format!("channel_password={sealed}\n"));
+            }
+            if b.auto_connect {
+                out.push_str("connect_on_start=1\n");
+            }
+            out.push('\n');
         }
         out
     }
@@ -167,6 +207,32 @@ mod tests {
         assert_eq!(Bookmarks::parse(&text), list);
         let old = Bookmarks::parse("[bookmark]\nname=Old\naddress=old.example.net\nchannel_id=x\n");
         assert_eq!((old.items[0].channel.as_str(), old.items[0].channel_id), ("", 0));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn passwords_are_kept_sealed() {
+        let mut home = bookmark("Reef Runners", "reef.example.net", "", "");
+        home.server_password = "hunter2".into();
+        home.channel_password = "tide \u{e4} = pool".into();
+        home.auto_connect = true;
+        let list = Bookmarks { items: vec![home, bookmark("Other", "other.example.net", "", "")] };
+        let text = list.serialize();
+        assert!(!text.contains("hunter2") && !text.contains("tide"));
+        assert!(text.contains("server_password=dpapi:") && text.contains("channel_password=dpapi:"));
+        assert_eq!(text.matches("connect_on_start=1\n").count(), 1);
+        assert_eq!(text.matches("password=").count(), 2);
+        assert_eq!(Bookmarks::parse(&text), list);
+        let tampered = text.replace("server_password=dpapi:", "server_password=dpapi:00");
+        let read = Bookmarks::parse(&tampered);
+        assert_eq!((read.items[0].server_password.as_str(), read.items[0].channel_password.as_str()), ("", "tide \u{e4} = pool"));
+        let plain = Bookmarks::parse(
+            "[bookmark]\naddress=a.example.net\nserver_password=hunter2\nchannel_password=dpapi:zz\nconnect_on_start=yes\n",
+        );
+        assert_eq!((plain.items[0].server_password.as_str(), plain.items[0].channel_password.as_str()), ("", ""));
+        assert!(!plain.items[0].auto_connect);
+        assert_eq!(unhex("0aFf"), Some(vec![10, 255]));
+        assert_eq!((unhex("0"), unhex("zz")), (None, None));
     }
 
     #[test]

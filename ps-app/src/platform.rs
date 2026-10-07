@@ -41,6 +41,71 @@ mod imp {
         (state as u16) & 0x8000 != 0
     }
 
+    #[repr(C)]
+    struct Blob {
+        size: u32,
+        data: *mut u8,
+    }
+
+    #[link(name = "crypt32")]
+    extern "system" {
+        fn CryptProtectData(
+            input: *const Blob,
+            description: *const u16,
+            entropy: *const Blob,
+            reserved: *mut core::ffi::c_void,
+            prompt: *mut core::ffi::c_void,
+            flags: u32,
+            output: *mut Blob,
+        ) -> i32;
+        fn CryptUnprotectData(
+            input: *const Blob,
+            description: *mut *mut u16,
+            entropy: *const Blob,
+            reserved: *mut core::ffi::c_void,
+            prompt: *mut core::ffi::c_void,
+            flags: u32,
+            output: *mut Blob,
+        ) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LocalFree(memory: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+    }
+
+    const NO_PROMPT: u32 = 1;
+    const PURPOSE: &[u8] = b"PhishSpeak bookmark";
+
+    fn seal(data: &[u8], open: bool) -> Option<Vec<u8>> {
+        let size = u32::try_from(data.len()).ok().filter(|size| *size > 0)?;
+        let input = Blob { size, data: data.as_ptr() as *mut u8 };
+        let purpose = Blob { size: PURPOSE.len() as u32, data: PURPOSE.as_ptr() as *mut u8 };
+        let mut output = Blob { size: 0, data: std::ptr::null_mut() };
+        let nothing = std::ptr::null_mut();
+        let done = unsafe {
+            if open {
+                CryptUnprotectData(&input, std::ptr::null_mut(), &purpose, nothing, nothing, NO_PROMPT, &mut output)
+            } else {
+                CryptProtectData(&input, std::ptr::null(), &purpose, nothing, nothing, NO_PROMPT, &mut output)
+            }
+        };
+        if done == 0 || output.data.is_null() {
+            return None;
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(output.data, output.size as usize) }.to_vec();
+        unsafe { LocalFree(output.data.cast()) };
+        Some(bytes)
+    }
+
+    pub fn protect(data: &[u8]) -> Option<Vec<u8>> {
+        seal(data, false)
+    }
+
+    pub fn unprotect(data: &[u8]) -> Option<Vec<u8>> {
+        seal(data, true)
+    }
+
     pub fn local_hms() -> (u32, u32, u32) {
         let mut t = SystemTime::default();
         unsafe { GetLocalTime(&mut t) };
@@ -58,6 +123,14 @@ mod imp {
         None
     }
 
+    pub fn protect(_data: &[u8]) -> Option<Vec<u8>> {
+        None
+    }
+
+    pub fn unprotect(_data: &[u8]) -> Option<Vec<u8>> {
+        None
+    }
+
     pub fn local_hms() -> (u32, u32, u32) {
         let secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -67,7 +140,7 @@ mod imp {
     }
 }
 
-pub use imp::{key_char, key_down, local_hms};
+pub use imp::{key_char, key_down, local_hms, protect, unprotect};
 
 pub fn timestamp() -> String {
     let (h, m, s) = local_hms();

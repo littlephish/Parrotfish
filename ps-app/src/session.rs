@@ -55,7 +55,10 @@ pub struct RowData {
     pub commander: bool,
     pub foldable: bool,
     pub folded: bool,
+    pub icons: Vec<u32>,
 }
+
+pub const MAX_ROW_ICONS: usize = 4;
 
 fn fill_width(pattern: &str) -> String {
     let length = pattern.chars().count().max(1);
@@ -153,6 +156,7 @@ pub fn build_rows_folded(view: &ServerView, own_talking: bool, folds: &Folds) ->
                     talking: folded && inside().any(|c| if c.id == view.own_id { own_talking } else { c.talking }),
                     foldable,
                     folded,
+                    icons: if channel.icon == 0 { Vec::new() } else { vec![channel.icon] },
                     ..base
                 })
             }
@@ -175,6 +179,7 @@ pub fn build_rows_folded(view: &ServerView, own_talking: bool, folds: &Folds) ->
                 away: client.away,
                 whispering: client.whispering,
                 commander: client.is_channel_commander,
+                icons: client.icons.iter().copied().take(MAX_ROW_ICONS).collect(),
                 tag: if client.whispering {
                     "whispers to you".to_string()
                 } else if client.is_query {
@@ -478,7 +483,9 @@ pub struct ConnectRequest {
     pub identity_uid: String,
     pub channel: String,
     pub channel_id: u64,
+    pub channel_password: String,
     pub save_bookmark: bool,
+    pub quiet: bool,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -499,6 +506,8 @@ pub struct Outcome {
     pub groups: bool,
     pub folds: bool,
     pub start_channel: Option<(u64, bool)>,
+    pub start_password: String,
+    pub icon: Option<(u32, Result<Vec<u8>, String>)>,
 }
 
 pub struct Session {
@@ -605,7 +614,7 @@ impl Session {
         }
     }
 
-    fn system(&mut self, text: &str) {
+    pub fn system(&mut self, text: &str) {
         self.push_line(ChatKind::System, "", text);
     }
 
@@ -696,6 +705,9 @@ impl Session {
                 self.start_pending = !self.request.channel.trim().is_empty() || self.request.channel_id != 0;
                 self.waiting_level = None;
                 self.request.password.clear();
+                if !self.start_pending {
+                    self.request.channel_password.clear();
+                }
                 if self.request.name.trim().is_empty() && !server.name.trim().is_empty() {
                     self.name = server.name.trim().to_string();
                 }
@@ -726,11 +738,15 @@ impl Session {
                 if let (true, Some(view)) = (self.start_pending, &self.view) {
                     if view.own_channel != 0 {
                         self.start_pending = false;
+                        let password = std::mem::take(&mut self.request.channel_password);
                         let wanted = find_start_channel(view, &self.request.channel, self.request.channel_id);
                         out.start_channel = wanted.filter(|id| *id != view.own_channel).map(|id| {
                             let locked = view.channels.iter().any(|n| n.channel.id == id && n.channel.has_password);
                             (id, locked)
                         });
+                        if out.start_channel.is_some_and(|(_, locked)| locked) {
+                            out.start_password = password;
+                        }
                     }
                 }
                 self.count_talkers();
@@ -828,6 +844,15 @@ impl Session {
                 self.channel_groups = channel_groups;
                 out.groups = true;
             }
+            Event::Icon { id, data } => {
+                if self.trace {
+                    match &data {
+                        Ok(bytes) => self.system(&format!("Icon {id} arrived, {} bytes", bytes.len())),
+                        Err(reason) => self.system(&format!("Icon {id} could not be fetched: {reason}")),
+                    }
+                }
+                out.icon = Some((id, data));
+            }
             Event::Stats(stats) => {
                 let text = format!("{:.0} ms", stats.ping_ms.max(0.0));
                 if text != self.ping {
@@ -881,6 +906,7 @@ mod tests {
     fn sample_view() -> ServerView {
         let mut marlin = person(8, 1, "Marlin");
         marlin.talking = true;
+        marlin.icons = vec![100, 300, 452340182, 2154984321, 7];
         let mut coralline = person(9, 1, "Coralline");
         coralline.input_muted = true;
         coralline.away = true;
@@ -890,6 +916,9 @@ mod tests {
         query.is_query = true;
         let mut locked = channel(3, 0, "Squad Alpha");
         locked.has_password = true;
+        locked.icon = 2154984321;
+        let mut banner = channel(20, 0, "[cspacer]Reef Runners");
+        banner.icon = 452340182;
         let mut music = channel(2, 0, "Radio");
         music.codec = CODEC_OPUS_MUSIC;
         ServerView {
@@ -897,7 +926,7 @@ mod tests {
             own_id: 7,
             own_channel: 1,
             channels: vec![
-                ChannelNode { channel: channel(20, 0, "[cspacer]Reef Runners"), depth: 0, clients: vec![] },
+                ChannelNode { channel: banner, depth: 0, clients: vec![] },
                 ChannelNode {
                     channel: channel(1, 0, "Lobby"),
                     depth: 0,
@@ -957,6 +986,9 @@ mod tests {
 
         assert_eq!((rows[5].line, rows[5].count), (SpacerLine::Dashed, 0));
         assert_eq!((rows[6].icon, rows[6].id), (ChannelIcon::Lock, 3));
+        assert_eq!(rows[6].icons, vec![2154984321]);
+        assert_eq!(rows[4].icons, vec![100, 300, 452340182, 2154984321]);
+        assert!(rows[0].icons.is_empty() && rows[1].icons.is_empty() && rows[2].icons.is_empty());
         assert_eq!((rows[7].icon, rows[7].depth), (ChannelIcon::Music, 0));
         assert_eq!((rows[8].text.as_str(), rows[8].depth, rows[8].count), ("Nested", 1, 2));
         assert!(!rows[8].current);
@@ -1192,7 +1224,7 @@ mod tests {
         assert!(build_rows(s.view.as_ref().unwrap(), false).iter().all(|row| !row.whispering));
 
         let out = s.apply(Event::Groups {
-            server_groups: vec![Group { id: 6, name: "Server Admin".into(), kind: 1, sort: 0 }],
+            server_groups: vec![Group { id: 6, name: "Server Admin".into(), kind: 1, sort: 0, icon: 300 }],
             channel_groups: vec![],
         });
         assert!(out.groups && s.server_groups.len() == 1);

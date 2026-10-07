@@ -21,6 +21,12 @@ export struct TreeRow {
     commander: bool,
     foldable: bool,
     folded: bool,
+    badges: int,
+    badge-tint: int,
+    badge-a: image,
+    badge-b: image,
+    badge-c: image,
+    badge-d: image,
 }
 
 export struct ServerTile {
@@ -31,6 +37,8 @@ export struct ServerTile {
     viewed: bool,
     connected: bool,
     talking: bool,
+    icon: image,
+    has-icon: bool,
 }
 
 export struct BookmarkRow {
@@ -708,6 +716,44 @@ component FoldArrow inherits Rectangle {
     }
 }
 
+export component Badge inherits Rectangle {
+    in property <image> picture;
+    in property <bool> tinted;
+
+    width: 16px;
+    height: 16px;
+
+    if root.tinted: Image {
+        width: 16px;
+        height: 16px;
+        source: root.picture;
+        image-fit: contain;
+        colorize: Theme.drift;
+    }
+
+    if !root.tinted: Image {
+        width: 16px;
+        height: 16px;
+        source: root.picture;
+        image-fit: contain;
+    }
+}
+
+component BadgeStrip inherits HorizontalLayout {
+    in property <TreeRow> entry;
+
+    spacing: 3px;
+
+    for slot in root.entry.badges: VerticalLayout {
+        alignment: center;
+
+        Badge {
+            picture: slot == 0 ? root.entry.badge-a : (slot == 1 ? root.entry.badge-b : (slot == 2 ? root.entry.badge-c : root.entry.badge-d));
+            tinted: Math.mod(Math.floor(root.entry.badge-tint / Math.pow(2, slot)), 2) >= 1;
+        }
+    }
+}
+
 export component TreeRowView inherits Rectangle {
     in property <TreeRow> entry;
     callback activated();
@@ -813,6 +859,10 @@ export component TreeRowView inherits Rectangle {
                 horizontal-stretch: 1;
             }
 
+            if root.entry.badges > 0: BadgeStrip {
+                entry: root.entry;
+            }
+
             if root.entry.count > 0: Text {
                 text: "" + root.entry.count;
                 color: root.entry.current ? Theme.drift-bright : Theme.drift;
@@ -868,6 +918,10 @@ export component TreeRowView inherits Rectangle {
             vertical-alignment: center;
             overflow: elide;
             horizontal-stretch: 1;
+        }
+
+        if root.entry.badges > 0: BadgeStrip {
+            entry: root.entry;
         }
 
         if root.entry.commander: VerticalLayout {

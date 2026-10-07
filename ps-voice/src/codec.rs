@@ -13,6 +13,10 @@ pub fn is_supported_codec(codec: u8) -> bool {
     codec == CODEC_OPUS_VOICE || codec == CODEC_OPUS_MUSIC
 }
 
+pub fn is_end_marker(data: &[u8]) -> bool {
+    data.len() <= 1
+}
+
 pub fn bitrate_for(codec: u8, quality: u8) -> i32 {
     let q = quality.min(10) as i32;
     if codec == CODEC_OPUS_MUSIC {
@@ -229,6 +233,7 @@ mod tests {
         assert_eq!(bitrate_for(CODEC_OPUS_VOICE, 200), 46_000);
         assert_eq!(bitrate_for(CODEC_OPUS_MUSIC, 10), 96_000);
         assert!(is_supported_codec(4) && is_supported_codec(5) && !is_supported_codec(3));
+        assert!(is_end_marker(&[]) && is_end_marker(&[0x78]) && !is_end_marker(&[0x78, 0]));
     }
 
     #[test]

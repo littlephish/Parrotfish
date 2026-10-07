@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -18,13 +18,14 @@ use ps_protocol::packet::{
     Direction, Header, PacketType, FLAG_NEWPROTOCOL, FLAG_UNENCRYPTED, INIT_PACKET_ID,
     MAX_C2S_PAYLOAD, PACKET_TYPE_COUNT,
 };
-use ps_protocol::voice::parse_s2c_voice;
+use ps_protocol::voice::{is_end_of_stream, parse_s2c_voice};
 use ps_protocol::window::{PacketCounter, ReceiveWindow};
 use rand::RngCore as _;
 use sha1::Digest as _;
 use sha1::Sha1;
 
-use crate::book::Book;
+use crate::book::{is_standard_icon, Book};
+use crate::filetransfer::{self, ICON_SIZE_LIMIT};
 use crate::stats::Stats;
 use crate::{
     ConnectOptions, ConnectionState, Event, LinkStats, Shared, TextTarget, VoicePacket, VoiceSink,
@@ -38,11 +39,20 @@ const PING_INTERVAL: Duration = Duration::from_secs(1);
 const VIEW_INTERVAL: Duration = Duration::from_millis(50);
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
 const TALK_TIMEOUT: Duration = Duration::from_millis(400);
+const LATE_VOICE: Duration = Duration::from_millis(500);
 const DISCONNECT_GRACE: Duration = Duration::from_millis(1500);
 const ANNOUNCE_DELAY: Duration = Duration::from_millis(1500);
 const INITIAL_RTO_MS: f32 = 500.0;
 const MIN_RTO_MS: f32 = 150.0;
 const MAX_RTO_MS: f32 = 1000.0;
+const ICON_GAP: Duration = Duration::from_millis(500);
+const ICON_ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
+const ICON_TRANSFER_TIMEOUT: Duration = Duration::from_secs(5);
+const ICON_FLOOD_PAUSE: Duration = Duration::from_secs(15);
+const ICON_QUEUE_LIMIT: usize = 600;
+const ICON_MISS_LIMIT: u32 = 3;
+const ICON_GIVE_UP_FOR: Duration = Duration::from_secs(600);
+const ERROR_FLOODING: u32 = 0x020c;
 
 pub(crate) enum Request {
     Datagram(Vec<u8>),
@@ -51,6 +61,7 @@ pub(crate) enum Request {
     Text { target: TextTarget, text: String },
     Voice { codec: u8, data: Vec<u8> },
     Whisper { payload: Vec<u8>, group: bool },
+    Icon(u32),
     Disconnect(String),
 }
 
@@ -62,6 +73,13 @@ enum Phase {
     Disconnecting,
 }
 
+struct IconTransfer {
+    transfer: u16,
+    icon: u32,
+    asked: Instant,
+    return_code: u32,
+}
+
 struct Pending {
     ptype: PacketType,
     id: u16,
@@ -69,6 +87,10 @@ struct Pending {
     first_sent: Instant,
     last_sent: Instant,
     tries: u32,
+}
+
+fn is_older(voice_id: u16, marker: u16) -> bool {
+    (voice_id.wrapping_sub(marker) as i16) < 0
 }
 
 pub(crate) fn spawn(
@@ -220,12 +242,21 @@ struct Conn {
     last_view: Instant,
     last_stats: Instant,
     talking: HashMap<u16, Instant>,
+    voice_ended: HashMap<u16, (u16, Instant)>,
     stats: Stats,
     return_code: u32,
     disconnect_deadline: Option<Instant>,
     disconnect_packet: Option<u16>,
     voice_errors: u64,
     announce_after: Instant,
+    icon_queue: VecDeque<u32>,
+    icon_pending: HashSet<u32>,
+    icon_active: Option<IconTransfer>,
+    icon_job: Option<Receiver<Result<Vec<u8>, String>>>,
+    next_transfer: u16,
+    next_icon_at: Instant,
+    icon_misses: u32,
+    icons_off_until: Option<Instant>,
 }
 
 impl Conn {
@@ -268,12 +299,21 @@ impl Conn {
             last_view: now,
             last_stats: now,
             talking: HashMap::new(),
+            voice_ended: HashMap::new(),
             stats: Stats::new(),
             return_code: 0,
             disconnect_deadline: None,
             disconnect_packet: None,
             voice_errors: 0,
             announce_after: now + CONNECT_TIMEOUT + PACKET_TIMEOUT,
+            icon_queue: VecDeque::new(),
+            icon_pending: HashSet::new(),
+            icon_active: None,
+            icon_job: None,
+            next_transfer: 1,
+            next_icon_at: now,
+            icon_misses: 0,
+            icons_off_until: None,
         }
     }
 
@@ -343,6 +383,7 @@ impl Conn {
                     self.send_packet(PacketType::VoiceWhisper, flags, &payload);
                 }
             }
+            Request::Icon(id) => self.queue_icon(id),
             Request::Disconnect(message) => self.begin_disconnect(&message),
         }
     }
@@ -693,13 +734,22 @@ impl Conn {
         let Some(voice) = parse_s2c_voice(&data) else {
             return;
         };
-        if voice.data.is_empty() {
+        let now = Instant::now();
+        if is_end_of_stream(voice.data) {
+            self.voice_ended.insert(voice.client_id, (voice.voice_id, now));
             if self.talking.remove(&voice.client_id).is_some() {
                 self.set_talking(voice.client_id, false, false);
             }
         } else {
-            self.talking.insert(voice.client_id, Instant::now());
-            self.set_talking(voice.client_id, true, ptype == PacketType::VoiceWhisper);
+            let late = self
+                .voice_ended
+                .get(&voice.client_id)
+                .is_some_and(|(marker, at)| now.duration_since(*at) < LATE_VOICE && is_older(voice.voice_id, *marker));
+            if !late {
+                self.voice_ended.remove(&voice.client_id);
+                self.talking.insert(voice.client_id, now);
+                self.set_talking(voice.client_id, true, ptype == PacketType::VoiceWhisper);
+            }
         }
         if let Some(sink) = &mut self.voice {
             sink(VoicePacket {
@@ -796,7 +846,18 @@ impl Conn {
                     server_groups: self.book.regular_groups(true),
                     channel_groups: self.book.regular_groups(false),
                 });
+                self.view_dirty = true;
             }
+            "notifyservergroupclientadded" | "notifyservergroupclientdeleted" => {
+                self.book.group_member(&cmd, cmd.name == "notifyservergroupclientadded");
+                self.view_dirty = true;
+            }
+            "notifyclientchannelgroupchanged" => {
+                self.book.channel_group_changed(&cmd);
+                self.view_dirty = true;
+            }
+            "notifystartdownload" => self.on_start_download(&cmd),
+            "notifystatusfiletransfer" => self.on_transfer_status(&cmd),
             "notifyconnectioninforequest" => {
                 let info = self.stats.connection_info();
                 self.send_command(&info);
@@ -909,6 +970,9 @@ impl Conn {
         let message = cmd.get("msg").unwrap_or("").to_string();
         let extra = cmd.get("extra_msg").unwrap_or("").to_string();
         if self.phase == Phase::Connected || self.phase == Phase::Disconnecting {
+            if self.icon_error(cmd, id, &message) {
+                return;
+            }
             if id != 0 {
                 self.emit(Event::ServerError { id, message, extra });
             }
@@ -954,6 +1018,7 @@ impl Conn {
         };
         for client in self.book.clients_left(cmd) {
             self.talking.remove(&client.id);
+            self.voice_ended.remove(&client.id);
             if client.id == self.client_id {
                 let text = if self.phase == Phase::Disconnecting { "disconnected".to_string() } else { reason.clone() };
                 self.fail(text);
@@ -962,6 +1027,160 @@ impl Conn {
             }
         }
         self.view_dirty = true;
+    }
+
+    fn queue_icon(&mut self, id: u32) {
+        if id == 0 || is_standard_icon(id) || self.icon_pending.contains(&id) {
+            return;
+        }
+        if self.phase != Phase::Connected {
+            self.emit(Event::Icon { id, data: Err("not connected".to_string()) });
+            return;
+        }
+        if self.icons_off_until.is_some_and(|until| Instant::now() < until) {
+            self.emit(Event::Icon { id, data: Err(filetransfer::UNREACHABLE.to_string()) });
+            return;
+        }
+        if self.icon_pending.len() >= ICON_QUEUE_LIMIT {
+            self.emit(Event::Icon { id, data: Err("too many icons are waiting".to_string()) });
+            return;
+        }
+        self.icon_pending.insert(id);
+        self.icon_queue.push_back(id);
+    }
+
+    fn note_reach(&mut self, data: &Result<Vec<u8>, String>, now: Instant) {
+        let missed = matches!(data, Err(reason) if reason.starts_with(filetransfer::UNREACHABLE));
+        if !missed {
+            self.icon_misses = 0;
+            return;
+        }
+        self.icon_misses += 1;
+        if self.icon_misses < ICON_MISS_LIMIT {
+            return;
+        }
+        self.icon_misses = 0;
+        self.icons_off_until = Some(now + ICON_GIVE_UP_FOR);
+        self.log("The server's file port cannot be reached, so its icons are not fetched for a while");
+        for id in std::mem::take(&mut self.icon_queue) {
+            self.icon_pending.remove(&id);
+            self.emit(Event::Icon { id, data: Err(filetransfer::UNREACHABLE.to_string()) });
+        }
+    }
+
+    fn finish_icon(&mut self, id: u32, data: Result<Vec<u8>, String>) {
+        self.icon_active = None;
+        self.icon_job = None;
+        self.icon_pending.remove(&id);
+        self.emit(Event::Icon { id, data });
+    }
+
+    fn drive_icons(&mut self, now: Instant) {
+        if let Some((id, asked)) = self.icon_active.as_ref().map(|active| (active.icon, active.asked)) {
+            let done = match &self.icon_job {
+                Some(job) => match job.try_recv() {
+                    Ok(data) => Some(data),
+                    Err(TryRecvError::Empty) => None,
+                    Err(TryRecvError::Disconnected) => Some(Err("the download stopped".to_string())),
+                },
+                None if now.duration_since(asked) > ICON_ANSWER_TIMEOUT => {
+                    Some(Err("the server did not answer".to_string()))
+                }
+                None => None,
+            };
+            if let Some(data) = done {
+                self.note_reach(&data, now);
+                self.finish_icon(id, data);
+            }
+        }
+        if self.phase != Phase::Connected || self.icon_active.is_some() || now < self.next_icon_at {
+            return;
+        }
+        let Some(id) = self.icon_queue.pop_front() else {
+            return;
+        };
+        let transfer = self.next_transfer;
+        self.next_transfer = self.next_transfer.checked_add(1).unwrap_or(1);
+        self.send_tracked(filetransfer::init_download(transfer, &filetransfer::icon_path(id)));
+        self.icon_active = Some(IconTransfer { transfer, icon: id, asked: now, return_code: self.return_code });
+        self.next_icon_at = now + ICON_GAP;
+    }
+
+    fn on_start_download(&mut self, cmd: &Command) {
+        let Some(active) = &self.icon_active else {
+            return;
+        };
+        if cmd.num::<u16>("clientftfid") != Some(active.transfer) || self.icon_job.is_some() {
+            return;
+        }
+        let id = active.icon;
+        let Some(start) = filetransfer::parse_start(cmd) else {
+            self.finish_icon(id, Err("the server's answer could not be read".to_string()));
+            return;
+        };
+        if start.size > ICON_SIZE_LIMIT {
+            self.send_tracked(filetransfer::stop(start.server_transfer));
+            self.finish_icon(
+                id,
+                Err(format!("the file is {} bytes, more than the {ICON_SIZE_LIMIT} allowed", start.size)),
+            );
+            return;
+        }
+        let peer = match self.socket.peer_addr() {
+            Ok(peer) => peer,
+            Err(e) => {
+                self.finish_icon(id, Err(format!("the server's address is not known: {e}")));
+                return;
+            }
+        };
+        let addr = SocketAddr::new(peer.ip(), self.opts.filetransfer_port.unwrap_or(start.port));
+        let (tx, rx) = mpsc::channel();
+        let spawned = std::thread::Builder::new().name("ps-client-ft".into()).spawn(move || {
+            let _ = tx.send(filetransfer::download(addr, &start.key, start.size, ICON_SIZE_LIMIT, ICON_TRANSFER_TIMEOUT));
+        });
+        match spawned {
+            Ok(_) => self.icon_job = Some(rx),
+            Err(e) => self.finish_icon(id, Err(format!("cannot start the download: {e}"))),
+        }
+    }
+
+    fn on_transfer_status(&mut self, cmd: &Command) {
+        let (Some(status), Some(active)) = (filetransfer::parse_status(cmd), &self.icon_active) else {
+            return;
+        };
+        if status.transfer != active.transfer || self.icon_job.is_some() {
+            return;
+        }
+        let id = active.icon;
+        let reason = if status.message.is_empty() { format!("status {}", status.code) } else { status.message };
+        self.finish_icon(id, Err(reason));
+    }
+
+    fn icon_error(&mut self, cmd: &Command, id: u32, message: &str) -> bool {
+        if id == ERROR_FLOODING {
+            self.next_icon_at = Instant::now() + ICON_FLOOD_PAUSE;
+        }
+        let Some(active) = &self.icon_active else {
+            return false;
+        };
+        let code = cmd.num::<u32>("return_code");
+        let ours = code == Some(active.return_code);
+        let maybe_ours = id == ERROR_FLOODING && code.is_none();
+        if !ours && !maybe_ours {
+            return false;
+        }
+        if id == 0 || self.icon_job.is_some() {
+            return ours;
+        }
+        let icon = active.icon;
+        if id == ERROR_FLOODING {
+            self.icon_active = None;
+            self.icon_queue.push_front(icon);
+            self.log("The server asked for fewer requests; icons will continue in a moment");
+        } else {
+            self.finish_icon(icon, Err(message.to_string()));
+        }
+        ours
     }
 
     fn tick(&mut self) {
@@ -1023,6 +1242,8 @@ impl Conn {
             self.last_ping = Some((id, now));
         }
 
+        self.drive_icons(now);
+
         let stale: Vec<u16> = self
             .talking
             .iter()
@@ -1070,5 +1291,15 @@ mod tests {
         assert_eq!(split_host_port("ts.example.com:10000", 9987), ("ts.example.com", 10000));
         assert_eq!(split_host_port("ts.example.com", 9987), ("ts.example.com", 9987));
         assert_eq!(split_host_port("ts.example.com:abc", 9987), ("ts.example.com:abc", 9987));
+    }
+
+    #[test]
+    fn a_voice_packet_older_than_the_end_packet_is_recognised() {
+        assert!(is_older(5, 6));
+        assert!(!is_older(6, 6));
+        assert!(!is_older(7, 6));
+        assert!(is_older(65535, 0));
+        assert!(!is_older(0, 65535));
+        assert!(is_older(65000, 100));
     }
 }

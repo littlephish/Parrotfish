@@ -76,6 +76,9 @@ export component SettingsWindow inherits Window {
     in-out property <int> bm-identity;
     in property <[string]> bm-channels;
     in-out property <int> bm-channel;
+    in-out property <string> bm-server-password;
+    in-out property <string> bm-channel-password;
+    in-out property <bool> bm-auto;
     in property <string> bm-channel-hint;
     in property <string> bm-note;
 
@@ -569,31 +572,77 @@ export component SettingsWindow inherits Window {
                             text: root.bm-index >= 0 ? "Edit bookmark" : "New bookmark";
                         }
 
-                        Hint {
-                            text: "Name";
+                        HorizontalLayout {
+                            spacing: 10px;
+
+                            VerticalLayout {
+                                min-width: 80px;
+                                preferred-width: 180px;
+                                horizontal-stretch: 1;
+                                spacing: 5px;
+
+                                Hint {
+                                    text: "Name";
+                                }
+
+                                Field {
+                                    text <=> root.bm-name;
+                                    placeholder: "what to call it";
+                                }
+                            }
+
+                            VerticalLayout {
+                                min-width: 80px;
+                                preferred-width: 180px;
+                                horizontal-stretch: 1;
+                                spacing: 5px;
+
+                                Hint {
+                                    text: "Nickname";
+                                }
+
+                                Field {
+                                    text <=> root.bm-nickname;
+                                    placeholder: "the name others see";
+                                }
+                            }
                         }
 
-                        Field {
-                            text <=> root.bm-name;
-                            placeholder: "what to call it";
-                        }
+                        HorizontalLayout {
+                            spacing: 10px;
 
-                        Hint {
-                            text: "Server address";
-                        }
+                            VerticalLayout {
+                                min-width: 80px;
+                                preferred-width: 180px;
+                                horizontal-stretch: 1;
+                                spacing: 5px;
 
-                        Field {
-                            text <=> root.bm-address;
-                            placeholder: "name or address, with :port if needed";
-                        }
+                                Hint {
+                                    text: "Server address";
+                                }
 
-                        Hint {
-                            text: "Nickname";
-                        }
+                                Field {
+                                    text <=> root.bm-address;
+                                    placeholder: "name or address, with :port";
+                                }
+                            }
 
-                        Field {
-                            text <=> root.bm-nickname;
-                            placeholder: "the name others see";
+                            VerticalLayout {
+                                min-width: 80px;
+                                preferred-width: 180px;
+                                horizontal-stretch: 1;
+                                spacing: 5px;
+
+                                Hint {
+                                    text: "Server password";
+                                }
+
+                                Field {
+                                    text <=> root.bm-server-password;
+                                    password: true;
+                                    placeholder: "none";
+                                }
+                            }
                         }
 
                         Hint {
@@ -606,20 +655,58 @@ export component SettingsWindow inherits Window {
                             placeholder: "No identity yet";
                         }
 
-                        Hint {
-                            text: "Channel to join";
-                        }
+                        HorizontalLayout {
+                            spacing: 10px;
 
-                        Dropdown {
-                            model: root.bm-channels;
-                            current-index <=> root.bm-channel;
-                            selected => {
-                                root.bookmark-channel-selected();
+                            VerticalLayout {
+                                min-width: 80px;
+                                preferred-width: 180px;
+                                horizontal-stretch: 1;
+                                spacing: 5px;
+
+                                Hint {
+                                    text: "Channel to join";
+                                }
+
+                                Dropdown {
+                                    model: root.bm-channels;
+                                    current-index <=> root.bm-channel;
+                                    selected => {
+                                        root.bookmark-channel-selected();
+                                    }
+                                }
+                            }
+
+                            VerticalLayout {
+                                min-width: 80px;
+                                preferred-width: 180px;
+                                horizontal-stretch: 1;
+                                spacing: 5px;
+
+                                Hint {
+                                    text: "Its password";
+                                }
+
+                                Field {
+                                    text <=> root.bm-channel-password;
+                                    password: true;
+                                    enabled: root.bm-channel > 0;
+                                    placeholder: "none";
+                                }
                             }
                         }
 
                         if root.bm-channel-hint != "": Hint {
                             text: root.bm-channel-hint;
+                        }
+
+                        Check {
+                            text: "Connect when PhishSpeak starts";
+                            checked <=> root.bm-auto;
+                        }
+
+                        Hint {
+                            text: "Passwords are kept encrypted for your Windows account.";
                         }
 
                         if root.bm-note != "": Hint {

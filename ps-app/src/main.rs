@@ -3,6 +3,7 @@
 mod app;
 mod bookmarks;
 mod hotkeys;
+mod icons;
 mod keywatch;
 mod platform;
 mod session;

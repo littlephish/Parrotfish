@@ -8,6 +8,10 @@ pub const CODEC_OPUS_MUSIC: u8 = 5;
 pub const C2S_VOICE_HEADER_LEN: usize = 3;
 pub const S2C_VOICE_HEADER_LEN: usize = 5;
 
+pub fn is_end_of_stream(data: &[u8]) -> bool {
+    data.len() <= 1
+}
+
 pub fn is_opus(codec: u8) -> bool {
     codec == CODEC_OPUS_VOICE || codec == CODEC_OPUS_MUSIC
 }
@@ -125,6 +129,7 @@ mod tests {
         let v = parse_s2c_voice(&[0, 7, 0, 9, 4]).unwrap();
         assert!(v.data.is_empty());
         assert_eq!(v.client_id, 9);
+        assert!(is_end_of_stream(v.data) && is_end_of_stream(&[0x78]) && !is_end_of_stream(&[0x78, 1]));
     }
 
     #[test]

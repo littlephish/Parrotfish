@@ -16,6 +16,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel, Weak};
 
 use crate::bookmarks::{initials, Bookmark, Bookmarks};
 use crate::hotkeys::chord_name;
+use crate::icons::{IconStore, Lookup};
 use crate::keywatch::KeyWatcher;
 use crate::platform;
 use crate::session::{
@@ -25,7 +26,8 @@ use crate::session::{
 use crate::settings::{self, Settings};
 use crate::whisper::{route, Route, WhisperKeys};
 use crate::{
-    BookmarkRow, ChatRow, IdentityRow, PhishSpeakApp, PickRow, ServerTile, SettingsWindow, TreeRow, WhisperKeyRow,
+    BookmarkRow, ChatRow, Icons, IdentityRow, PhishSpeakApp, PickRow, ServerTile, SettingsWindow, TreeRow,
+    WhisperKeyRow,
 };
 
 mod shortcuts;
@@ -111,7 +113,28 @@ fn tree_row(row: &RowData) -> TreeRow {
         commander: row.commander,
         foldable: row.foldable,
         folded: row.folded,
+        badges: 0,
+        badge_tint: 0,
+        badge_a: slint::Image::default(),
+        badge_b: slint::Image::default(),
+        badge_c: slint::Image::default(),
+        badge_d: slint::Image::default(),
     }
+}
+
+fn set_badge(row: &mut TreeRow, picture: slint::Image, tinted: bool) {
+    let slot = row.badges;
+    match slot {
+        0 => row.badge_a = picture,
+        1 => row.badge_b = picture,
+        2 => row.badge_c = picture,
+        3 => row.badge_d = picture,
+        _ => return,
+    }
+    if tinted {
+        row.badge_tint |= 1 << slot;
+    }
+    row.badges += 1;
 }
 
 fn chat_row(line: &ChatLine) -> ChatRow {
@@ -221,6 +244,8 @@ pub struct App {
     silence_warned: bool,
     warned_codecs: Vec<u8>,
     shown_status: String,
+    icons: IconStore,
+    standard_icons: Vec<slint::Image>,
     shown_echo: String,
     shown_wide: bool,
     shown_devices: (String, String),
@@ -299,6 +324,8 @@ impl App {
             silence_warned: false,
             warned_codecs: Vec::new(),
             shown_status: String::new(),
+            icons: IconStore::new(settings::config_dir().join("cache").join("icons")),
+            standard_icons: Vec::new(),
             shown_echo: String::new(),
             shown_wide: false,
             shown_devices: (String::new(), String::new()),
@@ -315,6 +342,14 @@ impl App {
         w.settings.set_editor_groups(ModelRc::from(self.group_rows.clone()));
         w.settings.set_bm_channels(ModelRc::from(self.start_rows.clone()));
         w.settings.set_version(env!("CARGO_PKG_VERSION").into());
+        let drawn = w.main.global::<Icons>();
+        self.standard_icons = vec![
+            drawn.get_group_100(),
+            drawn.get_group_200(),
+            drawn.get_group_300(),
+            drawn.get_group_500(),
+            drawn.get_group_600(),
+        ];
         w.settings.set_tx_mode(self.settings.tx_mode);
         w.settings.set_vad_threshold(self.settings.vad_threshold);
         w.settings.set_mic_gain(self.settings.mic_gain);
@@ -334,6 +369,12 @@ impl App {
         self.rebuild_lanes(true);
         self.save_at = None;
         self.dirty = Dirty::everything();
+        let wanted: Vec<Bookmark> = self.bookmarks.items.iter().filter(|b| b.auto_connect).cloned().collect();
+        for bookmark in wanted.iter().rev() {
+            let mut request = self.bookmark_request(bookmark);
+            request.quiet = true;
+            self.begin(w, request);
+        }
         for request in requests {
             self.connect_from_start(w, request);
         }
@@ -606,7 +647,7 @@ impl App {
         self.dirty.bookmarks = true;
     }
 
-    fn enter_start_channel(&mut self, w: &Windows, id: u16, channel: u64, locked: bool) {
+    fn enter_start_channel(&mut self, w: &Windows, id: u16, channel: u64, locked: bool, password: &str) {
         let Some(session) = self.session(id) else {
             return;
         };
@@ -615,6 +656,8 @@ impl App {
         };
         if !locked {
             client.join_channel(channel, "");
+        } else if !password.is_empty() {
+            client.join_channel(channel, password);
         } else if self.viewed == Some(id) && !w.main.get_prompt_open() {
             w.main.set_prompt_name(session.channel_name(channel).into());
             w.main.set_prompt_password("".into());
@@ -694,6 +737,7 @@ impl App {
         };
         let bookmark = &mut self.bookmarks.items[index];
         (bookmark.channel, bookmark.channel_id) = if already { (String::new(), 0) } else { (path, channel) };
+        bookmark.channel_password.clear();
         self.save_bookmarks(w);
         self.dirty.sessions = true;
         if w.settings.get_bm_index() == index as i32 {
@@ -713,6 +757,9 @@ impl App {
             self.identity_index(&bookmark.identity_uid).map(|i| i as i32).unwrap_or(self.default_identity()),
         );
         w.settings.set_bm_note("".into());
+        w.settings.set_bm_server_password(bookmark.server_password.as_str().into());
+        w.settings.set_bm_channel_password(bookmark.channel_password.as_str().into());
+        w.settings.set_bm_auto(bookmark.auto_connect);
         self.bm_choice = (bookmark.channel.clone(), bookmark.channel_id);
         self.publish_start_channels(w);
     }
@@ -724,6 +771,9 @@ impl App {
         w.settings.set_bm_nickname(self.default_nickname().into());
         w.settings.set_bm_identity(self.default_identity());
         w.settings.set_bm_note("".into());
+        w.settings.set_bm_server_password("".into());
+        w.settings.set_bm_channel_password("".into());
+        w.settings.set_bm_auto(false);
         self.bm_choice = (String::new(), 0);
         self.publish_start_channels(w);
     }
@@ -747,6 +797,13 @@ impl App {
             identity_uid,
             channel: self.bm_choice.0.clone(),
             channel_id: self.bm_choice.1,
+            server_password: w.settings.get_bm_server_password().to_string(),
+            channel_password: if self.bm_choice.0.is_empty() && self.bm_choice.1 == 0 {
+                String::new()
+            } else {
+                w.settings.get_bm_channel_password().to_string()
+            },
+            auto_connect: w.settings.get_bm_auto(),
         };
         let index = w.settings.get_bm_index();
         let saved_at = if index >= 0 && (index as usize) < self.bookmarks.items.len() {
@@ -831,6 +888,9 @@ impl App {
         request.identity_uid = loaded.identity.uid();
         if let Some(existing) = self.bookmarks.find_address(&address) {
             request.name = self.bookmarks.items[existing].name.clone();
+            if request.password.is_empty() {
+                request.password = self.bookmarks.items[existing].server_password.clone();
+            }
         }
         w.main.set_dialog_open(false);
         w.main.set_dlg_password("".into());
@@ -864,8 +924,10 @@ impl App {
             address: bookmark.address.clone(),
             nickname: if bookmark.nickname.trim().is_empty() { self.default_nickname() } else { bookmark.nickname.clone() },
             identity_uid,
+            password: bookmark.server_password.clone(),
             channel: bookmark.channel.clone(),
             channel_id: bookmark.channel_id,
+            channel_password: bookmark.channel_password.clone(),
             ..ConnectRequest::default()
         }
     }
@@ -952,6 +1014,7 @@ impl App {
         }
         options.server_password = request.password.clone();
         options.default_channel = request.channel.clone();
+        options.default_channel_password = request.channel_password.clone();
         options.input_muted = self.mic_muted;
         options.output_muted = self.sound_muted;
         options.log_commands = self.trace;
@@ -1297,6 +1360,7 @@ impl App {
         let order: Vec<(u16, bool)> = self.sessions.iter().map(|s| (s.id, s.is_connected())).collect();
         let session = self.sessions.remove(position);
         self.engine.clear_session(id);
+        self.icons.forget_pending(&session.server_uid);
         if self.prompt.is_some_and(|(owner, _)| owner == id) {
             self.prompt = None;
             w.main.set_prompt_open(false);
@@ -1316,7 +1380,7 @@ impl App {
         if was_connecting {
             let (field, text) =
                 connect_failure(reason, &session.request.address, !session.request.password.is_empty());
-            if w.main.get_dialog_open() {
+            if w.main.get_dialog_open() || session.request.quiet {
                 w.main.set_notice(format!("{}: {text}", session.name).into());
             } else {
                 self.show_dialog(w, &session.request, Some((field, text)));
@@ -1334,6 +1398,12 @@ impl App {
         }
         if outcome.forget_all {
             self.engine.clear_session(id);
+            if let Some(uid) = self.session(id).map(|s| s.server_uid.clone()) {
+                self.icons.forget_pending(&uid);
+            }
+        }
+        if let Some((icon, data)) = outcome.icon {
+            self.icon_answered(id, icon, data);
         }
         self.dirty.tree |= viewed && (outcome.tree || outcome.talking.is_some());
         self.dirty.chat |= viewed && outcome.chat;
@@ -1356,7 +1426,7 @@ impl App {
             self.remember_folds(id);
         }
         if let Some((channel, locked)) = outcome.start_channel {
-            self.enter_start_channel(w, id, channel, locked);
+            self.enter_start_channel(w, id, channel, locked, &outcome.start_password);
         }
         if outcome.tree && w.settings.window().is_visible() && w.settings.get_tab() == 3 {
             self.dirty.bookmarks = true;
@@ -1377,6 +1447,60 @@ impl App {
         }
     }
 
+    fn icon_answered(&mut self, id: u16, icon: u32, data: Result<Vec<u8>, String>) {
+        let Some(uid) = self.session(id).map(|s| s.server_uid.clone()) else {
+            return;
+        };
+        match data {
+            Ok(bytes) => {
+                if let (Err(refused), true) = (self.icons.arrived(&uid, icon, &bytes), self.trace) {
+                    if let Some(session) = self.session_mut(id) {
+                        session.system(&format!("Icon {icon} is not shown: {}", refused.reason()));
+                    }
+                    self.dirty.chat |= self.viewed == Some(id);
+                }
+            }
+            Err(_) => self.icons.failed(&uid, icon, Instant::now()),
+        }
+        self.dirty.tree |= self.viewed_session().is_some_and(|s| s.server_uid == uid);
+        self.dirty.sessions |= self
+            .sessions
+            .iter()
+            .any(|s| s.server_uid == uid && s.view.as_ref().is_some_and(|view| view.server.icon == icon));
+    }
+
+    fn picture(&mut self, uid: &str, icon: u32, client: Option<&ClientHandle>, now: Instant) -> Option<(slint::Image, bool)> {
+        let found =
+            if client.is_some() { self.icons.lookup(uid, icon, now) } else { self.icons.peek(uid, icon, now) };
+        match found {
+            Lookup::Standard(index) => self.standard_icons.get(index).map(|image| (image.clone(), true)),
+            Lookup::Ready(image) => Some((image, false)),
+            Lookup::Refresh(image) => {
+                if let Some(client) = client {
+                    client.request_icon(icon);
+                }
+                Some((image, false))
+            }
+            Lookup::Ask => {
+                if let Some(client) = client {
+                    client.request_icon(icon);
+                }
+                Some((slint::Image::default(), false))
+            }
+            Lookup::Waiting => Some((slint::Image::default(), false)),
+            Lookup::Nothing => None,
+        }
+    }
+
+    fn server_picture(&mut self, id: u16, now: Instant) -> Option<slint::Image> {
+        let session = self.session(id)?;
+        let icon = session.view.as_ref().map(|view| view.server.icon).filter(|icon| *icon != 0)?;
+        let uid = session.server_uid.clone();
+        let client = session.client.clone().filter(|_| session.is_connected());
+        let (image, _) = self.picture(&uid, icon, client.as_ref(), now)?;
+        Some(image).filter(|image| image.size().width > 0)
+    }
+
     fn on_connected(&mut self, w: &Windows, id: u16) {
         let kept = self.session(id).and_then(|s| self.settings.folds.get(&s.server_uid)).cloned();
         let Some(session) = self.session_mut(id) else {
@@ -1394,15 +1518,11 @@ impl App {
         }
         if save {
             let kept = self.bookmarks.find_address(&request.address).map(|i| self.bookmarks.items[i].clone());
-            let (channel, channel_id) = kept.as_ref().map(|b| (b.channel.clone(), b.channel_id)).unwrap_or_default();
-            self.bookmarks.upsert(Bookmark {
-                name: kept.map(|b| b.name).unwrap_or(name),
-                address: request.address.clone(),
-                nickname: request.nickname.clone(),
-                identity_uid: request.identity_uid.clone(),
-                channel,
-                channel_id,
-            });
+            let mut bookmark = kept.unwrap_or(Bookmark { name, ..Bookmark::default() });
+            bookmark.address = request.address.clone();
+            bookmark.nickname = request.nickname.clone();
+            bookmark.identity_uid = request.identity_uid.clone();
+            self.bookmarks.upsert(bookmark);
             self.save_bookmarks(w);
         }
         self.route_mic();
@@ -1597,10 +1717,18 @@ impl App {
     }
 
     fn publish_sessions(&mut self, w: &Windows) {
+        let now = Instant::now();
+        let ids: Vec<u16> = self.sessions.iter().map(|s| s.id).collect();
+        let pictures: Vec<Option<slint::Image>> = ids.iter().map(|id| self.server_picture(*id, now)).collect();
+        let viewed_picture =
+            self.viewed.and_then(|viewed| ids.iter().position(|id| *id == viewed)).and_then(|at| pictures[at].clone());
+        w.main.set_has_server_icon(viewed_picture.is_some());
+        w.main.set_server_icon(viewed_picture.unwrap_or_default());
         let tiles: Vec<ServerTile> = self
             .sessions
             .iter()
-            .map(|s| ServerTile {
+            .zip(pictures)
+            .map(|(s, picture)| ServerTile {
                 id: i32::from(s.id),
                 initials: initials(&s.name).into(),
                 name: s.name.as_str().into(),
@@ -1616,6 +1744,8 @@ impl App {
                 viewed: self.viewed == Some(s.id),
                 connected: s.is_connected(),
                 talking: s.talkers > 0,
+                has_icon: picture.is_some(),
+                icon: picture.unwrap_or_default(),
             })
             .collect();
         let others: Vec<ServerTile> = tiles.iter().filter(|t| !t.viewed).take(HEADER_TILES).cloned().collect();
@@ -1668,11 +1798,25 @@ impl App {
     }
 
     fn publish_tree(&mut self) {
-        let shown = self.viewed_session().and_then(|s| s.view.as_ref().map(|view| (view, &s.folds)));
-        let rows: Vec<TreeRow> = match shown {
-            Some((view, folds)) => build_rows_folded(view, self.own_talking, folds).iter().map(tree_row).collect(),
-            None => Vec::new(),
+        let now = Instant::now();
+        let (data, uid, client) = match self.viewed_session() {
+            Some(s) => (
+                s.view.as_ref().map(|view| build_rows_folded(view, self.own_talking, &s.folds)).unwrap_or_default(),
+                s.server_uid.clone(),
+                s.client.clone().filter(|_| s.is_connected()),
+            ),
+            None => (Vec::new(), String::new(), None),
         };
+        let mut rows: Vec<TreeRow> = Vec::with_capacity(data.len());
+        for row in &data {
+            let mut shown = tree_row(row);
+            for icon in &row.icons {
+                if let Some((picture, tinted)) = self.picture(&uid, *icon, client.as_ref(), now) {
+                    set_badge(&mut shown, picture, tinted);
+                }
+            }
+            rows.push(shown);
+        }
         if self.tree_shown == self.viewed {
             sync_rows(&self.tree, rows);
         } else {

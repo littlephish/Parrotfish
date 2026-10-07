@@ -1,5 +1,6 @@
 pub mod book;
 mod conn;
+pub mod filetransfer;
 pub mod spacer;
 mod stats;
 
@@ -10,7 +11,9 @@ use std::sync::Arc;
 use ps_identity::Identity;
 use ps_protocol::command::Command;
 
-pub use book::{Channel, ChannelNode, ClientInfo, Group, ServerInfo, ServerView};
+pub use book::{
+    icon_id, is_standard_icon, Channel, ChannelNode, ClientInfo, Group, ServerInfo, ServerView, STANDARD_ICONS,
+};
 pub use ps_protocol::voice::{CODEC_OPUS_MUSIC, CODEC_OPUS_VOICE};
 
 pub const DEFAULT_PORT: u16 = 9987;
@@ -34,6 +37,7 @@ pub struct ConnectOptions {
     pub output_muted: bool,
     pub log_commands: bool,
     pub simulated_loss: f32,
+    pub filetransfer_port: Option<u16>,
 }
 
 impl ConnectOptions {
@@ -55,6 +59,7 @@ impl ConnectOptions {
             output_muted: false,
             log_commands: false,
             simulated_loss: 0.0,
+            filetransfer_port: None,
         }
     }
 }
@@ -180,6 +185,7 @@ pub enum Event {
     SecurityLevelRequired(u8),
     Groups { server_groups: Vec<Group>, channel_groups: Vec<Group> },
     Stats(LinkStats),
+    Icon { id: u32, data: Result<Vec<u8>, String> },
     Disconnected { reason: String },
 }
 
@@ -258,6 +264,10 @@ impl ClientHandle {
         if let Some(payload) = target.payload(codec, data) {
             let _ = self.inner.tx.send(conn::Request::Whisper { payload, group: target.is_group() });
         }
+    }
+
+    pub fn request_icon(&self, id: u32) {
+        let _ = self.inner.tx.send(conn::Request::Icon(id));
     }
 
     pub fn set_channel_commander(&self, on: bool) {

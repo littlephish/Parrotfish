@@ -8,7 +8,11 @@ chat, and carries voice in both directions with Opus.
   microphone level. Spacer channels such as `[cspacer]Games` are drawn as dividers.
 - Channels fold and open from an arrow. A setting chooses how they start (all open, empty ones
   folded, all folded), and the channels you fold or open yourself are remembered for each server.
-- Bookmarks for one-click connections, each with the channel to join if you want one.
+- Bookmarks for one-click connections, each with the channel to join if you want one. A
+  bookmark can connect when PhishSpeak starts and can keep the server's and the channel's
+  password, stored encrypted for your Windows account.
+- The icons a server sets up: on channels, on people (their groups and their own) and for the
+  server itself. PNG and JPEG; GIF icons are not shown yet.
 - Several servers at once. You hear all of them; your microphone goes to the one you are viewing.
 - Talk keys you choose by pressing them: any key, mouse button 3 to 5, or a combination, and
   more than one if you like. They work while PhishSpeak is in the background.

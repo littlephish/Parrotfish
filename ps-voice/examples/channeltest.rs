@@ -20,6 +20,7 @@ struct Heard {
     ends: u64,
     whisper_ends: u64,
     codecs: Vec<u8>,
+    last: Option<Instant>,
 }
 
 fn whisper_target(spec: &str) -> Option<WhisperTarget> {
@@ -47,7 +48,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "--help") {
         eprintln!(
-            "usage: channeltest <host> [--port N] [--nick NAME] [--join CHANNEL_ID] [--seconds N]\n                   [--talk SECONDS] [--talk-after SECONDS]\n                   [--whisper client:ID|channel:ID|commanders|everyone] [--commander]\nListens for voice and whispers and reports who was heard; with --talk it also sends a tone, as a whisper when --whisper is given."
+            "usage: channeltest <host> [--port N] [--nick NAME] [--join CHANNEL_ID] [--seconds N]\n                   [--talk SECONDS] [--talk-after SECONDS]\n                   [--whisper client:ID|channel:ID|commanders|everyone] [--commander] [--abrupt-end]\nListens for voice and whispers and reports who was heard; with --talk it also sends a tone, as a whisper when --whisper is given.\nThe end packet follows one frame after the last sound, as in the app; --abrupt-end sends it right behind the last sound,\nwhich a server may deliver the other way round."
         );
         std::process::exit(2);
     }
@@ -77,16 +78,22 @@ fn main() {
         };
         let entry = map.entry(packet.client_id).or_default();
         let kind = if packet.whisper { "whisper" } else { "voice" };
-        if packet.data.is_empty() {
+        if packet.data.len() <= 1 {
             if packet.whisper {
                 entry.whisper_ends += 1;
             } else {
                 entry.ends += 1;
             }
+            let gap = entry
+                .last
+                .take()
+                .map(|at| format!(", {} ms after the last one", at.elapsed().as_millis()))
+                .unwrap_or_default();
             out.push(format!(
-                "{} end-of-{} packet from client {} after {} packets",
+                "{} end-of-{} packet ({} bytes) from client {} after {} packets{gap}",
                 clock(),
                 if packet.whisper { "whisper" } else { "talk" },
+                packet.data.len(),
                 packet.client_id,
                 entry.run
             ));
@@ -98,6 +105,7 @@ fn main() {
             }
             entry.run_is_whisper = packet.whisper;
             entry.run += 1;
+            entry.last = Some(Instant::now());
             if packet.whisper {
                 entry.whispers += 1;
             } else {
@@ -128,6 +136,8 @@ fn main() {
     let mut next_frame: Option<Instant> = None;
     let mut sent = 0u64;
     let mut talk_done = talk <= 0.0;
+    let abrupt = args.iter().any(|a| a == "--abrupt-end");
+    let mut finishing = false;
     let mut last_report = Instant::now();
     let mut last_counts: BTreeMap<u16, (u64, u64)> = BTreeMap::new();
     let mut leaving = false;
@@ -185,7 +195,9 @@ fn main() {
                         Some(target) => handle.send_whisper(target, CODEC_OPUS_VOICE, data),
                         None => handle.send_voice(CODEC_OPUS_VOICE, data),
                     };
-                    if let Ok(n) = encoder.encode(&pcm, &mut packet) {
+                    if finishing {
+                        send(&[]);
+                    } else if let Ok(n) = encoder.encode(&pcm, &mut packet) {
                         send(&packet[..n]);
                         sent += 1;
                     }
@@ -194,8 +206,13 @@ fn main() {
                     if sent == 1 {
                         println!("{} {nick} starts {doing}", clock());
                     }
-                    if sent as f32 * 0.02 >= talk {
-                        send(&[]);
+                    let last = sent as f32 * 0.02 >= talk;
+                    if last && !finishing && !abrupt {
+                        finishing = true;
+                    } else if last {
+                        if !finishing {
+                            send(&[]);
+                        }
                         talk_done = true;
                         println!("{} {nick} stops {doing} after {sent} packets", clock());
                     }

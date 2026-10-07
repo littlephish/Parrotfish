@@ -2,6 +2,20 @@ use std::collections::{HashMap, HashSet};
 
 use ps_protocol::command::Command;
 
+pub const STANDARD_ICONS: [u32; 5] = [100, 200, 300, 500, 600];
+
+pub fn is_standard_icon(id: u32) -> bool {
+    STANDARD_ICONS.contains(&id)
+}
+
+pub fn icon_id(raw: &str) -> u32 {
+    let text = raw.trim();
+    if let Ok(value) = text.parse::<u64>() {
+        return value as u32;
+    }
+    text.parse::<i64>().map(|value| value as u32).unwrap_or(0)
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Channel {
     pub id: u64,
@@ -16,6 +30,7 @@ pub struct Channel {
     pub has_password: bool,
     pub max_clients: i64,
     pub needed_talk_power: i64,
+    pub icon: u32,
 }
 
 impl Channel {
@@ -56,6 +71,9 @@ impl Channel {
         if let Some(v) = cmd.num_at(item, "channel_needed_talk_power") {
             self.needed_talk_power = v;
         }
+        if let Some(v) = cmd.get_at(item, "channel_icon_id") {
+            self.icon = icon_id(v);
+        }
     }
 }
 
@@ -78,6 +96,10 @@ pub struct ClientInfo {
     pub is_channel_commander: bool,
     pub talking: bool,
     pub whispering: bool,
+    pub icon: u32,
+    pub server_groups: Vec<u64>,
+    pub channel_group: u64,
+    pub icons: Vec<u32>,
 }
 
 impl ClientInfo {
@@ -121,6 +143,21 @@ impl ClientInfo {
         if let Some(v) = cmd.bool_at(item, "client_is_channel_commander") {
             self.is_channel_commander = v;
         }
+        if let Some(v) = cmd.get_at(item, "client_icon_id") {
+            self.icon = icon_id(v);
+        }
+        if let Some(v) = cmd.num_at(item, "client_channel_group_id") {
+            self.channel_group = v;
+        }
+        if let Some(v) = cmd.get_at(item, "client_servergroups") {
+            let mut groups: Vec<u64> = Vec::new();
+            for group in v.split(',').filter_map(|part| part.trim().parse().ok()) {
+                if !groups.contains(&group) {
+                    groups.push(group);
+                }
+            }
+            self.server_groups = groups;
+        }
     }
 }
 
@@ -134,6 +171,7 @@ pub struct ServerInfo {
     pub max_clients: u32,
     pub codec_encryption_mode: u8,
     pub uid: String,
+    pub icon: u32,
 }
 
 impl ServerInfo {
@@ -158,6 +196,9 @@ impl ServerInfo {
         }
         if let Some(v) = cmd.num("virtualserver_codec_encryption_mode") {
             self.codec_encryption_mode = v;
+        }
+        if let Some(v) = cmd.get("virtualserver_icon_id") {
+            self.icon = icon_id(v);
         }
     }
 }
@@ -197,6 +238,7 @@ pub struct Group {
     pub name: String,
     pub kind: u8,
     pub sort: u32,
+    pub icon: u32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -240,6 +282,7 @@ impl Book {
                     name: cmd.get_at(item, "name").unwrap_or("").to_string(),
                     kind: cmd.num_at(item, "type").unwrap_or(0),
                     sort: cmd.num_at(item, "sortid").unwrap_or(0),
+                    icon: cmd.get_at(item, "iconid").map(icon_id).unwrap_or(0),
                 },
             );
         }
@@ -255,6 +298,51 @@ impl Book {
         let mut list: Vec<Group> = source.values().filter(|group| group.kind == 1).cloned().collect();
         list.sort_by(|a, b| (a.sort, a.id).cmp(&(b.sort, b.id)));
         list
+    }
+
+    pub fn group_member(&mut self, cmd: &Command, added: bool) {
+        for item in 0..cmd.len() {
+            let (Some(group), Some(id)) = (cmd.num_at::<u64>(item, "sgid"), cmd.num_at::<u16>(item, "clid")) else {
+                continue;
+            };
+            if let Some(client) = self.clients.get_mut(&id) {
+                client.server_groups.retain(|known| *known != group);
+                if added {
+                    client.server_groups.push(group);
+                }
+            }
+        }
+    }
+
+    pub fn channel_group_changed(&mut self, cmd: &Command) {
+        for item in 0..cmd.len() {
+            let (Some(group), Some(id)) = (cmd.num_at::<u64>(item, "cgid"), cmd.num_at::<u16>(item, "clid")) else {
+                continue;
+            };
+            if let Some(client) = self.clients.get_mut(&id) {
+                client.channel_group = group;
+            }
+        }
+    }
+
+    fn client_icons(&self, client: &ClientInfo) -> Vec<u32> {
+        let mut icons: Vec<u32> = Vec::new();
+        let mut add = |id: u32| {
+            if id != 0 && !icons.contains(&id) {
+                icons.push(id);
+            }
+        };
+        if let Some(group) = self.channel_groups.get(&client.channel_group) {
+            add(group.icon);
+        }
+        let mut groups: Vec<&Group> =
+            client.server_groups.iter().filter_map(|id| self.server_groups.get(id)).collect();
+        groups.sort_by_key(|group| (group.sort, group.id));
+        for group in groups {
+            add(group.icon);
+        }
+        add(client.icon);
+        icons
     }
 
     pub fn upsert_channels(&mut self, cmd: &Command) {
@@ -393,7 +481,9 @@ impl Book {
     pub fn view(&self) -> ServerView {
         let mut by_channel: HashMap<u64, Vec<ClientInfo>> = HashMap::new();
         for c in self.clients.values() {
-            by_channel.entry(c.channel).or_default().push(c.clone());
+            let mut client = c.clone();
+            client.icons = self.client_icons(c);
+            by_channel.entry(c.channel).or_default().push(client);
         }
         let channels = self
             .channel_order()
@@ -576,6 +666,69 @@ mod tests {
         assert_eq!(book.server_groups.len(), 1);
         assert_eq!(book.regular_groups(true)[0].id, 9);
         assert_eq!(book.channel_groups.len(), 2);
+    }
+
+    #[test]
+    fn icon_ids_fold_to_32_bits() {
+        assert_eq!(icon_id("0"), 0);
+        assert_eq!(icon_id("100"), 100);
+        assert_eq!(icon_id("2154984321"), 2154984321);
+        assert_eq!(icon_id("-2139982975"), 2154984321);
+        assert_eq!(icon_id("18446744071569568641"), 2154984321);
+        assert_eq!(icon_id(" 452340182 "), 452340182);
+        assert_eq!(icon_id(""), 0);
+        assert_eq!(icon_id("icon"), 0);
+        assert!(is_standard_icon(100) && is_standard_icon(600) && !is_standard_icon(400) && !is_standard_icon(0));
+    }
+
+    #[test]
+    fn people_carry_group_and_own_icons() {
+        let mut book = book_from(
+            "channellist cid=1 cpid=0 channel_order=0 channel_name=Lobby channel_icon_id=0|cid=2 cpid=0 channel_order=1 channel_name=Deep\\sRock channel_icon_id=2154984321",
+        );
+        book.server.apply(&Command::parse("initserver virtualserver_name=Reef virtualserver_icon_id=-2139982975 aclid=3"));
+        assert_eq!(book.server.icon, 2154984321);
+        assert_eq!(book.channels[&2].icon, 2154984321);
+        book.set_groups(
+            &Command::parse("notifyservergrouplist sgid=6 name=Server\\sAdmin type=1 iconid=300 sortid=10|sgid=8 name=Guest type=1 iconid=452340182 sortid=20|sgid=9 name=Plain type=1 iconid=0 sortid=5"),
+            true,
+        );
+        book.set_groups(
+            &Command::parse("notifychannelgrouplist cgid=5 name=Channel\\sAdmin type=1 iconid=100 sortid=0|cgid=8 name=Guest type=1 iconid=0 sortid=0"),
+            false,
+        );
+        book.own_id = 3;
+        book.clients_entered(&Command::parse(
+            "notifycliententerview cfid=0 ctid=1 reasonid=0 clid=3 client_nickname=Minnow client_type=0 client_servergroups=8,6,9 client_channel_group_id=5 client_icon_id=-2139982975|clid=4 client_nickname=Pike client_type=0 client_servergroups=8 client_channel_group_id=8 client_icon_id=0",
+        ));
+        assert_eq!(book.clients[&3].server_groups, vec![8, 6, 9]);
+        let view = book.view();
+        assert_eq!(view.server.icon, 2154984321);
+        assert_eq!(view.channels[1].channel.icon, 2154984321);
+        assert_eq!(view.client(3).unwrap().icons, vec![100, 300, 452340182, 2154984321]);
+        assert_eq!(view.client(4).unwrap().icons, vec![452340182]);
+
+        book.group_member(&Command::parse("notifyservergroupclientdeleted name=Server\\sAdmin sgid=6 invokerid=1 invokername=x clid=3 cluid=u"), false);
+        book.channel_group_changed(&Command::parse("notifyclientchannelgroupchanged invokerid=1 invokername=x cgid=8 cgi=1 cid=1 clid=3"));
+        assert_eq!(book.view().client(3).unwrap().icons, vec![452340182, 2154984321]);
+
+        book.group_member(&Command::parse("notifyservergroupclientadded name=Server\\sAdmin sgid=6 invokerid=1 invokername=x clid=4 cluid=u"), true);
+        book.group_member(&Command::parse("notifyservergroupclientadded name=Server\\sAdmin sgid=6 invokerid=1 invokername=x clid=4 cluid=u"), true);
+        assert_eq!(book.clients[&4].server_groups, vec![8, 6]);
+        book.clients_updated(&Command::parse("notifyclientupdated clid=3 client_icon_id=0"));
+        book.upsert_channels(&Command::parse("notifychanneledited cid=1 reasonid=10 invokerid=1 channel_icon_id=452340182"));
+        let view = book.view();
+        assert_eq!(view.client(3).unwrap().icons, vec![452340182]);
+        assert_eq!(view.client(4).unwrap().icons, vec![300, 452340182]);
+        assert_eq!(view.channels[0].channel.icon, 452340182);
+
+        book.clients_updated(&Command::parse("notifyclientupdated clid=4 client_servergroups=9,junk,,6 client_channel_group_id=5"));
+        assert_eq!(book.clients[&4].server_groups, vec![9, 6]);
+        assert_eq!(book.view().client(4).unwrap().icons, vec![100, 300]);
+
+        book.set_groups(&Command::parse("notifyservergrouplist sgid=8 name=Guest type=1 iconid=0 sortid=20"), true);
+        book.channel_group_changed(&Command::parse("notifyclientchannelgroupchanged cgid=8 cgi=1 cid=1 clid=4|cgid=5 clid=99"));
+        assert!(book.view().client(4).unwrap().icons.is_empty());
     }
 
     #[test]

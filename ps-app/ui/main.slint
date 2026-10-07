@@ -1,9 +1,9 @@
 import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme, Icons, Frame } from "theme.slint";
-import { Icon, Pressable, Btn, IconButton, Tile, Meter, Field, Dropdown, Check, Segmented, TreeRowView, ChatRowView, TreeRow, ServerTile, BookmarkRow, ChatRow, IdentityRow, WhisperKeyRow, PickRow } from "widgets.slint";
+import { Icon, Badge, Pressable, Btn, IconButton, Tile, Meter, Field, Dropdown, Check, Segmented, TreeRowView, ChatRowView, TreeRow, ServerTile, BookmarkRow, ChatRow, IdentityRow, WhisperKeyRow, PickRow } from "widgets.slint";
 import { SettingsWindow } from "settings.slint";
 
-export { SettingsWindow, TreeRow, ServerTile, BookmarkRow, ChatRow, IdentityRow, WhisperKeyRow, PickRow }
+export { SettingsWindow, Icons, TreeRow, ServerTile, BookmarkRow, ChatRow, IdentityRow, WhisperKeyRow, PickRow }
 
 component Dim inherits Text {
     color: Theme.drift;
@@ -31,6 +31,8 @@ component ServerRow inherits Pressable {
     in property <bool> viewed;
     in property <bool> connected;
     in property <bool> talking;
+    in property <image> picture;
+    in property <bool> has-picture;
 
     height: 46px;
     border-radius: 8px;
@@ -57,14 +59,30 @@ component ServerRow inherits Pressable {
             }
         }
 
-        Text {
-            text: root.name;
-            color: Theme.foam;
-            font-size: Theme.text;
-            font-weight: 600;
-            vertical-alignment: center;
-            overflow: elide;
+        HorizontalLayout {
+            spacing: 7px;
             horizontal-stretch: 1;
+
+            Text {
+                text: root.name;
+                color: Theme.foam;
+                font-size: Theme.text;
+                font-weight: 600;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            if root.has-picture: VerticalLayout {
+                alignment: center;
+
+                Badge {
+                    picture: root.picture;
+                }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
         }
 
         Dim {
@@ -140,6 +158,8 @@ export component PhishSpeakApp inherits Window {
     in property <string> server-name;
     in property <string> server-detail;
     in property <string> server-initials;
+    in property <image> server-icon;
+    in property <bool> has-server-icon;
     in property <string> channel-name;
     in-out property <string> notice;
     in property <string> nickname;
@@ -266,12 +286,28 @@ export component PhishSpeakApp inherits Window {
                         spacing: 1px;
                         horizontal-stretch: 1;
 
-                        Text {
-                            text: root.viewing ? root.server-name : "PhishSpeak";
-                            color: Theme.foam;
-                            font-size: 15px;
-                            font-weight: 600;
-                            overflow: elide;
+                        HorizontalLayout {
+                            spacing: 7px;
+
+                            Text {
+                                text: root.viewing ? root.server-name : "PhishSpeak";
+                                color: Theme.foam;
+                                font-size: 15px;
+                                font-weight: 600;
+                                overflow: elide;
+                            }
+
+                            if root.viewing && root.has-server-icon: VerticalLayout {
+                                alignment: center;
+
+                                Badge {
+                                    picture: root.server-icon;
+                                }
+                            }
+
+                            Rectangle {
+                                horizontal-stretch: 1;
+                            }
                         }
 
                         Dim {
@@ -702,6 +738,8 @@ export component PhishSpeakApp inherits Window {
                     viewed: session.viewed;
                     connected: session.connected;
                     talking: session.talking;
+                    picture: session.icon;
+                    has-picture: session.has-icon;
                     clicked => {
                         root.menu-open = false;
                         root.view-server(session.id);

@@ -916,7 +916,7 @@ mod tests {
     }
 
     fn groups() -> (Vec<Group>, Vec<Group>) {
-        let group = |id: u64, name: &str| Group { id, name: name.into(), kind: 1, sort: 0 };
+        let group = |id: u64, name: &str| Group { id, name: name.into(), kind: 1, sort: 0, icon: 0 };
         (vec![group(6, "Server Admin"), group(8, "Guest")], vec![group(5, "Channel Admin")])
     }
 

@@ -7,7 +7,7 @@ joins a server, shows the channel tree, chats, and does voice (Opus) both ways.
 
 Working end to end against a real TeamSpeak 3.13.8 server: login, channel tree, channel
 switching (incl. password channels), text chat, microphone capture → Opus → server, and
-server → Opus → speakers, with and without voice encryption. 172 unit tests green.
+server → Opus → speakers, with and without voice encryption. 195 unit tests green.
 
 The window is the compact tree layout in the Twilight reef palette (design:
 `docs/superpowers/specs/2026-10-06-compact-window-design.md`): spacer channels are drawn as
@@ -45,8 +45,15 @@ cargo run --release -p ps-app -- --connect <bookmark name or host[:port]> [--nic
 
 `--connect` can be given more than once; `--nickname` and `--channel` apply to the one before them.
 
+Icons a server defines are shown: on channels, on people (channel group, server groups, their
+own icon, at most four) and the server's own icon after its name. They are fetched once, two a
+second at most, and kept in `%APPDATA%\PhishSpeak\cache\icons`. PNG and JPEG only.
+
+A bookmark can connect when PhishSpeak starts and can keep a server password and a password
+for its start channel. Passwords are stored encrypted for the Windows account, never as text.
+
 Not done yet: ServerQuery browser (v1.1), private-chat tabs, permissions UI,
-channel create/edit, file transfer/avatars, SRV/TSDNS lookup (use `host:port`), legacy
+channel create/edit, file browser and avatars, GIF icons, SRV/TSDNS lookup (use `host:port`), legacy
 Speex/CELT codecs (reported in the log, not decoded), pre-3.1 servers (`initivexpand`),
 hotkeys for anything but talking, game controller buttons, noise suppression and automatic
 gain.
@@ -60,7 +67,9 @@ servers at once (the multi-server tests used two connections to one server), and
 workflow and installer script, which have never run (there is no Inno Setup on this PC and
 GitHub Actions cannot be run locally). Echo cancelling has been measured on simulated rooms
 and on a sound device's own digital loopback, never in a real room with loudspeakers, never
-by ear, and never with a microphone and speakers that are separate USB devices.
+by ear, and never with a microphone and speakers that are separate USB devices. The fix for
+noise at the end of someone's speech is checked by tests on the decoded sound and by packet
+order against the test server, not by ear and not with an official client talking.
 
 ## Goals
 
@@ -80,9 +89,9 @@ by ear, and never with a microphone and speakers that are separate USB devices.
 | `ps-identity` | INI parse, identity (de)obfuscation, DER, P-256, UID, hashcash level, sign/verify, generate/save | done, 14 tests |
 | `ps-crypto` | EAX-AES128 (8-byte MAC), dummy key, per-packet key/nonce, license chain, Ed25519 shared secret, RSA puzzle | done, 16 tests |
 | `ps-protocol` | Packet headers, command escape/parse/build, QuickLZ + fragmentation, receive windows/generations, Init1 payloads, voice and whisper payloads | done, 34 tests |
-| `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client/group book, voice and whispers in/out, events; `spacer` recognises spacer channels | done, 13 tests + live tests |
-| `ps-voice` | Opus codec, resampler, jitter buffer + mixer (talkers keyed by connection and client), VAD/PTT gate, lanes (which key is held decides where a frame goes), echo canceller (`echo.rs`), cpal device I/O (WASAPI) | done, 48 tests + live tests |
-| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history), `app.rs` all sessions, the viewed one and where the microphone goes, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main and settings windows | done, 47 tests + live tests |
+| `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client/group book, voice and whispers in/out, events; `spacer` recognises spacer channels, `filetransfer` fetches icons over the server's file port | done, 20 tests + live tests |
+| `ps-voice` | Opus codec, resampler, jitter buffer + mixer (talkers keyed by connection and client), VAD/PTT gate, lanes (which key is held decides where a frame goes), echo canceller (`echo.rs`), cpal device I/O (WASAPI) | done, 55 tests + live tests |
+| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history), `app.rs` all sessions, the viewed one and where the microphone goes, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main and settings windows, `icons.rs` checks, shrinks and caches icons | done, 56 tests + live tests |
 | `ps-serverquery` | Text protocol over TCP 10011 | not started |
 
 Threads: UI thread (Slint, 33 ms timer drains client events) · `ps-client` actor + UDP reader ·
@@ -150,7 +159,12 @@ ConnectOk", "level 213"). What is actually on the wire:
 ### Voice
 - C→S `[voice id u16][codec u8][opus]`, S→C `[voice id u16][client id u16][codec u8][opus]`;
   codec 4 Opus Voice (mono), 5 Opus Music (stereo); 48 kHz, 20 ms frames. Empty opus data ends a
-  talk spurt. Voice id = the Voice packet id.
+  talk spurt (tsclientlib also counts one byte as empty, and so does PhishSpeak; a one-byte
+  Opus packet carries no sound). Voice id = the Voice packet id.
+- The server can hand on two packets sent back to back in the other order (live, 3.13.8: an
+  end packet sent right behind the last voice packet arrived first in three of four tries). So
+  PhishSpeak sends its end packet one frame later, and a receiver must treat a voice packet
+  that is older than the end packet as the tail of that speech, not as new speech.
 - Encrypt voice when `virtualserver_codec_encryption_mode` is 2, or 0 and the channel has
   `channel_codec_is_unencrypted=0`; otherwise send with the Unencrypted flag + SharedMac.
 - Multi-item notifications (`a=1 b=2|b=3`) inherit missing keys from the first item.
@@ -160,6 +174,23 @@ ConnectOk", "level 213"). What is actually on the wire:
   with `\/` for a slash inside a name (`Deep Rock/Radio`). A bare sub-channel name, a path that
   does not exist and the `/<id>` form all leave you in the server's default channel, without an
   error. So does a locked channel when no password is sent (live, 3.13.8).
+
+### Icons and file transfer
+- Ids arrive in `channel_icon_id`, `client_icon_id`, `virtualserver_icon_id` and as `iconid`
+  in the group lists. The same id is written three ways (`2154984321`, `-2139982975`,
+  `18446744071569568641`); all fold to one 32-bit number. 100, 200, 300, 500 and 600 are the
+  standard group icons and have no file. An id is only a file name, not a checksum to verify.
+- Who is in which group: `client_servergroups` (comma list) and `client_channel_group_id` at
+  `notifycliententerview`, then `notifyservergroupclientadded` / `...deleted` (`sgid`, `clid`)
+  and `notifyclientchannelgroupchanged` (`cgid`, `cid`, `clid`). The last one is also sent by
+  the server itself right after `notifyclientmoved`, so the channel group follows people.
+- Download: `ftinitdownload clientftfid=N name=/icon_<id> cid=0 cpw seekpos=0 proto=1`, answered
+  by `notifystartdownload clientftfid serverftfid ftkey port size`; open TCP to the voice
+  server's address on that port, send the key, read `size` bytes. A missing file is answered
+  with `notifystatusfiletransfer status=2054`; `ftstop serverftfid=N delete=0` cancels.
+- Flood protection (defaults 5 / 150 / 250): 110 `ftinitdownload` sent at once were not
+  blocked; of a burst of nickname changes the ninth was. A blocked command gets `error id=524 ... extra_msg=retry
+  in Nms` with its `return_code`.
 
 ### Whisper
 - To a list, packet type VoiceWhisper, `Newprotocol` flag clear:
@@ -265,6 +296,27 @@ ConnectOk", "level 213"). What is actually on the wire:
   after 16 seconds (31 dB within the first 8). The pair "Speakers (Steam Streaming Microphone)"
   to "Microphone (Steam Streaming Microphone)" is not usable as a test: what comes back does not
   line up with what was played at any one delay, and nothing is removed there.
+- Icons, live against the test server: channel, group, personal and server icons shown; a
+  64 x 64 picture shrunk; JPEG shown; a GIF, a 300 x 300 picture, an HTML file and a 600 KiB
+  file refused without any sign in the window (the last one stopped before any byte was
+  fetched); icons following changes made while connected (channel icon added and removed,
+  server icon replaced, joining and leaving Server Admin, channel admin in one channel only
+  and moving in and out of it, a personal icon); after a restart the cached files were used
+  and left untouched; with the file port unreachable three tries are made and the rest given
+  up for ten minutes while the connection carries on; 40 icons at default flood protection
+  with no complaint; 500 voice packets arrived complete while 40 icons were fetched on the
+  same connection. On `ts.busaesi.space` (3.13.7) the server icon and the group icons of the
+  people there were fetched and drawn.
+- Bookmarks, live: a channel password typed in the editor is written as `dpapi:` hex and the
+  word itself is not in the file; with "connect when PhishSpeak starts" the program connected
+  by itself and went straight into the locked channel; a server password sealed by Windows'
+  own tools with the same purpose text was accepted; a wrong saved password and an address
+  that does not answer gave a notice, not the connect dialog.
+- End of speech: seven new tests on the decoded sound (no step at the end with the end packet
+  in time, late, one byte long or missing; nothing audible 10 ms after a marked end and 60 ms
+  after an unmarked one; a late last packet still ends cleanly; old packets do not start a new
+  stream; talking again at once plays no filler). Before the change the same tests showed up
+  to 140 ms of made-up sound after the last packet and a step seven times the usual size.
 - Folding, on screen: a channel folds and opens from its arrow, an empty branch starts folded,
   the three "Channels start" choices change the tree at once, a folded channel shows how many
   people are inside and tints its icon while one of them talks, joining a folded channel opens
@@ -284,11 +336,15 @@ it is audible unless the output is a virtual device),
 `cargo run -p ps-client --example whispertest -- <host> --booth CID --drift CID` (re-runs the
 who-hears-what table and fails if a server behaves differently).
 `PHISHSPEAK_TRACE=1` makes the GUI show every command in the chat drawer.
+`probe` also takes `--icon ID` (repeatable), `--all-icons`, `--save DIR`, `--ft-port N` and
+`--voice` (how each talker's stream ends: packet sizes and timing, no sound).
 
 Scripts in `tools/`: `hold_keys.py F13..F24[+F13..F24] <seconds>` presses keys no keyboard has,
 for checking talk and whisper keys; `seed_whisper_tree.py --password <query password>` (run
 where the test server's query port is reachable) makes the Booth and Drift channels and lets
-guests be channel commanders; `package_release.py [--tag vX.Y.Z] [--skip-installer]` builds the
+guests be channel commanders; `seed_test_icons.py --password <query password>` puts good and
+deliberately bad icons on the test server (`--count N`, `--upload FILE`, `--assign WHAT=ID`,
+`--clear`); `package_release.py [--tag vX.Y.Z] [--skip-installer]` builds the
 release program with the C runtime linked in and writes the zip, the installer (needs Inno
 Setup 6) and their checksums to `dist/`.
 
@@ -309,7 +365,14 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
 - Settings live in `%APPDATA%\PhishSpeak\settings.ini`, bookmarks in `bookmarks.ini` next to
   it, identities created in the app in `%APPDATA%\PhishSpeak\identities`. Importing an identity
   remembers where the file is; it is never copied and never modified, and an improved key offset
-  is cached in settings. Passwords are used for one attempt and never written to disk.
+  is cached in settings. A password typed in the connect dialog or a channel prompt is used for
+  one attempt and never written to disk. A password typed into a bookmark is kept: sealed with
+  Windows' data protection for the signed-in account (`dpapi:` and hex in `bookmarks.ini`), so
+  the file is useless on another PC or account, where the bookmark simply has no password. A
+  line with a readable password is ignored. On systems without that protection nothing is
+  saved.
+- Every bookmark marked to connect at start is connected, and the first of them in the list is
+  the one shown. If one fails, a notice says so; the connect dialog is not opened for it.
 - One bookmark per server address. A second bookmark for the same server needs a different
   spelling of the address (for example with the port).
 - Several servers: every connection is heard; the microphone goes to the viewed one only. Mute
@@ -366,8 +429,23 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   app never offers that; `echotest --loopback` uses it.
 - A bookmark's start channel is stored as the channel's path and its id (`channel=`,
   `channel_id=` in `bookmarks.ini`). The path is sent at login. If you land somewhere else, the
-  channel is looked up by path and then by id and joined, or its password prompt is opened;
-  the password is never stored. `--channel` on the command line overrides it for that start.
+  channel is looked up by path and then by id and joined, with the bookmark's channel password
+  if it has one, else through the password prompt. `--channel` on the command line overrides
+  it for that start.
+- Icons: an icon is asked for only when a row that needs it is shown, one at a time, at most
+  two a second. The download goes only to the voice server's own address. A file is checked
+  before it is decoded: at most 512 KiB, PNG or JPEG by its first bytes, at most 256 x 256;
+  SVG from a server is never drawn. Pictures larger than 32 x 32 are averaged down once.
+  Files are kept per server (folder named by the server id in hex) as `icon_<id>.png|jpg`, at
+  most 500 per server, and fetched again after 7 days while the old one stays on screen. A
+  failed download is retried after ten minutes, a refused file not again in that run. Slint
+  finds a file's format from its name and caches decoded files by path and whole second,
+  hence the extensions. On a person the order is channel group, server groups in the server's
+  order, own icon. The five standard group icons are drawn for PhishSpeak.
+- End of speech: the last frame is faded over its final 8 ms when the end packet is already
+  there, otherwise 8 ms of the last sound are mirrored and faded. Without an end packet the
+  filler fades within 60 ms instead of 120. A voice packet older than the end packet belongs
+  to that speech; one that arrives after the speech has ended is dropped.
 - Release builds: the workflow `Release` runs only for a pushed tag `v<version>`, checks that
   the tag matches the version in `Cargo.toml`, runs the tests, builds with the C runtime linked
   in (`-C target-feature=+crt-static`, so no Visual C++ runtime has to be installed), and
@@ -388,15 +466,17 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
 7. ✅ Text chat + channel tree (basic). Private chats, pokes UI, permissions: open.
 8. ✅ Identity management (create / import), settings window, bookmarks, several servers at once,
    spacer channels, compact window.
-9. Planned, not started: the icons a server defines for channels, people, groups and itself
-   (`docs/superpowers/plans/2026-10-06-custom-icons.md`, waiting for review).
+9. ✅ The icons a server defines for channels, people, groups and itself
+   (`docs/superpowers/plans/2026-10-06-custom-icons.md`, with its `.ledger.md`). GIF icons are
+   left out until the `gif` crate is wanted as a direct dependency.
 10. ✅ Talk keys of your choice and TeamSpeak-style whisper keys
     (`docs/superpowers/plans/2026-10-06-talk-and-whisper-keys.md`; what was decided on the way is
     in the `.ledger.md` beside it).
 11. ✅ Folding channels with a starting-state setting and remembered choices; release workflow
     and installer script (written, never run).
 12. ✅ A start channel per bookmark; echo cancelling for the microphone.
-13. Next: test against the official client and a public server; try echo cancelling in a real
+13. ✅ Bookmarks that connect at start and keep passwords; clean ends of speech.
+14. Next: test against the official client and a public server; try echo cancelling in a real
    room; SRV/TSDNS resolution; noise suppression / AGC; per-user volume in the UI (the mixer
    already supports it).
 
