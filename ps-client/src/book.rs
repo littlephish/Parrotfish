@@ -31,6 +31,8 @@ pub struct Channel {
     pub max_clients: i64,
     pub needed_talk_power: i64,
     pub icon: u32,
+    pub description: String,
+    pub description_known: bool,
 }
 
 impl Channel {
@@ -73,6 +75,10 @@ impl Channel {
         }
         if let Some(v) = cmd.get_at(item, "channel_icon_id") {
             self.icon = icon_id(v);
+        }
+        if let Some(v) = cmd.get_own(item, "channel_description") {
+            self.description = v.to_string();
+            self.description_known = true;
         }
     }
 }
@@ -204,6 +210,8 @@ pub struct ServerInfo {
     pub codec_encryption_mode: u8,
     pub uid: String,
     pub icon: u32,
+    pub host_message: String,
+    pub host_message_mode: u8,
 }
 
 impl ServerInfo {
@@ -231,6 +239,12 @@ impl ServerInfo {
         }
         if let Some(v) = cmd.get("virtualserver_icon_id") {
             self.icon = icon_id(v);
+        }
+        if let Some(v) = cmd.get("virtualserver_hostmessage") {
+            self.host_message = v.to_string();
+        }
+        if let Some(v) = cmd.num("virtualserver_hostmessage_mode") {
+            self.host_message_mode = v;
         }
     }
 }
@@ -384,6 +398,14 @@ impl Book {
             };
             let channel = self.channels.entry(id).or_insert_with(|| Channel { id, ..Default::default() });
             channel.apply(cmd, item);
+        }
+    }
+
+    pub fn description_changed(&mut self, cmd: &Command) {
+        for item in 0..cmd.len() {
+            if let Some(channel) = cmd.num_at::<u64>(item, "cid").and_then(|id| self.channels.get_mut(&id)) {
+                channel.description_known = false;
+            }
         }
     }
 
@@ -792,6 +814,12 @@ mod tests {
         ));
         assert_eq!(book.channels[&2].name, "Renamed");
         assert_eq!(book.channels[&2].codec_quality, 9);
+        assert!(!book.channels[&2].description_known);
+        book.upsert_channels(&Command::parse("notifychanneledited cid=2 channel_description=[b]rules[\\/b]\\nbe\\skind reasonid=9"));
+        assert_eq!(book.channels[&2].description, "[b]rules[/b]\nbe kind");
+        assert!(book.channels[&2].description_known && !book.channels[&1].description_known);
+        book.description_changed(&Command::parse("notifychanneldescriptionchanged cid=2"));
+        assert!(!book.channels[&2].description_known);
         book.upsert_channels(&Command::parse("notifychannelmoved cid=2 cpid=1 order=0 reasonid=1"));
         assert_eq!(book.channel_order(), vec![(1, 0), (2, 1)]);
         book.upsert_channels(&Command::parse(
@@ -811,5 +839,7 @@ mod tests {
         assert_eq!(s.max_clients, 32);
         assert_eq!(s.codec_encryption_mode, 2);
         assert_eq!(s.virtual_server_id, 1);
+        s.apply(&Command::parse("notifyserveredited virtualserver_hostmessage=Mind\\sthe\\scoral virtualserver_hostmessage_mode=2"));
+        assert_eq!((s.host_message.as_str(), s.host_message_mode), ("Mind the coral", 2));
     }
 }

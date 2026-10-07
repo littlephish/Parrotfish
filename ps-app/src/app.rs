@@ -242,6 +242,7 @@ pub struct App {
     prompt: Option<(u16, u64)>,
     person: Option<(u16, u16)>,
     key_prompt: Option<u16>,
+    channel_sheet: Option<(u16, u64)>,
     dirty: Dirty,
     silent_since: Option<Instant>,
     silence_warned: bool,
@@ -324,6 +325,7 @@ impl App {
             prompt: None,
             person: None,
             key_prompt: None,
+            channel_sheet: None,
             dirty: Dirty::everything(),
             silent_since: None,
             silence_warned: false,
@@ -1255,6 +1257,78 @@ impl App {
             self.mark_settings_dirty();
             self.dirty.tree = true;
         }
+    }
+
+    pub fn row_context(&mut self, w: &Windows, row: TreeRow) {
+        match row.kind {
+            3 => self.open_channel(w, row.id.max(0) as u64),
+            4 => self.open_person(w, row.id.clamp(0, 0xffff) as u16),
+            _ => {}
+        }
+    }
+
+    fn open_channel(&mut self, w: &Windows, channel_id: u64) {
+        let Some(session) = self.viewed_session().filter(|s| s.is_connected()) else {
+            return;
+        };
+        let node = session.view.as_ref().and_then(|view| view.channels.iter().find(|n| n.channel.id == channel_id));
+        let Some(node) = node else {
+            return;
+        };
+        if let (false, Some(client)) = (node.channel.description_known, &session.client) {
+            client.request_channel_description(channel_id);
+        }
+        self.channel_sheet = Some((session.id, channel_id));
+        self.publish_channel(w);
+        w.main.set_menu_open(false);
+        w.main.set_channel_open(self.channel_sheet.is_some());
+    }
+
+    fn publish_channel(&mut self, w: &Windows) {
+        let Some((session_id, channel_id)) = self.channel_sheet else {
+            return;
+        };
+        let shown = self
+            .session(session_id)
+            .filter(|s| self.viewed == Some(s.id) && s.is_connected())
+            .and_then(|s| s.view.as_ref())
+            .and_then(|view| view.channels.iter().find(|n| n.channel.id == channel_id).map(|node| (view, node)));
+        let Some((view, node)) = shown else {
+            self.channel_sheet = None;
+            w.main.set_channel_open(false);
+            return;
+        };
+        let channel = &node.channel;
+        let mut facts: Vec<String> = Vec::new();
+        facts.push(match node.clients.len() {
+            0 => "Nobody here".to_string(),
+            1 => "1 person here".to_string(),
+            n => format!("{n} people here"),
+        });
+        let kind = if channel.codec == ps_client::CODEC_OPUS_MUSIC { "Music" } else { "Voice" };
+        facts.push(format!("{kind}, quality {}", channel.codec_quality));
+        if channel.has_password {
+            facts.push("locked".to_string());
+        }
+        if channel.needed_talk_power > 0 {
+            facts.push("moderated".to_string());
+        }
+        if channel.max_clients > 0 {
+            facts.push(format!("room for {}", channel.max_clients));
+        }
+        w.main.set_channel_title(channel.name.as_str().into());
+        w.main.set_channel_topic(channel.topic.trim().into());
+        w.main.set_channel_facts(facts.join("  \u{b7}  ").into());
+        w.main.set_channel_text(session::plain_text(&channel.description).into());
+        w.main.set_channel_current(channel.id == view.own_channel);
+    }
+
+    pub fn channel_join(&mut self, w: &Windows) {
+        let Some((_, channel_id)) = self.channel_sheet.take() else {
+            return;
+        };
+        w.main.set_channel_open(false);
+        self.row_activated(w, TreeRow { kind: 3, id: channel_id as i32, ..TreeRow::default() });
     }
 
     pub fn row_activated(&mut self, w: &Windows, row: TreeRow) {
@@ -2190,6 +2264,7 @@ impl App {
         if dirty.tree {
             self.publish_tree();
             self.publish_person(w);
+            self.publish_channel(w);
         }
         if dirty.chat {
             self.publish_chat(w);

@@ -206,6 +206,12 @@ export component PhishSpeakApp inherits Window {
     in property <bool> person-moderated;
     in-out property <bool> person-asking;
     in property <int> prompt-kind;
+    in-out property <bool> channel-open;
+    in property <string> channel-title;
+    in property <string> channel-topic;
+    in property <string> channel-facts;
+    in property <string> channel-text;
+    in property <bool> channel-current;
 
     callback view-server(id: int);
     callback connect-bookmark(index: int);
@@ -227,6 +233,8 @@ export component PhishSpeakApp inherits Window {
     callback person-away-toggled();
     callback person-ask-toggled();
     callback ask-privilege-key();
+    callback row-context(row: TreeRow);
+    callback channel-join();
 
     forward-focus: keys;
     init => {
@@ -257,7 +265,9 @@ export component PhishSpeakApp inherits Window {
             if (event.text != Key.Escape) {
                 return reject;
             }
-            if (root.person-open) {
+            if (root.channel-open) {
+                root.channel-open = false;
+            } else if (root.person-open) {
                 root.person-open = false;
             } else if (root.prompt-open) {
                 root.prompt-open = false;
@@ -417,6 +427,9 @@ export component PhishSpeakApp inherits Window {
                         entry: item;
                         activated => {
                             root.row-activated(item);
+                        }
+                        context-clicked => {
+                            root.row-context(item);
                         }
                         fold-clicked => {
                             root.toggle-fold(item.id);
@@ -980,6 +993,90 @@ export component PhishSpeakApp inherits Window {
                             enabled: root.dlg-address != "";
                             clicked => {
                                 root.connect-new();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.channel-open: Rectangle {
+            background: Theme.scrim;
+
+            TouchArea {
+                clicked => {
+                    root.channel-open = false;
+                }
+            }
+
+            Sheet {
+                width: min(380px, parent.width - 32px);
+                height: self.preferred-height;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+
+                TouchArea { }
+
+                VerticalLayout {
+                    padding: 18px;
+                    spacing: 6px;
+
+                    HorizontalLayout {
+                        spacing: 8px;
+
+                        Text {
+                            text: root.channel-title;
+                            color: Theme.foam;
+                            font-size: 16px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+
+                        IconButton {
+                            icon: Icons.close;
+                            clicked => {
+                                root.channel-open = false;
+                            }
+                        }
+                    }
+
+                    if root.channel-topic != "": Text {
+                        text: root.channel-topic;
+                        color: Theme.foam;
+                        font-size: Theme.small;
+                        wrap: word-wrap;
+                    }
+
+                    Dim {
+                        text: root.channel-facts;
+                        wrap: word-wrap;
+                    }
+
+                    if root.channel-text != "": channel-scroll := ScrollView {
+                        height: min(260px, about.preferred-height + 8px);
+                        content-width: self.visible-width;
+                        content-height: about.preferred-height;
+
+                        about := Text {
+                            width: channel-scroll.visible-width;
+                            text: root.channel-text;
+                            color: Theme.foam;
+                            font-size: Theme.small;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    if !root.channel-current: HorizontalLayout {
+                        alignment: end;
+                        padding-top: 10px;
+
+                        Btn {
+                            text: "Join";
+                            primary: true;
+                            clicked => {
+                                root.channel-join();
                             }
                         }
                     }

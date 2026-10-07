@@ -823,6 +823,10 @@ impl Conn {
                 self.book.channel_group_changed(&cmd);
                 self.view_dirty = true;
             }
+            "notifychanneldescriptionchanged" => {
+                self.book.description_changed(&cmd);
+                self.view_dirty = true;
+            }
             "notifystartdownload" => self.on_start_download(&cmd),
             "notifystatusfiletransfer" => self.on_transfer_status(&cmd),
             "notifyconnectioninforequest" => {

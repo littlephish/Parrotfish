@@ -91,6 +91,7 @@ export component Pressable inherits Rectangle {
     out property <bool> hovered: touch.has-hover && root.enabled;
     callback clicked();
     callback double-clicked();
+    callback context();
 
     scope := FocusScope {
         enabled: root.enabled && root.focusable;
@@ -111,6 +112,11 @@ export component Pressable inherits Rectangle {
         }
         double-clicked => {
             root.double-clicked();
+        }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.right) {
+                root.context();
+            }
         }
     }
 
@@ -758,6 +764,7 @@ export component TreeRowView inherits Rectangle {
     in property <TreeRow> entry;
     callback activated();
     callback fold-clicked();
+    callback context-clicked();
 
     height: Theme.row;
 
@@ -821,6 +828,9 @@ export component TreeRowView inherits Rectangle {
         double-clicked => {
             root.activated();
         }
+        context => {
+            root.context-clicked();
+        }
 
         HorizontalLayout {
             padding-left: 2px + root.entry.depth * 16px;
@@ -878,6 +888,9 @@ export component TreeRowView inherits Rectangle {
         background: self.hovered ? Theme.shoal : transparent;
         double-clicked => {
             root.activated();
+        }
+        context => {
+            root.context-clicked();
         }
 
         HorizontalLayout {

@@ -313,6 +313,10 @@ impl ClientHandle {
         self.send_command(Command::new("clientpoke").arg("clid", client_id).arg("msg", text));
     }
 
+    pub fn request_channel_description(&self, channel_id: u64) {
+        self.send_command(Command::new("channelgetdescription").arg("cid", channel_id));
+    }
+
     pub fn request_details(&self, client_id: u16) {
         self.send_command(Command::new("clientgetvariables").arg("clid", client_id));
     }

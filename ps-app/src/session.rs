@@ -492,6 +492,51 @@ pub struct ConnectRequest {
     pub quiet: bool,
 }
 
+pub fn plain_text(text: &str) -> String {
+    const KNOWN: [&str; 21] = [
+        "b", "i", "u", "s", "color", "size", "font", "url", "img", "center", "left", "right", "list", "*", "hr", "code",
+        "quote", "table", "tr", "td", "th",
+    ];
+    let mut out = String::new();
+    let mut links: Vec<String> = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let tag = after.find(']').map(|close| &after[..close]);
+        let name = tag.map(|tag| tag.split('=').next().unwrap_or("").trim_start_matches('/').to_ascii_lowercase());
+        let (Some(tag), Some(name)) = (tag, name.filter(|name| KNOWN.contains(&name.as_str()))) else {
+            out.push('[');
+            rest = after;
+            continue;
+        };
+        let closing = tag.starts_with('/');
+        match (name.as_str(), closing) {
+            ("url", false) => links.push(tag.split_once('=').map(|(_, to)| to.trim_matches('"').to_string()).unwrap_or_default()),
+            ("url", true) => {
+                if let Some(target) = links.pop().filter(|target| !target.is_empty()) {
+                    out.push_str(&format!(" ({target})"));
+                }
+            }
+            ("*", false) => out.push_str("\u{2022} "),
+            ("hr", false) => out.push('\n'),
+            _ => {}
+        }
+        rest = &after[tag.len() + 1..];
+    }
+    out.push_str(rest);
+    let mut tidy = String::new();
+    let mut blank = 0;
+    for line in out.replace('\r', "").lines() {
+        blank = if line.trim().is_empty() { blank + 1 } else { 0 };
+        if blank <= 1 {
+            tidy.push_str(line.trim_end());
+            tidy.push('\n');
+        }
+    }
+    tidy.trim().chars().take(4000).collect()
+}
+
 pub fn should_retry(reason: &str) -> bool {
     const PASSING: [&str; 8] = [
         "connection lost",
@@ -779,6 +824,13 @@ impl Session {
                 self.system(&format!("Connected to {shown}"));
                 if !server.welcome_message.trim().is_empty() {
                     self.system(&server.welcome_message);
+                }
+                let host_message = plain_text(&server.host_message);
+                if server.host_message_mode != 0 && !host_message.is_empty() {
+                    self.system(&host_message);
+                    if server.host_message_mode >= 2 {
+                        out.notice = Some(host_message);
+                    }
                 }
                 out.connected = true;
                 out.header = true;
@@ -1366,6 +1418,21 @@ mod tests {
         going.leaving = true;
         let out = going.apply(Event::Disconnected { reason: "connection lost (the server stopped responding)".into() });
         assert!(!out.retry && out.closed.is_some());
+    }
+
+    #[test]
+    fn formatting_marks_are_taken_out_of_descriptions() {
+        assert_eq!(
+            plain_text("[b]Deep Rock[/b] mining crew.\nBring a [url=https://example.org/rules]pickaxe[/url]."),
+            "Deep Rock mining crew.\nBring a pickaxe (https://example.org/rules)."
+        );
+        assert_eq!(plain_text("[URL]https://example.org[/URL]"), "https://example.org");
+        assert_eq!(plain_text("[COLOR=#ff0000][size=14]Red[/size][/COLOR] [i]alert[/i]"), "Red alert");
+        assert_eq!(plain_text("[list][*]one\n[*]two[/list]"), "\u{2022} one\n\u{2022} two");
+        assert_eq!(plain_text("[cspacer]kept [b unfinished"), "[cspacer]kept [b unfinished");
+        assert_eq!(plain_text("a\r\n\r\n\r\n\r\nb  \n"), "a\n\nb");
+        assert_eq!(plain_text(""), "");
+        assert_eq!(plain_text(&"x".repeat(5000)).chars().count(), 4000);
     }
 
     #[test]
