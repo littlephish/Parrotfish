@@ -82,7 +82,7 @@ Added on 2026-10-07:
   opens them. A link never connects by itself: it opens the connect dialog filled in, with a
   line saying what else the link carries. Starting PhishSpeak while it is already running
   hands the link (or a `--connect`) to the running one.
-- Version 0.1.0 was built and published by the release workflow.
+- Versions 0.1.0 and 0.2.0 were built and published by the release workflow.
 
 Planned, not built: reading keys through Windows' Raw Input as a switch in settings
 (`docs/superpowers/plans/2026-10-07-raw-input-keys.md`).
