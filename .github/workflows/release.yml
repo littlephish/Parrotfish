@@ -35,7 +35,7 @@ jobs:
           rustup default stable
 
       - name: Tests
-        run: cargo test --workspace --locked --release
+        run: python tools/ci_run.py cargo test --workspace --locked --release
 
       - name: Inno Setup
         run: |

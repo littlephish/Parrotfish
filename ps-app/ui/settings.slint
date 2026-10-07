@@ -1,4 +1,4 @@
-import { ListView, ScrollView } from "std-widgets.slint";
+import { ListView, ScrollView, AboutSlint, Palette } from "std-widgets.slint";
 import { Theme, Icons, Frame } from "theme.slint";
 import { Pressable, Btn, Tile, Field, Dropdown, Check, Segmented, Slide, KeyChip, PickRowView, BookmarkRow, IdentityRow, WhisperKeyRow, PickRow } from "widgets.slint";
 
@@ -147,6 +147,7 @@ export component SettingsWindow inherits Window {
     forward-focus: keys;
     init => {
         Frame.height = self.height;
+        Palette.color-scheme = ColorScheme.dark;
     }
     changed height => {
         Frame.height = self.height;
@@ -1235,6 +1236,14 @@ export component SettingsWindow inherits Window {
 
                     Hint {
                         text: "Built with Slint, Opus by the Xiph.Org Foundation through unsafe-libopus, cpal, the RustCrypto crates and curve25519-dalek. The README lists every source and its licence.";
+                    }
+
+                    HorizontalLayout {
+                        alignment: start;
+
+                        AboutSlint {
+                            width: 200px;
+                        }
                     }
                 }
             }

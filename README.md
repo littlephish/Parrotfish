@@ -50,7 +50,8 @@ and apply to the `--connect` before them.
 On first start PhishSpeak creates an identity for you. To use one from the TeamSpeak client,
 export it there and add the file under Settings, Identities; PhishSpeak reads the file where it
 is and never changes it. Settings, bookmarks, whisper keys and identities created in the app are
-stored in `%APPDATA%\PhishSpeak`. Server and channel passwords are never saved.
+stored in `%APPDATA%\PhishSpeak`. A password typed while connecting is never saved; one typed
+into a bookmark is kept encrypted for your Windows account.
 
 ## Releases
 
@@ -65,7 +66,8 @@ git push origin v0.1.0
 The `Release` workflow checks that the tag is `v` plus that version, runs the tests, builds the
 program with the C runtime linked in, and publishes an installer
 (`PhishSpeak-<version>-setup.exe`, per user, no administrator prompt), a zip of the program and
-`SHA256SUMS.txt` on the repository's Releases page. Ordinary pushes and pull requests only run
+`SHA256SUMS.txt` on the repository's Releases page. Both carry `THIRD-PARTY-NOTICES.txt`, the
+licence texts of every library in the program, collected at build time. Ordinary pushes and pull requests only run
 the tests (the `Check` workflow).
 
 To make the same files on your own PC, install [Inno Setup 6](https://jrsoftware.org/isinfo.php)
@@ -134,8 +136,10 @@ supplied the protocol knowledge, and in one case test data.
 
 **Libraries**
 
-- [Slint](https://slint.dev) for the interface. Slint is offered under GPL-3.0, a royalty-free
-  licence or a commercial licence; pick the one that fits before distributing a build.
+- [Slint](https://slint.dev) for the interface, used under the Slint royalty-free licence;
+  the About tab in settings carries its mark.
+
+  [![Made with Slint](https://raw.githubusercontent.com/slint-ui/slint/master/logo/MadeWithSlint-logo-light.svg)](https://slint.dev)
 - [Opus](https://opus-codec.org) by the Xiph.Org Foundation, through
   [unsafe-libopus](https://github.com/DCNick3/unsafe-libopus), a Rust translation of libopus 1.3.1
   (BSD-3-Clause).

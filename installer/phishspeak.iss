@@ -4,6 +4,12 @@
 #ifndef SourceExe
   #define SourceExe "..\target\dist\release\ps-app.exe"
 #endif
+#ifndef NoticesFile
+  #define NoticesFile "..\dist\THIRD-PARTY-NOTICES.txt"
+#endif
+#ifndef ReadmeFile
+  #define ReadmeFile "..\README.md"
+#endif
 #ifndef OutputDir
   #define OutputDir "..\dist"
 #endif
@@ -37,6 +43,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#SourceExe}"; DestDir: "{app}"; DestName: "PhishSpeak.exe"; Flags: ignoreversion
+Source: "{#NoticesFile}"; DestDir: "{app}"; DestName: "THIRD-PARTY-NOTICES.txt"; Flags: ignoreversion
+Source: "{#ReadmeFile}"; DestDir: "{app}"; DestName: "README.md"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\PhishSpeak"; Filename: "{app}\PhishSpeak.exe"

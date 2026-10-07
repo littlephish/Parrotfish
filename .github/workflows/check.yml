@@ -42,4 +42,4 @@ jobs:
             check-${{ runner.os }}-
 
       - name: Tests
-        run: cargo test --workspace --locked
+        run: python tools/ci_run.py cargo test --workspace --locked
