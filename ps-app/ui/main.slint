@@ -203,6 +203,9 @@ export component PhishSpeakApp inherits Window {
     in-out property <string> person-poke;
     in-out property <bool> person-away;
     in-out property <string> person-away-message;
+    in property <bool> person-moderated;
+    in-out property <bool> person-asking;
+    in property <int> prompt-kind;
 
     callback view-server(id: int);
     callback connect-bookmark(index: int);
@@ -222,6 +225,8 @@ export component PhishSpeakApp inherits Window {
     callback person-message();
     callback person-poke-sent();
     callback person-away-toggled();
+    callback person-ask-toggled();
+    callback ask-privilege-key();
 
     forward-focus: keys;
     init => {
@@ -833,6 +838,15 @@ export component PhishSpeakApp inherits Window {
                     }
                 }
 
+                if root.viewed-connected: MenuAction {
+                    icon: Icons.lock;
+                    text: "Use a privilege key";
+                    clicked => {
+                        root.menu-open = false;
+                        root.ask-privilege-key();
+                    }
+                }
+
                 if root.viewing: MenuAction {
                     icon: Icons.close;
                     text: "Disconnect from " + root.server-name;
@@ -1108,6 +1122,14 @@ export component PhishSpeakApp inherits Window {
                         }
                     }
 
+                    if root.person-me && (root.person-moderated || root.person-asking): Check {
+                        text: "Ask to talk in this channel";
+                        checked <=> root.person-asking;
+                        toggled => {
+                            root.person-ask-toggled();
+                        }
+                    }
+
                     if root.person-me: Check {
                         text: "I am away";
                         checked <=> root.person-away;
@@ -1146,7 +1168,7 @@ export component PhishSpeakApp inherits Window {
                     spacing: 4px;
 
                     Text {
-                        text: root.prompt-name + " is locked";
+                        text: root.prompt-kind == 1 ? "Use a privilege key" : root.prompt-name + " is locked";
                         color: Theme.foam;
                         font-size: 16px;
                         font-weight: 600;
@@ -1154,12 +1176,12 @@ export component PhishSpeakApp inherits Window {
                     }
 
                     FieldLabel {
-                        text: "Channel password";
+                        text: root.prompt-kind == 1 ? "The key an administrator gave you" : "Channel password";
                     }
 
                     prompt-field := Field {
                         text <=> root.prompt-password;
-                        password: true;
+                        password: root.prompt-kind != 1;
                         accepted => {
                             root.join-with-password();
                         }
@@ -1178,7 +1200,7 @@ export component PhishSpeakApp inherits Window {
                         }
 
                         Btn {
-                            text: "Join";
+                            text: root.prompt-kind == 1 ? "Use it" : "Join";
                             primary: true;
                             clicked => {
                                 root.join-with-password();

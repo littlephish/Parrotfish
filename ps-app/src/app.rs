@@ -241,6 +241,7 @@ pub struct App {
     level_jobs: Vec<LevelJob>,
     prompt: Option<(u16, u64)>,
     person: Option<(u16, u16)>,
+    key_prompt: Option<u16>,
     dirty: Dirty,
     silent_since: Option<Instant>,
     silence_warned: bool,
@@ -322,6 +323,7 @@ impl App {
             level_jobs: Vec::new(),
             prompt: None,
             person: None,
+            key_prompt: None,
             dirty: Dirty::everything(),
             silent_since: None,
             silence_warned: false,
@@ -662,10 +664,12 @@ impl App {
         } else if !password.is_empty() {
             client.join_channel(channel, password);
         } else if self.viewed == Some(id) && !w.main.get_prompt_open() {
+            w.main.set_prompt_kind(0);
             w.main.set_prompt_name(session.channel_name(channel).into());
             w.main.set_prompt_password("".into());
             w.main.set_prompt_open(true);
             self.prompt = Some((id, channel));
+            self.key_prompt = None;
         }
     }
 
@@ -1200,6 +1204,35 @@ impl App {
         }
     }
 
+    pub fn ask_privilege_key(&mut self, w: &Windows) {
+        let Some(session) = self.viewed_session().filter(|s| s.is_connected()) else {
+            return;
+        };
+        self.key_prompt = Some(session.id);
+        self.prompt = None;
+        w.main.set_prompt_kind(1);
+        w.main.set_prompt_name("".into());
+        w.main.set_prompt_password("".into());
+        w.main.set_prompt_open(true);
+    }
+
+    fn cannot_talk(&self) -> bool {
+        let Some(view) = self.viewed_session().filter(|s| s.is_connected()).and_then(|s| s.view.as_ref()) else {
+            return false;
+        };
+        let (Some(own), Some(node)) = (view.client(view.own_id), view.own_channel_node()) else {
+            return false;
+        };
+        node.channel.needed_talk_power > 0 && own.talk_power < node.channel.needed_talk_power && !own.is_talker
+    }
+
+    pub fn person_ask(&mut self, w: &Windows) {
+        let wanted = w.main.get_person_asking();
+        if let Some(client) = self.viewed_session().filter(|s| s.is_connected()).and_then(|s| s.client.as_ref()) {
+            client.request_talk(wanted, "");
+        }
+    }
+
     pub fn toggle_commander(&mut self, _w: &Windows) {
         let Some(session) = self.viewed_session().filter(|s| s.is_connected()) else {
             return;
@@ -1246,10 +1279,12 @@ impl App {
         }
         if node.channel.has_password {
             let prompt = (session.id, node.channel.id);
+            w.main.set_prompt_kind(0);
             w.main.set_prompt_name(node.channel.name.as_str().into());
             w.main.set_prompt_password("".into());
             w.main.set_prompt_open(true);
             self.prompt = Some(prompt);
+            self.key_prompt = None;
         } else {
             client.join_channel(node.channel.id, "");
         }
@@ -1259,6 +1294,19 @@ impl App {
         let password = w.main.get_prompt_password().to_string();
         w.main.set_prompt_open(false);
         w.main.set_prompt_password("".into());
+        w.main.set_prompt_kind(0);
+        if let Some(session_id) = self.key_prompt.take() {
+            let key = password.trim().to_string();
+            let viewed = self.viewed == Some(session_id);
+            if let (false, Some(session)) = (key.is_empty(), self.session_mut(session_id)) {
+                if let Some(client) = session.client.clone() {
+                    client.use_privilege_key(&key);
+                    session.system("Privilege key sent. If the server accepts it, your groups change.");
+                    self.dirty.chat |= viewed;
+                }
+            }
+            return;
+        }
         let Some((session_id, channel)) = self.prompt.take() else {
             return;
         };
@@ -1286,6 +1334,8 @@ impl App {
         w.main.set_person_muted(voice.muted);
         w.main.set_person_poke("".into());
         w.main.set_person_away(person.away);
+        w.main.set_person_asking(person.talk_request);
+        w.main.set_person_moderated(me && self.cannot_talk());
         w.main.set_person_away_message(person.away_message.as_str().into());
         self.person = Some((session.id, client_id));
         self.publish_person(w);
@@ -1809,6 +1859,9 @@ impl App {
         }
         if self.mic_muted {
             return "Microphone muted".to_string();
+        }
+        if self.cannot_talk() {
+            return "No permission to talk here yet".to_string();
         }
         if self.own_talking {
             return "Talking".to_string();

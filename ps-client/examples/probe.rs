@@ -58,7 +58,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "--help") {
         eprintln!(
-            "usage: probe <host> [--port N] [--identity file.ini | --new-identity] [--nick NAME]\n             [--password PW] [--seconds N] [--say TEXT] [--join CHANNEL_ID] [--log]\n             [--icon ID]... [--all-icons] [--save DIR] [--ft-port N] [--voice]\n--icon asks for one icon, --all-icons for every icon the server shows; --save keeps the files.\n--voice reports how each talker's stream ends (packet sizes and timing only, no sound)."
+            "usage: probe <host> [--port N] [--identity file.ini | --new-identity] [--nick NAME]\n             [--password PW] [--seconds N] [--say TEXT] [--join CHANNEL_ID] [--log]\n             [--icon ID]... [--all-icons] [--save DIR] [--ft-port N] [--voice] [--token KEY]\n--icon asks for one icon, --all-icons for every icon the server shows; --save keeps the files.\n--voice reports how each talker's stream ends (packet sizes and timing only, no sound)."
         );
         std::process::exit(2);
     }
@@ -93,6 +93,7 @@ fn main() {
     let all_icons = args.iter().any(|a| a == "--all-icons");
     let save_to: Option<PathBuf> = arg_value(&args, "--save").map(PathBuf::from);
     let listen = args.iter().any(|a| a == "--voice");
+    let privilege_key = arg_value(&args, "--token");
 
     let voice_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let make_sink = |lines: Arc<Mutex<Vec<String>>>| -> Option<VoiceSink> {
@@ -268,6 +269,9 @@ fn main() {
                 if let Some(text) = &say {
                     handle.send_text(TextTarget::Channel, text);
                     handle.send_text(TextTarget::Server, &format!("{text} (server)"));
+                }
+                if let Some(key) = &privilege_key {
+                    handle.use_privilege_key(key);
                 }
                 for id in &wanted_icons {
                     if asked.insert(*id) {

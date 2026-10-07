@@ -95,6 +95,10 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_person_poke_sent(move || with_app(&a, |s, w| s.person_poke(w)));
     let a = app.clone();
     ui.on_person_away_toggled(move || with_app(&a, |s, w| s.person_away(w)));
+    let a = app.clone();
+    ui.on_person_ask_toggled(move || with_app(&a, |s, w| s.person_ask(w)));
+    let a = app.clone();
+    ui.on_ask_privilege_key(move || with_app(&a, |s, w| s.ask_privilege_key(w)));
 
     let a = app.clone();
     settings_window.on_audio_changed(move || with_app(&a, |s, w| s.apply_audio(w)));

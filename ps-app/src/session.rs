@@ -182,6 +182,10 @@ pub fn build_rows_folded(view: &ServerView, own_talking: bool, folds: &Folds) ->
                 icons: client.icons.iter().copied().take(MAX_ROW_ICONS).collect(),
                 tag: if client.whispering {
                     "whispers to you".to_string()
+                } else if client.talk_request {
+                    "asks to talk".to_string()
+                } else if client.is_recording {
+                    "recording".to_string()
                 } else if client.is_query {
                     "query".to_string()
                 } else if client.away {
@@ -1000,6 +1004,7 @@ mod tests {
     fn sample_view() -> ServerView {
         let mut marlin = person(8, 1, "Marlin");
         marlin.talking = true;
+        marlin.is_recording = true;
         marlin.icons = vec![100, 300, 452340182, 2154984321, 7];
         let mut coralline = person(9, 1, "Coralline");
         coralline.input_muted = true;
@@ -1077,6 +1082,7 @@ mod tests {
         assert_eq!((me.id, me.depth), (7, 0));
 
         assert!(rows[4].talking && !rows[4].me);
+        assert_eq!(rows[4].tag, "recording");
 
         assert_eq!((rows[5].line, rows[5].count), (SpacerLine::Dashed, 0));
         assert_eq!((rows[6].icon, rows[6].id), (ChannelIcon::Lock, 3));
@@ -1382,7 +1388,7 @@ mod tests {
         s.apply(Event::View(whispered));
         assert_eq!(s.talkers, 0);
         let rows = build_rows(s.view.as_ref().unwrap(), false);
-        assert!(rows.iter().any(|row| row.text == "Marlin" && !row.talking && !row.whispering && row.tag.is_empty()));
+        assert!(rows.iter().any(|row| row.text == "Marlin" && !row.talking && !row.whispering && row.tag != "whispers to you"));
         s.apply(Event::Talking { client_id: 8, talking: true, whisper: false });
         assert!(build_rows(s.view.as_ref().unwrap(), false).iter().any(|row| row.text == "Marlin" && row.talking));
 
