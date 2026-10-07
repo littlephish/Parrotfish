@@ -2,8 +2,9 @@ import { ListView, ScrollView, Palette } from "std-widgets.slint";
 import { Theme, Icons, Frame } from "theme.slint";
 import { Icon, Badge, Pressable, Btn, IconButton, Tile, Meter, Slide, Field, Dropdown, Check, Segmented, TreeRowView, ChatRowView, TreeRow, ServerTile, BookmarkRow, ChatRow, IdentityRow, WhisperKeyRow, PickRow } from "widgets.slint";
 import { SettingsWindow } from "settings.slint";
+import { SpeakersWindow, SpeakerRow } from "speakers.slint";
 
-export { SettingsWindow, Icons, TreeRow, ServerTile, BookmarkRow, ChatRow, IdentityRow, WhisperKeyRow, PickRow }
+export { SettingsWindow, SpeakersWindow, SpeakerRow, Icons, TreeRow, ServerTile, BookmarkRow, ChatRow, IdentityRow, WhisperKeyRow, PickRow }
 
 component Dim inherits Text {
     color: Theme.drift;
@@ -207,6 +208,8 @@ export component PhishSpeakApp inherits Window {
     in-out property <bool> person-asking;
     in property <int> prompt-kind;
     in property <float> scale-nudge;
+    in property <bool> speakers-shown;
+    in property <bool> speakers-locked;
     in-out property <bool> channel-open;
     in property <string> channel-title;
     in property <string> channel-topic;
@@ -235,6 +238,8 @@ export component PhishSpeakApp inherits Window {
     callback person-ask-toggled();
     callback ask-privilege-key();
     callback row-context(row: TreeRow);
+    callback speakers-toggle();
+    callback speakers-lock();
     callback channel-join();
 
     forward-focus: keys;
@@ -849,6 +854,24 @@ export component PhishSpeakApp inherits Window {
                     clicked => {
                         root.menu-open = false;
                         root.toggle-commander();
+                    }
+                }
+
+                MenuAction {
+                    icon: Icons.signal;
+                    text: root.speakers-shown ? "Hide the speaking window" : "Show who is speaking in a small window";
+                    clicked => {
+                        root.menu-open = false;
+                        root.speakers-toggle();
+                    }
+                }
+
+                if root.speakers-shown: MenuAction {
+                    icon: Icons.lock;
+                    text: root.speakers-locked ? "Unlock the speaking window" : "Lock the speaking window";
+                    clicked => {
+                        root.menu-open = false;
+                        root.speakers-lock();
                     }
                 }
 

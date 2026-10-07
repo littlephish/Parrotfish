@@ -113,6 +113,12 @@ export component SettingsWindow inherits Window {
     in property <bool> editor-can-save;
 
     in-out property <int> fold-mode: 1;
+    in-out property <bool> sp-shown;
+    in-out property <bool> sp-locked;
+    in-out property <bool> sp-on-top: true;
+    in-out property <bool> sp-all;
+    in-out property <float> sp-opacity: 85;
+    in-out property <float> sp-linger: 10;
 
     in property <string> version;
     in property <float> scale-nudge;
@@ -150,6 +156,7 @@ export component SettingsWindow inherits Window {
     callback editor-save();
     callback editor-cancel();
     callback view-changed();
+    callback speakers-changed();
     callback done();
 
     forward-focus: keys;
@@ -1332,6 +1339,109 @@ export component SettingsWindow inherits Window {
 
                             Hint {
                                 text: "Click the arrow beside a channel to fold or open it yourself. PhishSpeak remembers that for each server, until you change this setting.";
+                            }
+                        }
+                    }
+
+                    Divider { }
+
+                    HorizontalLayout {
+                        spacing: 16px;
+
+                        Caption {
+                            text: "Speaking window";
+                        }
+
+                        VerticalLayout {
+                            spacing: 2px;
+
+                            Check {
+                                text: "Show a small window with who is speaking";
+                                checked <=> root.sp-shown;
+                                toggled => {
+                                    root.speakers-changed();
+                                }
+                            }
+
+                            Check {
+                                text: "Keep it above other windows";
+                                checked <=> root.sp-on-top;
+                                toggled => {
+                                    root.speakers-changed();
+                                }
+                            }
+
+                            Check {
+                                text: "Lock its size and place, and let clicks pass through it";
+                                checked <=> root.sp-locked;
+                                toggled => {
+                                    root.speakers-changed();
+                                }
+                            }
+
+                            Check {
+                                text: "List everyone in my channel, not only who is speaking";
+                                checked <=> root.sp-all;
+                                toggled => {
+                                    root.speakers-changed();
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 12px;
+                                padding-top: 4px;
+
+                                Hint {
+                                    width: 172px;
+                                    text: "How solid it is";
+                                    vertical-alignment: center;
+                                }
+
+                                Slide {
+                                    minimum: 20;
+                                    maximum: 100;
+                                    step: 5;
+                                    value <=> root.sp-opacity;
+                                    changed => {
+                                        root.speakers-changed();
+                                    }
+                                }
+
+                                Reading {
+                                    text: "\{round(root.sp-opacity)}%";
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 12px;
+
+                                Hint {
+                                    width: 172px;
+                                    text: "Keep a name after they stop";
+                                    vertical-alignment: center;
+                                }
+
+                                Slide {
+                                    minimum: 0;
+                                    maximum: 60;
+                                    step: 1;
+                                    value <=> root.sp-linger;
+                                    changed => {
+                                        root.speakers-changed();
+                                    }
+                                }
+
+                                Reading {
+                                    text: "\{round(root.sp-linger)} s";
+                                }
+                            }
+
+                            Hint {
+                                text: "Move and size the window while it is unlocked. Once locked it stays hidden until someone speaks; unlock it here or from the server menu.";
+                            }
+
+                            Hint {
+                                text: "It shows over games that run in a window or borderless window, not over exclusive full screen.";
                             }
                         }
                     }

@@ -1,0 +1,189 @@
+import { Theme, Icons } from "theme.slint";
+import { Icon } from "widgets.slint";
+
+export struct SpeakerRow {
+    caption: bool,
+    text: string,
+    talking: bool,
+    whispering: bool,
+    me: bool,
+    extra: int,
+}
+
+component EditButton inherits Rectangle {
+    in property <image> icon;
+    callback clicked();
+
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: Theme.hairline;
+    background: touch.has-hover ? Theme.current : Theme.shoal;
+
+    Icon {
+        source: root.icon;
+        tint: touch.has-hover ? Theme.foam : Theme.drift-bright;
+        width: 14px;
+        height: 14px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component SpeakersWindow inherits Window {
+    in property <[SpeakerRow]> rows;
+    in property <bool> locked;
+    in property <bool> on-top: true;
+    in property <float> scale-nudge;
+    callback lock-asked();
+    callback hide-asked();
+    callback dragged(dx: length, dy: length);
+    callback sized(width: length, height: length);
+
+    title: "PhishSpeak speaking";
+    no-frame: true;
+    always-on-top: root.on-top;
+    preferred-width: 220px;
+    preferred-height: 160px;
+    min-width: 120px + root.scale-nudge * 0.01px;
+    min-height: 38px;
+    background: Theme.trench;
+    default-font-size: Theme.text;
+
+    Rectangle {
+        clip: true;
+
+        VerticalLayout {
+            padding: 8px;
+            spacing: 0px;
+            alignment: start;
+
+            for row in root.rows: HorizontalLayout {
+                height: 22px;
+                spacing: 7px;
+
+                if !row.caption: VerticalLayout {
+                    alignment: center;
+
+                    Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: row.talking ? Theme.lure : transparent;
+                        border-width: row.talking ? 0px : 1px;
+                        border-color: Theme.drift;
+                    }
+                }
+
+                Text {
+                    text: row.text;
+                    color: row.caption ? Theme.drift : (row.talking ? (row.me ? Theme.lure : Theme.foam) : Theme.drift-bright);
+                    font-size: row.caption ? Theme.small : Theme.text;
+                    font-weight: row.talking || row.caption ? 600 : 400;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+
+                if row.whispering: Text {
+                    text: "whisper";
+                    color: Theme.lure;
+                    font-size: Theme.small;
+                    vertical-alignment: center;
+                }
+
+                if row.extra > 0: Text {
+                    text: "+\{row.extra}";
+                    color: Theme.drift;
+                    font-size: Theme.small;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+
+    if !root.locked: Rectangle {
+        border-width: 1px;
+        border-color: Theme.lure;
+
+        TouchArea {
+            mouse-cursor: move;
+            moved => {
+                if (self.pressed) {
+                    root.dragged(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+                }
+            }
+        }
+
+        if root.rows.length == 0: Text {
+            x: 10px;
+            y: 6px;
+            width: parent.width - 20px;
+            height: parent.height - 12px;
+            text: "Drag me into place, pull the corner to size me, then lock me.";
+            color: Theme.drift;
+            font-size: Theme.small;
+            wrap: word-wrap;
+            vertical-alignment: center;
+        }
+
+        EditButton {
+            x: parent.width - 60px;
+            y: 6px;
+            icon: Icons.lock;
+            clicked => {
+                root.lock-asked();
+            }
+        }
+
+        EditButton {
+            x: parent.width - 32px;
+            y: 6px;
+            icon: Icons.close;
+            clicked => {
+                root.hide-asked();
+            }
+        }
+
+        grip := Rectangle {
+            x: parent.width - self.width;
+            y: parent.height - self.height;
+            width: 20px;
+            height: 20px;
+
+            Rectangle {
+                x: 5px;
+                y: 13px;
+                width: 11px;
+                height: 3px;
+                background: Theme.lure;
+            }
+
+            Rectangle {
+                x: 13px;
+                y: 5px;
+                width: 3px;
+                height: 11px;
+                background: Theme.lure;
+            }
+
+            TouchArea {
+                mouse-cursor: nwse-resize;
+                moved => {
+                    if (self.pressed) {
+                        root.sized(grip.x + self.mouse-x + grip.width - self.pressed-x, grip.y + self.mouse-y + grip.height - self.pressed-y);
+                    }
+                }
+            }
+        }
+    }
+}

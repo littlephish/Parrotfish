@@ -21,6 +21,7 @@ use crate::icons::{IconStore, Lookup};
 use crate::keywatch::KeyWatcher;
 use crate::platform;
 use crate::scale::{ScaleWatch, Step};
+use crate::speakers::{self, Member, Room, Roster};
 use crate::session::{
     self, build_rows_folded, connect_failure, mic_move, next_view, ChannelIcon, ChatKind, ChatLine, ConnectRequest,
     DialogField, FoldMode, MicMove, Outcome, Peer, RowData, RowKind, Session,
@@ -28,9 +29,11 @@ use crate::session::{
 use crate::settings::{self, Settings, Voice, MAX_REMEMBERED_VOICES};
 use crate::whisper::{route, Route, WhisperKeys};
 use crate::{
-    BookmarkRow, ChatRow, Icons, IdentityRow, PhishSpeakApp, PickRow, ServerTile, SettingsWindow, TreeRow,
-    WhisperKeyRow,
+    BookmarkRow, ChatRow, Icons, IdentityRow, PhishSpeakApp, PickRow, ServerTile, SettingsWindow, SpeakerRow,
+    SpeakersWindow, TreeRow, WhisperKeyRow,
 };
+
+const SPEAKERS_TITLE: &str = "PhishSpeak speaking";
 
 mod shortcuts;
 
@@ -160,6 +163,7 @@ fn same_address(a: &str, b: &str) -> bool {
 pub struct Windows {
     pub main: PhishSpeakApp,
     pub settings: SettingsWindow,
+    pub speakers: SpeakersWindow,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -189,17 +193,24 @@ struct Dirty {
     bookmarks: bool,
     identities: bool,
     shortcuts: bool,
+    speakers: bool,
 }
 
 impl Dirty {
     fn everything() -> Self {
-        Self { sessions: true, tree: true, chat: true, bookmarks: true, identities: true, shortcuts: true }
+        Self { sessions: true, tree: true, chat: true, bookmarks: true, identities: true, shortcuts: true, speakers: true }
     }
 }
 
 pub struct App {
     main: Weak<PhishSpeakApp>,
     settings_window: Weak<SettingsWindow>,
+    speakers_window: Weak<SpeakersWindow>,
+    speaker_rows: Rc<VecModel<SpeakerRow>>,
+    speakers_ticks: u32,
+    speakers_empty: bool,
+    speakers_look: Option<(u8, bool)>,
+    roster: Roster,
     engine: AudioEngine,
     watcher: KeyWatcher,
     pub settings: Settings,
@@ -244,7 +255,7 @@ pub struct App {
     person: Option<(u16, u16)>,
     key_prompt: Option<u16>,
     channel_sheet: Option<(u16, u64)>,
-    scales: [ScaleWatch; 2],
+    scales: [ScaleWatch; 3],
     dirty: Dirty,
     silent_since: Option<Instant>,
     silence_warned: bool,
@@ -262,16 +273,23 @@ pub fn with_app(app: &Rc<RefCell<App>>, f: impl FnOnce(&mut App, &Windows)) {
     let Ok(mut state) = app.try_borrow_mut() else {
         return;
     };
-    let (Some(main), Some(settings)) = (state.main.upgrade(), state.settings_window.upgrade()) else {
+    let (Some(main), Some(settings), Some(speakers)) =
+        (state.main.upgrade(), state.settings_window.upgrade(), state.speakers_window.upgrade())
+    else {
         return;
     };
-    let windows = Windows { main, settings };
+    let windows = Windows { main, settings, speakers };
     f(&mut state, &windows);
     state.refresh(&windows);
 }
 
 impl App {
-    pub fn new(main: &PhishSpeakApp, settings_window: &SettingsWindow, settings: Settings) -> Self {
+    pub fn new(
+        main: &PhishSpeakApp,
+        settings_window: &SettingsWindow,
+        speakers_window: &SpeakersWindow,
+        settings: Settings,
+    ) -> Self {
         let engine = AudioEngine::start();
         if !settings.input_device.is_empty() {
             engine.set_input_device(Some(settings.input_device.clone()));
@@ -284,6 +302,12 @@ impl App {
         Self {
             main: main.as_weak(),
             settings_window: settings_window.as_weak(),
+            speakers_window: speakers_window.as_weak(),
+            speaker_rows: Rc::new(VecModel::default()),
+            speakers_ticks: 0,
+            speakers_empty: true,
+            speakers_look: None,
+            roster: Roster::default(),
             engine,
             watcher,
             settings,
@@ -328,7 +352,7 @@ impl App {
             person: None,
             key_prompt: None,
             channel_sheet: None,
-            scales: [ScaleWatch::default(), ScaleWatch::default()],
+            scales: [ScaleWatch::default(), ScaleWatch::default(), ScaleWatch::default()],
             dirty: Dirty::everything(),
             silent_since: None,
             silence_warned: false,
@@ -352,6 +376,8 @@ impl App {
         w.settings.set_editor_groups(ModelRc::from(self.group_rows.clone()));
         w.settings.set_bm_channels(ModelRc::from(self.start_rows.clone()));
         w.settings.set_version(env!("CARGO_PKG_VERSION").into());
+        w.speakers.set_rows(ModelRc::from(self.speaker_rows.clone()));
+        self.apply_speakers(w);
         let drawn = w.main.global::<Icons>();
         self.standard_icons = vec![
             drawn.get_group_100(),
@@ -1768,6 +1794,7 @@ impl App {
             self.icon_answered(id, icon, data);
         }
         self.dirty.tree |= viewed && (outcome.tree || outcome.talking.is_some());
+        self.dirty.speakers |= outcome.tree || outcome.talking.is_some();
         self.dirty.chat |= viewed && outcome.chat;
         self.dirty.sessions |= outcome.header || outcome.connected;
         if outcome.channel && self.mic_target == Some(id) {
@@ -1913,8 +1940,212 @@ impl App {
         self.viewed_session().is_some_and(|s| s.is_connected()) && !self.sound_muted && !self.mic_muted
     }
 
+    fn speaker_rooms(&self) -> Vec<Room> {
+        let mut rooms = Vec::new();
+        for session in self.sessions.iter().filter(|s| s.is_connected()) {
+            let Some(view) = &session.view else {
+                continue;
+            };
+            let on_air = self.own_talking && self.mic_target == Some(session.id);
+            let mut members = Vec::new();
+            for node in &view.channels {
+                let here = node.channel.id == view.own_channel;
+                for person in node.clients.iter().filter(|person| !person.is_query) {
+                    let me = person.id == view.own_id;
+                    members.push(Member {
+                        id: person.id,
+                        name: person.nickname.clone(),
+                        talking: if me { on_air } else { person.talking },
+                        whispering: !me && person.whispering,
+                        me,
+                        here,
+                    });
+                }
+            }
+            rooms.push(Room { session: session.id, name: session.name.clone(), members });
+        }
+        rooms
+    }
+
+    fn publish_speakers(&mut self, w: &Windows) {
+        let window = w.speakers.window();
+        if !window.is_visible() {
+            return;
+        }
+        let rooms = self.speaker_rooms();
+        let linger = speakers::linger(self.settings.speakers_linger);
+        let lines = self.roster.lines(&rooms, self.settings.speakers_all, linger, Instant::now());
+        let height = window.size().to_logical(window.scale_factor()).height;
+        let lines = speakers::fit(lines, speakers::capacity(height));
+        self.speakers_empty = lines.is_empty();
+        let rows = lines
+            .into_iter()
+            .map(|line| SpeakerRow {
+                caption: line.caption,
+                text: line.text.as_str().into(),
+                talking: line.talking,
+                whispering: line.whispering,
+                me: line.me,
+                extra: line.extra as i32,
+            })
+            .collect();
+        sync_rows(&self.speaker_rows, rows);
+    }
+
+    fn speakers_start(&self, w: &Windows) -> Option<(i32, i32)> {
+        let kept = self.settings.speakers_place.filter(|(x, y)| platform::on_a_screen(x + 24, y + 24));
+        if kept.is_some() {
+            return kept;
+        }
+        let main = w.main.window();
+        if !main.is_visible() {
+            return None;
+        }
+        let at = main.position();
+        let size = main.size();
+        let wide = (self.settings.speakers_size.0 * main.scale_factor()).round() as i32;
+        let beside = (at.x + size.width as i32 + 12, at.y + 48);
+        let over = (at.x + 48, at.y + 96);
+        [beside, over]
+            .into_iter()
+            .find(|(x, y)| platform::on_a_screen(x + 24, y + 24) && platform::on_a_screen(x + wide - 24, y + 24))
+    }
+
+    fn apply_speakers(&mut self, w: &Windows) {
+        w.speakers.set_locked(self.settings.speakers_locked);
+        w.speakers.set_on_top(self.settings.speakers_on_top);
+        w.main.set_speakers_shown(self.settings.speakers_shown);
+        w.main.set_speakers_locked(self.settings.speakers_locked);
+        w.settings.set_sp_shown(self.settings.speakers_shown);
+        w.settings.set_sp_locked(self.settings.speakers_locked);
+        w.settings.set_sp_on_top(self.settings.speakers_on_top);
+        w.settings.set_sp_all(self.settings.speakers_all);
+        w.settings.set_sp_opacity(self.settings.speakers_opacity);
+        w.settings.set_sp_linger(self.settings.speakers_linger as f32);
+        let window = w.speakers.window();
+        if self.settings.speakers_shown && !window.is_visible() {
+            let (width, height) = self.settings.speakers_size;
+            window.set_size(slint::LogicalSize::new(width, height));
+            if let Some((x, y)) = self.speakers_start(w) {
+                window.set_position(slint::PhysicalPosition::new(x, y));
+            }
+            let front = platform::own_front_window();
+            let _ = w.speakers.show();
+            platform::bring_front(front);
+        } else if !self.settings.speakers_shown && window.is_visible() {
+            self.remember_speakers(w);
+            let _ = w.speakers.hide();
+        }
+        self.speakers_ticks = 0;
+        self.speakers_look = None;
+        self.dirty.speakers = true;
+    }
+
+    fn remember_speakers(&mut self, w: &Windows) -> bool {
+        let window = w.speakers.window();
+        if !window.is_visible() || window.is_minimized() {
+            return false;
+        }
+        let at = window.position();
+        let size = window.size().to_logical(window.scale_factor());
+        if size.width < 1.0 || size.height < 1.0 {
+            return false;
+        }
+        let place = Some((at.x, at.y));
+        let kept = self.settings.speakers_size;
+        let sized = (size.width - kept.0).abs() > 0.5 || (size.height - kept.1).abs() > 0.5;
+        if place == self.settings.speakers_place && !sized {
+            return false;
+        }
+        self.settings.speakers_place = place;
+        self.settings.speakers_size = (size.width, size.height);
+        self.mark_settings_dirty();
+        sized
+    }
+
+    fn watch_speakers(&mut self, w: &Windows) {
+        if !w.speakers.window().is_visible() {
+            return;
+        }
+        if self.roster.due(Instant::now()) {
+            self.dirty.speakers = true;
+        }
+        let locked = self.settings.speakers_locked;
+        let solid = (self.settings.speakers_opacity.clamp(20.0, 100.0) * 2.55).round() as u8;
+        let look = (if locked && self.speakers_empty { 0 } else { solid }, locked);
+        if self.speakers_look != Some(look) || self.speakers_ticks % 8 == 0 {
+            let done = platform::overlay_style(SPEAKERS_TITLE, look.0, look.1);
+            self.speakers_look = done.then_some(look);
+        }
+        self.speakers_ticks = self.speakers_ticks.wrapping_add(1);
+        if self.speakers_ticks >= 16 && self.remember_speakers(w) {
+            self.dirty.speakers = true;
+        }
+    }
+
+    pub fn speakers_dragged(&mut self, w: &Windows, dx: f32, dy: f32) {
+        if self.settings.speakers_locked {
+            return;
+        }
+        let window = w.speakers.window();
+        let scale = window.scale_factor();
+        let (right, down) = ((dx * scale).round() as i32, (dy * scale).round() as i32);
+        if (right, down) != (0, 0) {
+            let at = window.position();
+            window.set_position(slint::PhysicalPosition::new(at.x + right, at.y + down));
+        }
+    }
+
+    pub fn speakers_sized(&mut self, w: &Windows, width: f32, height: f32) {
+        if self.settings.speakers_locked {
+            return;
+        }
+        let window = w.speakers.window();
+        let size = window.size().to_logical(window.scale_factor());
+        let width = width.clamp(speakers::MIN_WIDTH, speakers::MAX_SIDE);
+        let height = height.clamp(speakers::MIN_HEIGHT, speakers::MAX_SIDE);
+        if (width - size.width).abs() >= 0.5 || (height - size.height).abs() >= 0.5 {
+            window.set_size(slint::LogicalSize::new(width, height));
+        }
+    }
+
+    pub fn park_speakers(&mut self, w: &Windows) {
+        self.remember_speakers(w);
+        let _ = w.speakers.hide();
+    }
+
+    pub fn speakers_toggle(&mut self, w: &Windows) {
+        self.settings.speakers_shown = !self.settings.speakers_shown;
+        self.mark_settings_dirty();
+        self.apply_speakers(w);
+    }
+
+    pub fn speakers_lock(&mut self, w: &Windows) {
+        self.settings.speakers_locked = !self.settings.speakers_locked;
+        self.mark_settings_dirty();
+        self.apply_speakers(w);
+    }
+
+    pub fn speakers_closed(&mut self, w: &Windows) {
+        self.settings.speakers_shown = false;
+        self.mark_settings_dirty();
+        self.apply_speakers(w);
+    }
+
+    pub fn speakers_changed(&mut self, w: &Windows) {
+        self.settings.speakers_shown = w.settings.get_sp_shown();
+        self.settings.speakers_locked = w.settings.get_sp_locked();
+        self.settings.speakers_on_top = w.settings.get_sp_on_top();
+        self.settings.speakers_all = w.settings.get_sp_all();
+        self.settings.speakers_opacity = w.settings.get_sp_opacity().clamp(20.0, 100.0);
+        let linger = w.settings.get_sp_linger().round().clamp(0.0, speakers::MAX_LINGER_SECONDS as f32);
+        self.settings.speakers_linger = linger as u32;
+        self.mark_settings_dirty();
+        self.apply_speakers(w);
+    }
+
     fn follow_scale(&mut self, w: &Windows) {
-        let windows = [w.main.window(), w.settings.window()];
+        let windows = [w.main.window(), w.settings.window(), w.speakers.window()];
         for (index, window) in windows.into_iter().enumerate() {
             let scale = window.scale_factor();
             let size = window.size().to_logical(scale);
@@ -1923,10 +2154,10 @@ impl App {
                 Step::Nothing => {}
                 Step::Refresh => {
                     let nudge = self.scales[index].nudge();
-                    if index == 0 {
-                        w.main.set_scale_nudge(nudge);
-                    } else {
-                        w.settings.set_scale_nudge(nudge);
+                    match index {
+                        0 => w.main.set_scale_nudge(nudge),
+                        1 => w.settings.set_scale_nudge(nudge),
+                        _ => w.speakers.set_scale_nudge(nudge),
                     }
                 }
                 Step::Restore(width, height) => window.set_size(slint::LogicalSize::new(width, height)),
@@ -2002,6 +2233,7 @@ impl App {
             }
         }
         self.follow_scale(w);
+        self.watch_speakers(w);
         self.retry_lost_connections(w);
         self.poll_level_jobs(w);
         self.poll_capture(w);
@@ -2314,6 +2546,9 @@ impl App {
             self.publish_tree();
             self.publish_person(w);
             self.publish_channel(w);
+        }
+        if dirty.speakers || dirty.tree || dirty.sessions {
+            self.publish_speakers(w);
         }
         if dirty.chat {
             self.publish_chat(w);

@@ -98,6 +98,91 @@ mod imp {
         Some(bytes)
     }
 
+    #[repr(C)]
+    struct Point {
+        x: i32,
+        y: i32,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn FindWindowExW(parent: isize, after: isize, class: *const u16, title: *const u16) -> isize;
+        fn GetWindowThreadProcessId(window: isize, process: *mut u32) -> u32;
+        fn GetWindowLongPtrW(window: isize, index: i32) -> isize;
+        fn SetWindowLongPtrW(window: isize, index: i32, value: isize) -> isize;
+        fn SetLayeredWindowAttributes(window: isize, key: u32, alpha: u8, flags: u32) -> i32;
+        fn MonitorFromPoint(point: Point, flags: u32) -> isize;
+        fn GetForegroundWindow() -> isize;
+        fn SetForegroundWindow(window: isize) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentProcessId() -> u32;
+    }
+
+    const EXTENDED_STYLE: i32 = -20;
+    const LAYERED: isize = 0x0008_0000;
+    const PASS_CLICKS: isize = 0x0000_0020;
+    const NEVER_ACTIVE: isize = 0x0800_0000;
+    const WHOLE_WINDOW_ALPHA: u32 = 2;
+    const SAME_TITLE_LIMIT: usize = 64;
+
+    fn own_window(title: &str) -> Option<isize> {
+        let wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+        let me = unsafe { GetCurrentProcessId() };
+        let mut window = 0isize;
+        for _ in 0..SAME_TITLE_LIMIT {
+            window = unsafe { FindWindowExW(0, window, std::ptr::null(), wide.as_ptr()) };
+            if window == 0 {
+                return None;
+            }
+            let mut owner = 0u32;
+            unsafe { GetWindowThreadProcessId(window, &mut owner) };
+            if owner == me {
+                return Some(window);
+            }
+        }
+        None
+    }
+
+    pub fn overlay_style(title: &str, alpha: u8, pass_clicks: bool) -> bool {
+        let Some(window) = own_window(title) else {
+            return false;
+        };
+        let style = unsafe { GetWindowLongPtrW(window, EXTENDED_STYLE) };
+        let plain = style | LAYERED | NEVER_ACTIVE;
+        let wanted = if pass_clicks { plain | PASS_CLICKS } else { plain & !PASS_CLICKS };
+        if wanted != style {
+            unsafe { SetWindowLongPtrW(window, EXTENDED_STYLE, wanted) };
+        }
+        unsafe { SetLayeredWindowAttributes(window, 0, alpha, WHOLE_WINDOW_ALPHA) != 0 }
+    }
+
+    pub fn on_a_screen(x: i32, y: i32) -> bool {
+        unsafe { MonitorFromPoint(Point { x, y }, 0) != 0 }
+    }
+
+    pub fn own_front_window() -> isize {
+        let window = unsafe { GetForegroundWindow() };
+        if window == 0 {
+            return 0;
+        }
+        let mut owner = 0u32;
+        unsafe { GetWindowThreadProcessId(window, &mut owner) };
+        if owner == unsafe { GetCurrentProcessId() } {
+            window
+        } else {
+            0
+        }
+    }
+
+    pub fn bring_front(window: isize) {
+        if window != 0 && window != unsafe { GetForegroundWindow() } {
+            unsafe { SetForegroundWindow(window) };
+        }
+    }
+
     pub fn protect(data: &[u8]) -> Option<Vec<u8>> {
         seal(data, false)
     }
@@ -123,6 +208,20 @@ mod imp {
         None
     }
 
+    pub fn overlay_style(_title: &str, _alpha: u8, _pass_clicks: bool) -> bool {
+        false
+    }
+
+    pub fn on_a_screen(_x: i32, _y: i32) -> bool {
+        true
+    }
+
+    pub fn own_front_window() -> isize {
+        0
+    }
+
+    pub fn bring_front(_window: isize) {}
+
     pub fn protect(_data: &[u8]) -> Option<Vec<u8>> {
         None
     }
@@ -140,7 +239,9 @@ mod imp {
     }
 }
 
-pub use imp::{key_char, key_down, local_hms, protect, unprotect};
+pub use imp::{
+    bring_front, key_char, key_down, local_hms, on_a_screen, overlay_style, own_front_window, protect, unprotect,
+};
 
 pub fn timestamp() -> String {
     let (h, m, s) = local_hms();

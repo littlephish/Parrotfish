@@ -9,6 +9,7 @@ mod platform;
 mod scale;
 mod session;
 mod settings;
+mod speakers;
 mod whisper;
 
 use std::cell::RefCell;
@@ -53,10 +54,11 @@ fn start_requests() -> Vec<StartRequest> {
 fn main() -> Result<(), slint::PlatformError> {
     let ui = PhishSpeakApp::new()?;
     let settings_window = SettingsWindow::new()?;
+    let speakers_window = SpeakersWindow::new()?;
     let settings = Settings::load();
     ui.window().set_size(LogicalSize::new(settings.window_width, settings.window_height));
 
-    let app = Rc::new(RefCell::new(App::new(&ui, &settings_window, settings)));
+    let app = Rc::new(RefCell::new(App::new(&ui, &settings_window, &speakers_window, settings)));
     let requests = start_requests();
     with_app(&app, |state, w| state.start(w, &requests));
 
@@ -92,6 +94,25 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_toggle_commander(move || with_app(&a, |s, w| s.toggle_commander(w)));
     let a = app.clone();
     ui.on_toggle_start_here(move || with_app(&a, |s, w| s.toggle_start_here(w)));
+    let a = app.clone();
+    ui.on_speakers_toggle(move || with_app(&a, |s, w| s.speakers_toggle(w)));
+    let a = app.clone();
+    ui.on_speakers_lock(move || with_app(&a, |s, w| s.speakers_lock(w)));
+    let a = app.clone();
+    speakers_window.on_lock_asked(move || with_app(&a, |s, w| s.speakers_lock(w)));
+    let a = app.clone();
+    speakers_window.on_hide_asked(move || with_app(&a, |s, w| s.speakers_closed(w)));
+    let a = app.clone();
+    speakers_window.on_dragged(move |dx, dy| with_app(&a, |s, w| s.speakers_dragged(w, dx, dy)));
+    let a = app.clone();
+    speakers_window.on_sized(move |width, height| with_app(&a, |s, w| s.speakers_sized(w, width, height)));
+    let a = app.clone();
+    speakers_window.window().on_close_requested(move || {
+        with_app(&a, |s, w| s.speakers_closed(w));
+        CloseRequestResponse::HideWindow
+    });
+    let a = app.clone();
+    settings_window.on_speakers_changed(move || with_app(&a, |s, w| s.speakers_changed(w)));
     let a = app.clone();
     ui.on_person_voice_changed(move || with_app(&a, |s, w| s.person_voice_changed(w)));
     let a = app.clone();
@@ -181,6 +202,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 s.settings.window_height = size.height;
             }
             s.close_settings(w);
+            s.park_speakers(w);
         });
         CloseRequestResponse::HideWindow
     });

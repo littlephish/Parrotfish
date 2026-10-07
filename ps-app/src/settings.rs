@@ -3,6 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::hotkeys::Chord;
+use crate::speakers;
 
 const LEGACY_TALK_KEYS: [u16; 17] =
     [0, 0xA2, 0xA3, 0xA4, 0xA5, 0xA0, 0xA1, 0x14, 0x05, 0x06, 0x04, 0xC0, 0x91, 0x13, 0x77, 0x78, 0x79];
@@ -63,6 +64,14 @@ pub struct Settings {
     pub mute_sound_key: Chord,
     pub allow_whispers: bool,
     pub fold_mode: i32,
+    pub speakers_shown: bool,
+    pub speakers_locked: bool,
+    pub speakers_on_top: bool,
+    pub speakers_all: bool,
+    pub speakers_opacity: f32,
+    pub speakers_linger: u32,
+    pub speakers_place: Option<(i32, i32)>,
+    pub speakers_size: (f32, f32),
     pub folds: BTreeMap<String, BTreeMap<u64, bool>>,
     pub voices: BTreeMap<String, Voice>,
     pub window_width: f32,
@@ -94,6 +103,14 @@ impl Default for Settings {
             mute_sound_key: Chord::default(),
             allow_whispers: true,
             fold_mode: 1,
+            speakers_shown: false,
+            speakers_locked: false,
+            speakers_on_top: true,
+            speakers_all: false,
+            speakers_opacity: 85.0,
+            speakers_linger: speakers::DEFAULT_LINGER_SECONDS,
+            speakers_place: None,
+            speakers_size: (220.0, 160.0),
             folds: BTreeMap::new(),
             voices: BTreeMap::new(),
             window_width: DEFAULT_WINDOW_WIDTH,
@@ -208,6 +225,28 @@ impl Settings {
                 "mute_sound_key" => s.mute_sound_key = Chord::parse(value),
                 "allow_whispers" => s.allow_whispers = value != "0",
                 "fold_mode" => s.fold_mode = value.parse().unwrap_or(1).clamp(0, 2),
+                "speakers_shown" => s.speakers_shown = value == "1",
+                "speakers_locked" => s.speakers_locked = value == "1",
+                "speakers_on_top" => s.speakers_on_top = value != "0",
+                "speakers_all" => s.speakers_all = value == "1",
+                "speakers_opacity" => s.speakers_opacity = number(value, 85.0, 20.0, 100.0),
+                "speakers_linger" => {
+                    let seconds = value.parse().unwrap_or(speakers::DEFAULT_LINGER_SECONDS);
+                    s.speakers_linger = seconds.min(speakers::MAX_LINGER_SECONDS);
+                }
+                "speakers_place" => {
+                    let parts: Vec<i32> = value.split(',').filter_map(|part| part.trim().parse().ok()).collect();
+                    s.speakers_place = if parts.len() == 2 { Some((parts[0], parts[1])) } else { None };
+                }
+                "speakers_size" => {
+                    let parts: Vec<f32> = value.split(',').filter_map(|part| part.trim().parse().ok()).collect();
+                    if let [width, height] = parts[..] {
+                        s.speakers_size = (
+                            width.clamp(speakers::MIN_WIDTH, speakers::MAX_SIDE),
+                            height.clamp(speakers::MIN_HEIGHT, speakers::MAX_SIDE),
+                        );
+                    }
+                }
                 "window_width" => {
                     s.window_width = number(value, DEFAULT_WINDOW_WIDTH, MIN_WINDOW_WIDTH, MAX_WINDOW_SIDE)
                 }
@@ -256,6 +295,16 @@ impl Settings {
         put("mute_sound_key", self.mute_sound_key.to_text());
         put("allow_whispers", u8::from(self.allow_whispers).to_string());
         put("fold_mode", self.fold_mode.to_string());
+        put("speakers_shown", u8::from(self.speakers_shown).to_string());
+        put("speakers_locked", u8::from(self.speakers_locked).to_string());
+        put("speakers_on_top", u8::from(self.speakers_on_top).to_string());
+        put("speakers_all", u8::from(self.speakers_all).to_string());
+        put("speakers_opacity", format!("{:.0}", self.speakers_opacity));
+        put("speakers_linger", self.speakers_linger.to_string());
+        if let Some((x, y)) = self.speakers_place {
+            put("speakers_place", format!("{x},{y}"));
+        }
+        put("speakers_size", format!("{:.0},{:.0}", self.speakers_size.0, self.speakers_size.1));
         put("window_width", format!("{:.0}", self.window_width));
         put("window_height", format!("{:.0}", self.window_height));
         for (uid, offset) in &self.key_offsets {
@@ -289,6 +338,33 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_speaking_window_is_remembered() {
+        let plain = Settings::default();
+        assert!(!plain.speakers_shown && !plain.speakers_locked && plain.speakers_on_top && !plain.speakers_all);
+        assert_eq!((plain.speakers_opacity, plain.speakers_place, plain.speakers_size), (85.0, None, (220.0, 160.0)));
+        assert_eq!(plain.speakers_linger, 10);
+        let mut s = Settings::default();
+        s.speakers_shown = true;
+        s.speakers_locked = true;
+        s.speakers_on_top = false;
+        s.speakers_all = true;
+        s.speakers_opacity = 40.0;
+        s.speakers_linger = 0;
+        s.speakers_place = Some((-1200, 64));
+        s.speakers_size = (300.0, 90.0);
+        assert_eq!(Settings::parse(&s.serialize()), s);
+        let odd = Settings::parse("speakers_opacity=3\nspeakers_place=7\nspeakers_size=5,x\nspeakers_on_top=maybe\n");
+        assert_eq!((odd.speakers_opacity, odd.speakers_place, odd.speakers_size), (20.0, None, (220.0, 160.0)));
+        assert!(odd.speakers_on_top);
+        assert_eq!(Settings::parse("speakers_linger=25\n").speakers_linger, 25);
+        assert_eq!(Settings::parse("speakers_linger=900\n").speakers_linger, 60);
+        assert_eq!(Settings::parse("speakers_linger=soon\n").speakers_linger, 10);
+        assert_eq!(Settings::parse("speakers_linger=-4\n").speakers_linger, 10);
+        assert_eq!(Settings::parse("speakers_size=10,99999\n").speakers_size, (120.0, 2000.0));
+        assert_eq!(Settings::parse("speakers_size=300,5\n").speakers_size, (300.0, 38.0));
+    }
 
     #[test]
     fn microphone_helpers_and_event_sounds_are_kept() {
