@@ -1,4 +1,7 @@
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -21,6 +24,29 @@ struct Heard {
     whisper_ends: u64,
     codecs: Vec<u8>,
     last: Option<Instant>,
+    sizes: BTreeMap<usize, u64>,
+    run_started: Option<Instant>,
+    spacing_ms: f64,
+    spacings: u64,
+}
+
+fn read_frames(path: &str) -> Vec<Vec<u8>> {
+    let bytes = std::fs::read(path).unwrap_or_else(|e| {
+        eprintln!("cannot read {path}: {e}");
+        std::process::exit(2);
+    });
+    let mut frames = Vec::new();
+    let mut at = 0usize;
+    while at + 2 <= bytes.len() {
+        let length = usize::from(u16::from_le_bytes([bytes[at], bytes[at + 1]]));
+        at += 2;
+        if at + length > bytes.len() {
+            break;
+        }
+        frames.push(bytes[at..at + length].to_vec());
+        at += length;
+    }
+    frames
 }
 
 fn whisper_target(spec: &str) -> Option<WhisperTarget> {
@@ -48,7 +74,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "--help") {
         eprintln!(
-            "usage: channeltest <host> [--port N] [--nick NAME] [--join CHANNEL_ID] [--seconds N]\n                   [--talk SECONDS] [--talk-after SECONDS]\n                   [--whisper client:ID|channel:ID|commanders|everyone] [--commander] [--abrupt-end]\nListens for voice and whispers and reports who was heard; with --talk it also sends a tone, as a whisper when --whisper is given.\nThe end packet follows one frame after the last sound, as in the app; --abrupt-end sends it right behind the last sound,\nwhich a server may deliver the other way round."
+            "usage: channeltest <host> [--port N] [--nick NAME] [--join CHANNEL_ID] [--seconds N]\n                   [--talk SECONDS] [--talk-after SECONDS]\n                   [--whisper client:ID|channel:ID|commanders|everyone] [--commander] [--abrupt-end]\n                   [--codec N] [--frames FILE] [--frame-ms N] [--save DIR]\nListens for voice and whispers and reports who was heard; with --talk it also sends a tone, as a whisper when --whisper is given.\n--codec writes that codec number on what is sent. --frames sends ready-made packets from a file (each one a two-byte length, low byte first, then the bytes), one every --frame-ms.\n--save writes every packet heard to DIR in the same form, one file per talker and codec.\nThe end packet follows one frame after the last sound, as in the app; --abrupt-end sends it right behind the last sound,\nwhich a server may deliver the other way round."
         );
         std::process::exit(2);
     }
@@ -67,6 +93,15 @@ fn main() {
         }
     });
     let commander = args.iter().any(|a| a == "--commander");
+    let codec: u8 = arg_value(&args, "--codec").and_then(|p| p.parse().ok()).unwrap_or(CODEC_OPUS_VOICE);
+    let frames: Vec<Vec<u8>> = arg_value(&args, "--frames").map(|path| read_frames(&path)).unwrap_or_default();
+    let frame_ms: f32 = arg_value(&args, "--frame-ms").and_then(|p| p.parse().ok()).unwrap_or(20.0);
+    let frame_time = Duration::from_secs_f32(frame_ms.clamp(1.0, 1000.0) / 1000.0);
+    let save: Option<PathBuf> = arg_value(&args, "--save").map(PathBuf::from);
+    if let Some(dir) = &save {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let mut saved: BTreeMap<(u16, u8, bool), File> = BTreeMap::new();
 
     let heard: Arc<Mutex<BTreeMap<u16, Heard>>> = Arc::new(Mutex::new(BTreeMap::new()));
     let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -104,8 +139,26 @@ fn main() {
                 entry.run = 0;
             }
             entry.run_is_whisper = packet.whisper;
+            if entry.run == 0 {
+                entry.run_started = Some(Instant::now());
+            } else if let Some(began) = entry.run_started {
+                entry.spacing_ms += began.elapsed().as_secs_f64() * 1000.0 / entry.run as f64;
+                entry.spacings += 1;
+            }
             entry.run += 1;
             entry.last = Some(Instant::now());
+            *entry.sizes.entry(packet.data.len()).or_default() += 1;
+            if let Some(dir) = &save {
+                let key = (packet.client_id, packet.codec, packet.whisper);
+                let file = saved.entry(key).or_insert_with(|| {
+                    let kind = if packet.whisper { "whisper" } else { "voice" };
+                    let name = format!("client{}_codec{}_{kind}.bin", packet.client_id, packet.codec);
+                    File::create(dir.join(name)).expect("cannot write to the --save folder")
+                });
+                let length = (packet.data.len().min(usize::from(u16::MAX)) as u16).to_le_bytes();
+                let _ = file.write_all(&length);
+                let _ = file.write_all(&packet.data[..packet.data.len().min(usize::from(u16::MAX))]);
+            }
             if packet.whisper {
                 entry.whispers += 1;
             } else {
@@ -192,21 +245,25 @@ fn main() {
                         .collect();
                     phase += FRAME_SAMPLES;
                     let send = |data: &[u8]| match &whisper {
-                        Some(target) => handle.send_whisper(target, CODEC_OPUS_VOICE, data),
-                        None => handle.send_voice(CODEC_OPUS_VOICE, data),
+                        Some(target) => handle.send_whisper(target, codec, data),
+                        None => handle.send_voice(codec, data),
                     };
                     if finishing {
                         send(&[]);
+                    } else if !frames.is_empty() {
+                        send(&frames[sent as usize % frames.len()]);
+                        sent += 1;
                     } else if let Ok(n) = encoder.encode(&pcm, &mut packet) {
                         send(&packet[..n]);
                         sent += 1;
                     }
-                    next_frame = Some(due + FRAME);
+                    next_frame = Some(due + if frames.is_empty() { FRAME } else { frame_time });
                     let doing = if whisper.is_some() { "whispering" } else { "talking" };
                     if sent == 1 {
                         println!("{} {nick} starts {doing}", clock());
                     }
-                    let last = sent as f32 * 0.02 >= talk;
+                    let each = if frames.is_empty() { 0.02 } else { frame_time.as_secs_f32() };
+                    let last = sent as f32 * each >= talk;
                     if last && !finishing && !abrupt {
                         finishing = true;
                     } else if last {
@@ -260,5 +317,8 @@ fn main() {
             "TOTAL {nick}: client {client}: {} voice packets, {} end-of-talk packets, {} whisper packets, {} end-of-whisper packets, codecs {:?}",
             entry.packets, entry.ends, entry.whispers, entry.whisper_ends, entry.codecs
         );
+        let sizes: Vec<String> = entry.sizes.iter().map(|(bytes, count)| format!("{count} of {bytes} bytes")).collect();
+        let spacing = if entry.spacings > 0 { entry.spacing_ms / entry.spacings as f64 } else { 0.0 };
+        println!("TOTAL {nick}: client {client}: packet sizes: {}; one packet every {spacing:.1} ms", sizes.join(", "));
     }
 }
