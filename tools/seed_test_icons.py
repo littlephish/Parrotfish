@@ -229,9 +229,10 @@ def main():
     query.assign("channel:Booth", huge)
     query.assign("group:Guest", second)
     query.assign("server", first)
-    print(f"seeded: {first} on Deep Rock and the server, {second} on Tide Pool and Guest, {large} (64 x 64) on Lobby")
-    print(f"        to be refused: 600001 (too many bytes) on Squad Alpha, 600002 (not an image) on Radio,")
-    print(f"        {animated} (GIF) on Drift, {huge} (300 x 300) on Booth")
+    print(f"seeded: {first} on Deep Rock and the server, {second} on Tide Pool and Guest, {large} (64 x 64) on Lobby,")
+    print(f"        {animated} (GIF, shown as its first frame) on Drift")
+    print("        to be refused: 600001 (too many bytes) on Squad Alpha, 600002 (not an image) on Radio,")
+    print(f"        {huge} (300 x 300) on Booth")
 
 
 main()

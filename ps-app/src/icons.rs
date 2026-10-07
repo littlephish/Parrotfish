@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -11,6 +12,7 @@ pub const RETRY_AFTER: Duration = Duration::from_secs(600);
 pub const ASK_AGAIN_AFTER: Duration = Duration::from_secs(120);
 const REFRESH_AFTER: Duration = Duration::from_secs(7 * 24 * 3600);
 const MAX_ICONS_PER_SERVER: usize = 500;
+const GIF_MEMORY_LIMIT: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -25,12 +27,13 @@ impl Format {
         match self {
             Format::Png => Some("png"),
             Format::Jpeg => Some("jpg"),
-            Format::Gif | Format::Bmp => None,
+            Format::Gif => Some("gif"),
+            Format::Bmp => None,
         }
     }
 }
 
-const EXTENSIONS: [&str; 2] = ["png", "jpg"];
+const EXTENSIONS: [&str; 3] = ["png", "jpg", "gif"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reject {
@@ -48,7 +51,7 @@ impl Reject {
             Reject::Empty => "the file is empty",
             Reject::TooManyBytes => "the file is too big",
             Reject::NotAnImage => "it is not a picture",
-            Reject::Unsupported => "only PNG and JPEG pictures can be shown",
+            Reject::Unsupported => "only PNG, JPEG and GIF pictures can be shown",
             Reject::TooLarge => "the picture is larger than 256 x 256",
             Reject::Broken => "the picture could not be read",
         }
@@ -121,8 +124,8 @@ pub fn accept(data: &[u8]) -> Result<Format, Reject> {
         return Err(Reject::TooLarge);
     }
     match format {
-        Format::Png | Format::Jpeg => Ok(format),
-        Format::Gif | Format::Bmp => Err(Reject::Unsupported),
+        Format::Png | Format::Jpeg | Format::Gif => Ok(format),
+        Format::Bmp => Err(Reject::Unsupported),
     }
 }
 
@@ -171,8 +174,42 @@ pub fn shrink(pixels: &[u8], width: u32, height: u32, side: u32) -> Option<(Vec<
     Some((out, out_w as u32, out_h as u32))
 }
 
+fn gif_first_frame(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    let mut options = gif::DecodeOptions::new();
+    options.set_color_output(gif::ColorOutput::RGBA);
+    options.set_memory_limit(gif::MemoryLimit::Bytes(NonZeroU64::new(GIF_MEMORY_LIMIT)?));
+    let mut reader = options.read_info(data).ok()?;
+    let (screen_width, screen_height) = (usize::from(reader.width()), usize::from(reader.height()));
+    let side = MAX_ICON_SIDE as usize;
+    if screen_width == 0 || screen_height == 0 || screen_width > side || screen_height > side {
+        return None;
+    }
+    let frame = reader.read_next_frame().ok().flatten()?;
+    let (frame_width, frame_height) = (usize::from(frame.width), usize::from(frame.height));
+    let mut canvas = vec![0u8; screen_width * screen_height * 4];
+    for row in 0..frame_height.min(screen_height.saturating_sub(usize::from(frame.top))) {
+        for column in 0..frame_width.min(screen_width.saturating_sub(usize::from(frame.left))) {
+            let from = (row * frame_width + column) * 4;
+            let Some(pixel) = frame.buffer.get(from..from + 4) else {
+                continue;
+            };
+            let at = ((usize::from(frame.top) + row) * screen_width + usize::from(frame.left) + column) * 4;
+            canvas[at..at + 4].copy_from_slice(pixel);
+        }
+    }
+    Some((screen_width as u32, screen_height as u32, canvas))
+}
+
+fn gif_image(path: &Path) -> Option<Image> {
+    let data = std::fs::read(path).ok()?;
+    let (width, height, pixels) = gif_first_frame(&data)?;
+    Some(Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&pixels, width, height)))
+}
+
 fn decode(path: &Path) -> Option<Image> {
-    let loaded = std::panic::catch_unwind(|| Image::load_from_path(path).ok()).ok().flatten()?;
+    let animated = path.extension().map(|extension| extension == "gif").unwrap_or(false);
+    let read = || if animated { gif_image(path) } else { Image::load_from_path(path).ok() };
+    let loaded = std::panic::catch_unwind(read).ok().flatten()?;
     let buffer = loaded.to_rgba8()?;
     let (width, height) = (buffer.width(), buffer.height());
     if width == 0 || height == 0 || width > MAX_ICON_SIDE || height > MAX_ICON_SIDE {
@@ -418,6 +455,14 @@ mod tests {
         data
     }
 
+    fn bmp_header(width: i32, height: i32) -> Vec<u8> {
+        let mut data = b"BM".to_vec();
+        data.extend_from_slice(&[0; 16]);
+        data.extend_from_slice(&width.to_le_bytes());
+        data.extend_from_slice(&height.to_le_bytes());
+        data
+    }
+
     fn crc32(data: &[u8]) -> u32 {
         let mut crc = 0xFFFF_FFFFu32;
         for byte in data {
@@ -469,6 +514,32 @@ mod tests {
         out
     }
 
+    const PALETTE: [u8; 12] = [255, 0, 0, 0, 255, 0, 0, 0, 255, 10, 20, 30];
+
+    fn frame(size: (u16, u16), place: (u16, u16), transparent: Option<u8>, indices: Vec<u8>) -> gif::Frame<'static> {
+        gif::Frame {
+            width: size.0,
+            height: size.1,
+            left: place.0,
+            top: place.1,
+            transparent,
+            buffer: std::borrow::Cow::Owned(indices),
+            ..gif::Frame::default()
+        }
+    }
+
+    fn animation(width: u16, height: u16, frames: &[gif::Frame<'static>]) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut encoder = gif::Encoder::new(&mut out, width, height, &PALETTE).unwrap();
+            for item in frames {
+                encoder.write_frame(item).unwrap();
+            }
+            encoder.into_inner().unwrap();
+        }
+        out
+    }
+
     fn scratch(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("phishspeak-icon-test-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -480,11 +551,7 @@ mod tests {
         assert_eq!(sniff(&png_header(16, 16)), Some((Format::Png, 16, 16)));
         assert_eq!(sniff(b"GIF89a\x10\x00\x20\x00\x00\x00\x00"), Some((Format::Gif, 16, 32)));
         assert_eq!(sniff(&jpeg_header(48, 24)), Some((Format::Jpeg, 48, 24)));
-        let mut bmp = b"BM".to_vec();
-        bmp.extend_from_slice(&[0; 16]);
-        bmp.extend_from_slice(&16i32.to_le_bytes());
-        bmp.extend_from_slice(&(-16i32).to_le_bytes());
-        assert_eq!(sniff(&bmp), Some((Format::Bmp, 16, 16)));
+        assert_eq!(sniff(&bmp_header(16, -16)), Some((Format::Bmp, 16, 16)));
         assert_eq!(sniff(b"<html><body>404</body></html>"), None);
         assert_eq!(sniff(b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>"), None);
         assert_eq!(sniff(&png_header(16, 16)[..20]), None);
@@ -501,7 +568,10 @@ mod tests {
         assert_eq!(accept(&png_header(257, 16)), Err(Reject::TooLarge));
         assert_eq!(accept(&png_header(0, 16)), Err(Reject::TooLarge));
         assert_eq!(accept(&jpeg_header(16, 300)), Err(Reject::TooLarge));
-        assert_eq!(accept(b"GIF89a\x10\x00\x10\x00\x00\x00\x00"), Err(Reject::Unsupported));
+        assert_eq!(accept(b"GIF89a\x10\x00\x10\x00\x00\x00\x00"), Ok(Format::Gif));
+        assert_eq!(accept(b"GIF89a\x01\x01\x10\x00\x00\x00\x00"), Err(Reject::TooLarge));
+        assert_eq!(accept(b"GIF89a\x00\x00\x10\x00\x00\x00\x00"), Err(Reject::TooLarge));
+        assert_eq!(accept(&bmp_header(16, 16)), Err(Reject::Unsupported));
         assert_eq!(accept(&[]), Err(Reject::Empty));
         assert_eq!(accept(b"not an image at all"), Err(Reject::NotAnImage));
         assert_eq!(accept(b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>"), Err(Reject::NotAnImage));
@@ -537,11 +607,11 @@ mod tests {
         assert!(matches!(store.lookup("serverA", 77, start + Duration::from_secs(60)), Lookup::Nothing));
         assert!(matches!(store.lookup("serverA", 77, start + RETRY_AFTER + Duration::from_secs(1)), Lookup::Ask));
         assert_eq!(store.arrived("serverA", 77, b"junk"), Err(Reject::NotAnImage));
-        assert_eq!(store.arrived("serverA", 77, b"GIF89a\x10\x00\x10\x00\x00\x00\x00"), Err(Reject::Unsupported));
+        assert_eq!(store.arrived("serverA", 77, &bmp_header(16, 16)), Err(Reject::Unsupported));
         assert!(matches!(store.lookup("serverA", 77, start), Lookup::Nothing));
         let much_later = start + RETRY_AFTER * 100;
         assert!(matches!(store.lookup("serverA", 77, much_later), Lookup::Nothing), "a refused file is not fetched again");
-        assert!(Reject::Unsupported.reason().contains("PNG"));
+        assert!(Reject::Unsupported.reason().contains("PNG, JPEG and GIF"));
         assert!(!root.join(server_folder("serverA")).exists());
 
         assert!(matches!(store.lookup("serverA", 78, start), Lookup::Ask));
@@ -691,5 +761,105 @@ mod tests {
         let wide = vec![255u8; 8 * 2 * 4];
         let (out, width, height) = shrink(&wide, 8, 2, 4).unwrap();
         assert_eq!((width, height, out.len()), (4, 1, 16));
+    }
+
+    #[test]
+    fn decodes_the_first_gif_frame() {
+        let still = animation(2, 2, &[frame((2, 2), (0, 0), None, vec![0, 1, 2, 3])]);
+        let (width, height, pixels) = gif_first_frame(&still).unwrap();
+        assert_eq!((width, height), (2, 2));
+        assert_eq!(&pixels[..4], &[255, 0, 0, 255]);
+        assert_eq!(&pixels[4..8], &[0, 255, 0, 255]);
+        assert_eq!(&pixels[8..12], &[0, 0, 255, 255]);
+        assert_eq!(&pixels[12..16], &[10, 20, 30, 255]);
+
+        let moving =
+            animation(2, 2, &[frame((2, 2), (0, 0), None, vec![0; 4]), frame((2, 2), (0, 0), None, vec![1; 4])]);
+        let (width, height, pixels) = gif_first_frame(&moving).unwrap();
+        assert_eq!((width, height), (2, 2));
+        assert_eq!(pixels, vec![255, 0, 0, 255].repeat(4), "the first frame is shown, not a later one");
+    }
+
+    #[test]
+    fn a_gif_frame_lands_on_a_transparent_canvas_at_its_offset() {
+        let holed = animation(2, 2, &[frame((2, 2), (0, 0), Some(2), vec![0, 1, 2, 3])]);
+        let (_, _, pixels) = gif_first_frame(&holed).unwrap();
+        assert_eq!(&pixels[8..12], &[0, 0, 255, 0]);
+        assert_eq!(&pixels[..4], &[255, 0, 0, 255]);
+
+        let offset = animation(4, 4, &[frame((2, 2), (1, 2), None, vec![0; 4])]);
+        let (width, height, pixels) = gif_first_frame(&offset).unwrap();
+        assert_eq!((width, height, pixels.len()), (4, 4, 64));
+        for at in 0..16usize {
+            let (x, y) = (at % 4, at / 4);
+            let want: [u8; 4] =
+                if (1..=2).contains(&x) && (2..=3).contains(&y) { [255, 0, 0, 255] } else { [0, 0, 0, 0] };
+            assert_eq!(&pixels[at * 4..at * 4 + 4], &want, "pixel {x},{y}");
+        }
+
+        let spilling = animation(2, 2, &[frame((3, 3), (1, 1), None, vec![1; 9])]);
+        let (width, height, pixels) = gif_first_frame(&spilling).unwrap();
+        assert_eq!((width, height, pixels.len()), (2, 2, 16));
+        assert_eq!(&pixels[..12], &[0; 12]);
+        assert_eq!(&pixels[12..16], &[0, 255, 0, 255], "what reaches outside the screen is clipped away");
+    }
+
+    #[test]
+    fn a_broken_gif_is_not_shown() {
+        let good = animation(2, 2, &[frame((2, 2), (0, 0), None, vec![0, 1, 2, 3])]);
+        assert!(gif_first_frame(&good[..good.len() / 2]).is_none());
+        assert!(gif_first_frame(b"GIF89a\x10\x00\x10\x00\x00\x00\x00").is_none());
+        let mut junk = b"GIF89a\x10\x00\x10\x00\x00\x00\x00".to_vec();
+        junk.extend_from_slice(&[0x12; 200]);
+        assert!(gif_first_frame(&junk).is_none());
+
+        let root = scratch("brokengif");
+        let start = Instant::now();
+        let mut store = IconStore::new(root.clone());
+        assert_eq!(store.arrived("serverA", 4, &junk), Err(Reject::Broken));
+        assert_eq!(store.arrived("serverA", 5, &good[..good.len() / 2]), Err(Reject::Broken));
+        assert!(matches!(store.lookup("serverA", 4, start), Lookup::Nothing));
+        let folder = root.join(server_folder("serverA"));
+        assert_eq!(std::fs::read_dir(&folder).map(|entries| entries.count()).unwrap_or(0), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_gif_icon_is_kept_and_shown_as_a_still_picture() {
+        let root = scratch("gifs");
+        let start = Instant::now();
+        let folder = root.join(server_folder("serverA"));
+        let small = animation(2, 2, &[frame((2, 2), (0, 0), None, vec![0, 1, 2, 3])]);
+        let mut wide = Vec::new();
+        for _ in 0..64 {
+            wide.extend((0..64).map(|x| u8::from(x >= 32)));
+        }
+        let large = animation(64, 64, &[frame((64, 64), (0, 0), None, wide)]);
+        {
+            let mut store = IconStore::new(root.clone());
+            assert!(matches!(store.lookup("serverA", 20, start), Lookup::Ask));
+            assert_eq!(store.arrived("serverA", 20, &small), Ok(()));
+            assert_eq!(store.arrived("serverA", 21, &large), Ok(()));
+            let Lookup::Ready(image) = store.lookup("serverA", 20, start) else {
+                panic!("a GIF icon should be ready at once");
+            };
+            assert_eq!((image.size().width, image.size().height), (2, 2));
+            let pixels = image.to_rgba8().unwrap();
+            assert_eq!(&pixels.as_bytes()[..4], &[255, 0, 0, 255]);
+            let Lookup::Ready(image) = store.lookup("serverA", 21, start) else {
+                panic!("the large GIF icon should be ready");
+            };
+            assert_eq!((image.size().width, image.size().height), (SHOWN_SIDE, SHOWN_SIDE));
+            let pixels = image.to_rgba8().unwrap();
+            assert_eq!(&pixels.as_bytes()[..4], &[255, 0, 0, 255]);
+            assert_eq!(&pixels.as_bytes()[31 * 4..32 * 4], &[0, 255, 0, 255]);
+        }
+        assert!(folder.join("icon_20.gif").is_file() && folder.join("icon_21.gif").is_file());
+        assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 2);
+
+        let mut again = IconStore::new(root.clone());
+        assert!(matches!(again.lookup("serverA", 20, start), Lookup::Ready(_)), "a cached GIF is not asked for again");
+        assert!(matches!(again.lookup("serverA", 21, start), Lookup::Ready(_)));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
