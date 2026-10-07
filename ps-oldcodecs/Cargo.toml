@@ -1,0 +1,6 @@
+[package]
+name = "ps-oldcodecs"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

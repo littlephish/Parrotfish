@@ -63,6 +63,14 @@ def capture(command):
     return done.stdout
 
 
+PORTED = [
+    (
+        "Speex 1.2.1, the decoder, rewritten in Rust for PhishSpeak (ps-oldcodecs)  https://www.speex.org",
+        ROOT / "ps-oldcodecs" / "LICENSE-speex.txt",
+    ),
+]
+
+
 def shipped_packages():
     listed = capture(
         ["cargo", "tree", "--locked", "-p", "ps-app", "-e", "normal", "--target", TRIPLE, "--prefix", "none", "--format", "{p}"]
@@ -102,6 +110,11 @@ def write_notices(path, version):
     packages = shipped_packages()
     by_text = {}
     bare = []
+    for label, licence in PORTED:
+        if not licence.is_file():
+            fail(f"the licence text {licence.name} is missing")
+        body = licence.read_text(encoding="utf-8").replace("\r\n", "\n").strip()
+        by_text.setdefault(body, []).append(label)
     for package in packages:
         label = f"{package['name']} {package['version']} ({package.get('license') or 'see its files'})"
         if package.get("repository"):

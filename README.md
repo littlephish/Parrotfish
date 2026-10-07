@@ -2,7 +2,8 @@
 
 PhishSpeak is an unofficial TeamSpeak 3 client written in Rust with a [Slint](https://slint.dev) GUI.
 It signs in with a regular TeamSpeak identity, shows the channel tree, sends and receives text
-chat, and carries voice in both directions with Opus.
+chat, and carries voice in both directions with Opus. It also plays Speex, which old servers
+still use; CELT, the other old format, is not played.
 
 - A compact window: the channel tree, a chat drawer, and a dock with mute buttons and the
   microphone level. Spacer channels such as `[cspacer]Games` are drawn as dividers.
@@ -108,6 +109,7 @@ explains how to use them.
 | `ps-crypto` | Packet encryption, licence chain and the key exchange |
 | `ps-protocol` | Packet framing, commands, compression, fragmentation |
 | `ps-client` | The connection: handshake, reliability, channels, clients, voice packets |
+| `ps-oldcodecs` | The Speex decoder, for voice from old channels |
 | `ps-voice` | Opus, resampling, jitter buffer, mixing, microphone and speaker devices |
 | `ps-app` | The window |
 
@@ -149,6 +151,13 @@ supplied the protocol knowledge, and in one case test data.
   Double-Talk" (2007), which is how the echo canceller in
   [Speex](https://www.speex.org) (Xiph.Org Foundation, BSD-3-Clause) works. The Speex source was
   the reference for the structure of that part and for its constants.
+
+**Speex**
+
+- `ps-oldcodecs` contains a Rust rewrite of the decoder of [Speex](https://www.speex.org) 1.2.1
+  (Xiph.Org Foundation, Jean-Marc Valin and others, BSD-3-Clause). It follows the reference
+  code step by step and gives the same samples; the codebooks are the reference's own. The
+  licence text is in `ps-oldcodecs/LICENSE-speex.txt` and in the notices shipped with releases.
 
 **Libraries**
 

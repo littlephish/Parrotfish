@@ -2,3 +2,4 @@
 .superpowers/
 /dist
 __pycache__/
+/ps-oldcodecs/tests/full/

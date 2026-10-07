@@ -7,7 +7,7 @@ joins a server, shows the channel tree, chats, and does voice (Opus) both ways.
 
 Working end to end against a real TeamSpeak 3.13.8 server: login, channel tree, channel
 switching (incl. password channels), text chat, microphone capture → Opus → server, and
-server → Opus → speakers, with and without voice encryption. 256 unit tests green.
+server → Opus → speakers, with and without voice encryption. 308 unit tests green.
 
 The window is the compact tree layout in the Twilight reef palette (design:
 `docs/superpowers/specs/2026-10-06-compact-window-design.md`): spacer channels are drawn as
@@ -76,6 +76,8 @@ Added on 2026-10-07:
   pass through it and it is invisible until someone speaks. It can stay above other windows
   while the main window does not, and can be made see-through.
 - A window dragged to a display with another scale keeps its size and its limits.
+- Speex, the voice format of old TeamSpeak channels, is played in all its three kinds.
+  PhishSpeak itself always talks in Opus. CELT, the other old format, is not played.
 - `ts3server://` links: a switch under Settings, Bookmarks makes PhishSpeak the program that
   opens them. A link never connects by itself: it opens the connect dialog filled in, with a
   line saying what else the link carries. Starting PhishSpeak while it is already running
@@ -101,7 +103,8 @@ multi-server tests used two connections to one server), the speaking window over
 look with any renderer but the software one, a window dragged between two displays with
 different scales (both displays of this PC have the same one, so that change was made from
 reading the toolkit's code), and SRV and TSDNS lookups against a domain that publishes such
-records (the tests feed made-up answers). Echo cancelling has been measured on simulated rooms
+records (the tests feed made-up answers), a `ts3server://` link clicked in a browser, and
+Speex made by a TeamSpeak client. Echo cancelling has been measured on simulated rooms
 and on a sound device's own digital loopback, never in a real room with loudspeakers, never
 by ear, and never with a microphone and speakers that are separate USB devices. The fix for
 noise at the end of someone's speech is checked by tests on the decoded sound and by packet
@@ -126,8 +129,9 @@ order against the test server, not by ear and not with an official client talkin
 | `ps-crypto` | EAX-AES128 (8-byte MAC), dummy key, per-packet key/nonce, license chain, Ed25519 shared secret, RSA puzzle | done, 16 tests |
 | `ps-protocol` | Packet headers, command escape/parse/build, QuickLZ + fragmentation, receive windows/generations, Init1 payloads, voice and whisper payloads | done, 34 tests |
 | `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client/group book, voice and whispers in/out, events; `spacer` recognises spacer channels, `filetransfer` fetches icons over the server's file port, `resolve` finds a server through SRV, TSDNS or its plain name | done, 32 tests + live tests |
-| `ps-voice` | Opus codec, resampler, jitter buffer + mixer (talkers keyed by connection and client, a volume per talker), VAD/PTT gate, lanes (which key is held decides where a frame goes), echo canceller (`echo.rs`), noise suppression (`denoise.rs`), automatic gain (`agc.rs`), event sounds (`cues.rs`), cpal device I/O (WASAPI) | done, 79 tests + live tests |
-| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` keeping a window's size across displays, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 81 tests + live tests |
+| `ps-oldcodecs` | Speex decoder (8, 16 and 32 kHz) in safe Rust, no dependencies | done, 27 tests + 3 run by hand |
+| `ps-voice` | Opus codec, Speex playback at 48 kHz, resampler, jitter buffer + mixer (talkers keyed by connection and client, a volume per talker), VAD/PTT gate, lanes (which key is held decides where a frame goes), echo canceller (`echo.rs`), noise suppression (`denoise.rs`), automatic gain (`agc.rs`), event sounds (`cues.rs`), cpal device I/O (WASAPI) | done, 85 tests + live tests |
+| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` keeping a window's size across displays, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 100 tests + live tests |
 | `ps-serverquery` | Text protocol over TCP 10011 | not started |
 
 Threads: UI thread (Slint, 33 ms timer drains client events) · `ps-client` actor + UDP reader ·
@@ -260,6 +264,37 @@ ConnectOk", "level 213"). What is actually on the wire:
 - After login the server sends `notifyservergrouplist` and `notifychannelgrouplist` unasked:
   group ids, names, `type` (1 is a regular group) and `sortid`.
 
+### Old codecs
+
+- A voice packet names its codec: 0, 1 and 2 are Speex at 8, 16 and 32 kHz, 3 is CELT, 4 and 5
+  are Opus. A channel has one codec, and a TeamSpeak client talks in its channel's codec.
+- Where the old ones still exist (the server's own changelog): from server 3.7.0 a channel can
+  no longer be set to Speex or CELT, and server 3.11.0 (15 January 2020) turns every channel
+  into Opus. So Speex and CELT are only met on servers older than that. The free licence built
+  into 3.6.1 and 3.10.2 has run out and they no longer start, so no server with such channels
+  could be run here.
+- The current server does not look at the codec number: packets marked 0, 1, 2 and 3 sent into
+  an Opus channel reached a listener unchanged (100 of 100 each).
+- Speex as TeamSpeak sends it is one frame every 20 ms, written as the Speex library writes a
+  frame, at a fixed size per quality, the channel's quality number being Speex's own. This is
+  not from a capture; it follows from the bandwidth figures the TeamSpeak client shows, which
+  are 50 packets a second of the frame plus 45 bytes: 2.49 and 5.22 KiB/s (narrowband, quality
+  0 and 10), 2.69 and 7.37 (wideband), 2.73 and 7.57 (ultra-wideband). The reference encoder
+  makes frames of 6 and 62, 10 and 106, 11 and 110 bytes at those settings, which gives exactly
+  those six figures.
+- With a channel's "latency factor" above 1 a packet carries several frames. How TeamSpeak packs
+  them is not known. The decoder takes both ways (one after another bit to bit, as the Speex
+  library does it, or each padded to whole bytes) and only frames of the same kind as the first.
+- CELT is not played, by decision (2026-10-07). TeamSpeak replaced its CELT on 10 May 2011
+  (client 3.0.0-rc1: "Updated CELT codec. Due to codec bitstream incompatibility you can only
+  communicate with new clients"), which points to CELT 0.11. Measured with the four 0.11
+  releases built from source: 0.11.1 and 0.11.2 produce identical bytes; 0.11.3 is the same
+  with one byte put in front of every frame (0x10 for a 10 ms frame, 0x18 for 20 ms); 0.11.0
+  differs from the others (22 dB apart); and decoding with the wrong one gives noise thousands
+  of times louder than full scale. Which release TeamSpeak ships, and whether it uses 10 or
+  20 ms frames, is not published; the client's bandwidth figures (6.10 and 13.92 KiB/s) fit 50
+  packets a second of 80 and 240 bytes either way.
+
 ## Verification done
 
 - Unit tests with third-party vectors: tsclientlib's license derivation, shared IV, key/nonce,
@@ -386,14 +421,32 @@ ConnectOk", "level 213"). What is actually on the wire:
   plain second start left again with one program still running; switching off removed the
   entry, and so did `--forget-links`, which also set the switch off in the settings file.
   Not done: clicking a real link in a browser, and the real `ts3server` entry.
+- Speex. The decoder's output is the same, sample for sample, as that of the reference library
+  (libspeex 1.2.1 built without SSE) on 60 streams, 6.7 million samples: every quality from 0 to
+  10 in all three kinds, changing bit rate, silence, several frames in a packet, and lost
+  packets filled in. 1.2 million broken packets (random bytes, real packets with bits flipped,
+  cut short, glued together or with bytes pushed in) caused no fault and no sample outside the
+  range. Decoding costs 0.04, 0.07 and 0.10 % of one processor for the three kinds. Live: real
+  Speex streams sent from one PhishSpeak through the TeamSpeak 3.13.8 server to another arrived
+  complete and in order and decoded to the reference sound (narrowband, wideband,
+  ultra-wideband, and three frames to a packet), and came out of the mixer at 48 kHz at the
+  same level; in the window the talker lit up and no "cannot play" notice appeared, while a
+  packet marked CELT brought up the notice that names CELT.
+  Not done: Speex made by a TeamSpeak client, and whether TeamSpeak clients in a Speex channel
+  play the Opus that PhishSpeak sends there.
 
 Dev tools (examples): `cargo run -p ps-client --example probe -- <host> [--identity file] [--say TEXT]
 [--join CID] [--loss 0.2] [--auto-level] [--log]`, `cargo run -p ps-voice --example voicetest --
 <host> [--music] [--listen] [--burst 70000] [--loss 0.2]`, `cargo run -p ps-voice --example
 devicetest -- [--input NAME] [--tone]`, `cargo run -p ps-voice --example channeltest -- <host>
 [--nick NAME] [--join CID] [--seconds N] [--talk SECONDS] [--whisper client:ID|channel:ID|commanders|everyone]
-[--commander]` (sits in one channel and reports every voice, whisper and end packet it hears,
-and the sound formats; with `--talk` it also sends a tone, as a whisper with `--whisper`),
+[--commander] [--codec N] [--frames FILE] [--frame-ms N] [--save DIR] [--speex]
+[--speex-reference FILE]` (sits in one channel and reports every voice, whisper and end packet
+it hears, their sizes and spacing, and the sound formats; with `--talk` it also sends a tone,
+as a whisper with `--whisper`; `--codec` writes another codec number on what it sends and
+`--frames` sends ready-made packets from a file; `--save` keeps every packet heard, which is
+the way to study a voice format nobody has described; `--speex` decodes the Speex it heard
+and `--speex-reference` compares that with a file of samples),
 `cargo run -p ps-voice --example echotest -- [--output NAME] [--input NAME | --loopback]
 [--seconds N] [--level DB]` (plays a speech-like test sound and reports how loudly the input
 hears it with echo cancelling off and on, when the sound came back and the clock difference;
@@ -414,7 +467,10 @@ for checking talk and whisper keys; `seed_whisper_tree.py --password <query pass
 where the test server's query port is reachable) makes the Booth and Drift channels and lets
 guests be channel commanders; `seed_test_icons.py --password <query password>` puts good and
 deliberately bad icons on the test server (`--count N`, `--upload FILE`, `--assign WHAT=ID`,
-`--clear`); `package_release.py [--tag vX.Y.Z] [--skip-installer]` builds the
+`--clear`); `speex_vectors.py build|signals|streams|pack|full --work DIR` makes the Speex
+reference streams from libspeex 1.2.1 (`build` and `streams` need gcc and make, `signals` and
+`pack` need numpy; `full` puts the whole set where the by-hand test looks for it);
+`package_release.py [--tag vX.Y.Z] [--skip-installer]` builds the
 release program with the C runtime linked in and writes the zip, the installer (needs Inno
 Setup 6) and their checksums to `dist/`.
 
@@ -524,6 +580,20 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   and a frame is encoded into the room the target list leaves in the packet (30 channels and 60
   people at most, 122 bytes left). Every audience gets its end marker when the stream to it
   stops: key released, another key pressed, mute, or a change of viewed server.
+- Speex is decoded by PhishSpeak's own code in `ps-oldcodecs`, a rewrite in Rust of the decoder
+  of libspeex 1.2.1 (floating point). The crate forbids `unsafe`, has no dependencies, and
+  never trusts a packet: a frame that names something that does not exist, or reads past the
+  end, is refused and leaves the decoder as it was; requests and user data inside the stream
+  (which TeamSpeak never sends) are refused too; if the decoder's memory ever holds a value
+  that is not a number it starts over. The enhancer is on, as in the reference. Each talker's
+  Speex is brought to 48 kHz by the resampler the devices already use (which holds back 15
+  samples, 2 ms at 8 kHz), and the first lost packet is filled in by Speex itself. A packet
+  that decodes louder than any voice (RMS above 0.7) is treated as lost.
+- PhishSpeak always talks in Opus, also in a channel set to Speex or CELT: the packet says what
+  it carries, the server passes it on, and every TeamSpeak client since 3.0.10 (2013) has Opus.
+  That those clients play it in such a channel is an assumption.
+- The Speex test streams in `ps-oldcodecs/tests/data` come from the reference library through
+  `tools/speex_vectors.py` and `tools/speexref.c`; the tool reproduced them byte for byte.
 - Whisper keys live in `%APPDATA%\PhishSpeak\whisper.ini`. People are stored by TeamSpeak UID
   and last known name, channels by id and name, groups by id, name and the server's UID. A key
   that names channels, people or a group only works on the server it was made for.
@@ -609,9 +679,10 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
     sounds, noise suppression, automatic gain, mute keys; the first release built by the
     workflow (0.1.0).
 15. ✅ The speaking window; windows keep their size across displays with different scales.
-16. Next: test against the official client and a public server; try echo cancelling, noise
+16. ✅ `ts3server://` links as a setting, one PhishSpeak per profile; Speex from old channels.
+17. Next: test against the official client and a public server; try echo cancelling, noise
     suppression and the event sounds by ear; reading keys through Raw Input (planned);
-    `ts3server://` links; avatars.
+    avatars.
 
 ## References
 

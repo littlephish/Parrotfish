@@ -8,7 +8,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ps_client::{ClientHandle, ConnectOptions, Event, VoiceSink, WhisperGroup, WhisperScope, WhisperTarget};
 use ps_identity::Identity;
-use ps_voice::codec::{Encoder, CODEC_OPUS_VOICE, FRAME_SAMPLES, MAX_PACKET_BYTES, SAMPLE_RATE};
+use ps_oldcodecs::speex;
+use ps_voice::codec::{speex_band, Encoder, CODEC_OPUS_VOICE, FRAME_SAMPLES, MAX_PACKET_BYTES, SAMPLE_RATE};
+use ps_voice::playback::{Playback, BLOCK};
 
 const TONE_HZ: f32 = 440.0;
 const AMPLITUDE: f32 = 0.3;
@@ -49,6 +51,70 @@ fn read_frames(path: &str) -> Vec<Vec<u8>> {
     frames
 }
 
+fn check_speex(nick: &str, packets: &[(u16, u8, Vec<u8>)], reference: Option<&str>) {
+    let Some(&(_, codec, _)) = packets.first() else {
+        println!("SPEEX {nick}: no Speex packets were heard");
+        return;
+    };
+    let Some(band) = speex_band(codec) else {
+        return;
+    };
+    let gaps = packets.windows(2).filter(|pair| pair[1].0 != pair[0].0.wrapping_add(1)).count();
+    let mut decoder = speex::Decoder::new(band);
+    let mut sound = Vec::new();
+    let mut refused = 0;
+    for (_, _, data) in packets {
+        if decoder.decode(data, &mut sound).is_err() {
+            refused += 1;
+        }
+    }
+    println!(
+        "SPEEX {nick}: {} packets at {} Hz, {gaps} gaps in their numbering, {refused} refused, {} samples decoded",
+        packets.len(),
+        band.sample_rate(),
+        sound.len()
+    );
+    if let Some(path) = reference {
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                let want: Vec<f32> =
+                    bytes.chunks_exact(2).map(|pair| f32::from(i16::from_le_bytes([pair[0], pair[1]]))).collect();
+                let shared = sound.len().min(want.len());
+                let worst = sound.iter().zip(&want).map(|(got, want)| (got * 32768.0 - want).abs()).fold(0.0f32, f32::max);
+                println!(
+                    "SPEEX {nick}: against the reference decoder's sound: {shared} of {} samples compared, largest difference {worst:.2} of 32768",
+                    want.len()
+                );
+            }
+            Err(e) => println!("SPEEX {nick}: cannot read {path}: {e}"),
+        }
+    }
+    let mut playback = Playback::new();
+    let mut block = vec![0f32; BLOCK];
+    let mut played = Vec::new();
+    let mut feed = packets.iter();
+    for round in 0..packets.len() + 40 {
+        if let Some((number, codec, data)) = feed.next() {
+            playback.push(1, 1, *number, *codec, data);
+            if round + 1 == packets.len() {
+                playback.push(1, 1, number.wrapping_add(1), *codec, &[]);
+            }
+        }
+        if playback.mix(&mut block) > 0 {
+            played.extend_from_slice(&block);
+        }
+    }
+    let power = played.iter().map(|s| f64::from(*s) * f64::from(*s)).sum::<f64>() / played.len().max(1) as f64;
+    let source = sound.iter().map(|s| f64::from(*s) * f64::from(*s)).sum::<f64>() / sound.len().max(1) as f64;
+    println!(
+        "SPEEX {nick}: through the mixer: {:.2} s at 48 kHz, level {:.1} dBFS (the decoded sound itself: {:.2} s, {:.1} dBFS)",
+        played.len() as f64 / 2.0 / 48_000.0,
+        10.0 * (power + 1e-12).log10(),
+        sound.len() as f64 / f64::from(band.sample_rate()),
+        10.0 * (source + 1e-12).log10()
+    );
+}
+
 fn whisper_target(spec: &str) -> Option<WhisperTarget> {
     let everywhere = |who| WhisperTarget::Group { who, scope: WhisperScope::AllChannels };
     match spec.split_once(':') {
@@ -74,7 +140,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "--help") {
         eprintln!(
-            "usage: channeltest <host> [--port N] [--nick NAME] [--join CHANNEL_ID] [--seconds N]\n                   [--talk SECONDS] [--talk-after SECONDS]\n                   [--whisper client:ID|channel:ID|commanders|everyone] [--commander] [--abrupt-end]\n                   [--codec N] [--frames FILE] [--frame-ms N] [--save DIR]\nListens for voice and whispers and reports who was heard; with --talk it also sends a tone, as a whisper when --whisper is given.\n--codec writes that codec number on what is sent. --frames sends ready-made packets from a file (each one a two-byte length, low byte first, then the bytes), one every --frame-ms.\n--save writes every packet heard to DIR in the same form, one file per talker and codec.\nThe end packet follows one frame after the last sound, as in the app; --abrupt-end sends it right behind the last sound,\nwhich a server may deliver the other way round."
+            "usage: channeltest <host> [--port N] [--nick NAME] [--join CHANNEL_ID] [--seconds N]\n                   [--talk SECONDS] [--talk-after SECONDS]\n                   [--whisper client:ID|channel:ID|commanders|everyone] [--commander] [--abrupt-end]\n                   [--codec N] [--frames FILE] [--frame-ms N] [--save DIR]\n                   [--speex] [--speex-reference FILE]\nListens for voice and whispers and reports who was heard; with --talk it also sends a tone, as a whisper when --whisper is given.\n--codec writes that codec number on what is sent. --frames sends ready-made packets from a file (each one a two-byte length, low byte first, then the bytes), one every --frame-ms.\n--save writes every packet heard to DIR in the same form, one file per talker and codec.\n--speex decodes the Speex packets it heard at the end and reports on them; --speex-reference compares that with a file of 16-bit samples.\nThe end packet follows one frame after the last sound, as in the app; --abrupt-end sends it right behind the last sound,\nwhich a server may deliver the other way round."
         );
         std::process::exit(2);
     }
@@ -102,6 +168,10 @@ fn main() {
         let _ = std::fs::create_dir_all(dir);
     }
     let mut saved: BTreeMap<(u16, u8, bool), File> = BTreeMap::new();
+    let speex_reference = arg_value(&args, "--speex-reference");
+    let speex_wanted = speex_reference.is_some() || args.iter().any(|a| a == "--speex");
+    let speex_heard: Arc<Mutex<Vec<(u16, u8, Vec<u8>)>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink_speex = speex_heard.clone();
 
     let heard: Arc<Mutex<BTreeMap<u16, Heard>>> = Arc::new(Mutex::new(BTreeMap::new()));
     let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -148,6 +218,11 @@ fn main() {
             entry.run += 1;
             entry.last = Some(Instant::now());
             *entry.sizes.entry(packet.data.len()).or_default() += 1;
+            if speex_wanted && speex_band(packet.codec).is_some() {
+                if let Ok(mut kept) = sink_speex.lock() {
+                    kept.push((packet.voice_id, packet.codec, packet.data.to_vec()));
+                }
+            }
             if let Some(dir) = &save {
                 let key = (packet.client_id, packet.codec, packet.whisper);
                 let file = saved.entry(key).or_insert_with(|| {
@@ -308,6 +383,10 @@ fn main() {
         }
     }
 
+    if speex_wanted {
+        let packets = speex_heard.lock().map(|kept| kept.clone()).unwrap_or_default();
+        check_speex(&nick, &packets, speex_reference.as_deref());
+    }
     let totals: BTreeMap<u16, Heard> = heard.lock().map(|map| map.clone()).unwrap_or_default();
     if totals.is_empty() {
         println!("TOTAL {nick}: heard nobody");

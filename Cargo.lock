@@ -4034,6 +4034,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ps-oldcodecs"
+version = "0.2.0"
+
+[[package]]
 name = "ps-protocol"
 version = "0.2.0"
 dependencies = [
@@ -4047,6 +4051,7 @@ dependencies = [
  "cpal",
  "ps-client",
  "ps-identity",
+ "ps-oldcodecs",
  "rtrb",
  "unsafe-libopus",
 ]

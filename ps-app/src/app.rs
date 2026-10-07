@@ -12,6 +12,7 @@ use ps_client::{
     ClientHandle, ConnectOptions, TextTarget, VoiceSink, WhisperTarget, CODEC_OPUS_VOICE, DEFAULT_PORT,
 };
 use ps_identity::Identity;
+use ps_voice::codec::CODEC_CELT_MONO;
 use ps_voice::{AudioEngine, Cue, DeviceInfo, FrameSink, TxMode};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel, Weak};
 
@@ -2483,9 +2484,12 @@ impl App {
         if let Some(codec) = self.engine.take_unsupported_codec() {
             if !self.warned_codecs.contains(&codec) {
                 self.warned_codecs.push(codec);
-                w.main.set_notice(
-                    "Someone is talking with an old voice format (Speex or CELT) that PhishSpeak cannot play.".into(),
-                );
+                let notice = if codec == CODEC_CELT_MONO {
+                    "Someone is talking with the old CELT voice format, which PhishSpeak cannot play."
+                } else {
+                    "Someone is talking with a voice format PhishSpeak does not know."
+                };
+                w.main.set_notice(notice.into());
             }
         }
 

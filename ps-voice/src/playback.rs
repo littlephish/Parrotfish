@@ -1,6 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
-use crate::codec::{is_end_marker, is_supported_codec, Decoder, FRAME_SAMPLES};
+use ps_oldcodecs::speex::{self, Band};
+
+use crate::codec::{
+    is_end_marker, is_supported_codec, speex_band, Decoder, CODEC_OPUS_VOICE, FRAME_SAMPLES, SAMPLE_RATE,
+};
+use crate::resample::Resampler;
 
 pub const MIX_CHANNELS: usize = 2;
 pub const BLOCK: usize = FRAME_SAMPLES * MIX_CHANNELS;
@@ -60,9 +65,68 @@ pub struct TalkerStats {
     pub underruns: u64,
 }
 
+struct SpeexLine {
+    band: Band,
+    decoder: speex::Decoder,
+    up: Resampler,
+    narrow: Vec<f32>,
+    wide: Vec<f32>,
+    frames: usize,
+}
+
+impl SpeexLine {
+    fn new(band: Band) -> Self {
+        Self {
+            band,
+            decoder: speex::Decoder::new(band),
+            up: Resampler::new(band.sample_rate(), SAMPLE_RATE, 1),
+            narrow: Vec::new(),
+            wide: Vec::new(),
+            frames: 1,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.decoder.reset();
+        self.up.reset();
+        self.frames = 1;
+    }
+
+    fn widen(&mut self) -> usize {
+        self.wide.clear();
+        self.up.process(&self.narrow, &mut self.wide);
+        self.wide.len()
+    }
+
+    fn decode(&mut self, data: &[u8]) -> Option<usize> {
+        self.narrow.clear();
+        self.frames = self.decoder.decode(data, &mut self.narrow).ok()?;
+        Some(self.widen())
+    }
+
+    fn conceal(&mut self) -> usize {
+        self.narrow.clear();
+        for _ in 0..self.frames {
+            self.decoder.conceal(&mut self.narrow);
+        }
+        self.widen()
+    }
+}
+
+fn spread(mono: &[f32], out: &mut Vec<f32>) {
+    out.clear();
+    for sample in mono {
+        for _ in 0..MIX_CHANNELS {
+            out.push(*sample);
+        }
+    }
+}
+
 pub struct Talker {
     decoder: Decoder,
-    queue: BTreeMap<u32, Vec<u8>>,
+    speex: Option<SpeexLine>,
+    speex_playing: bool,
+    queue: BTreeMap<u32, (u8, Vec<u8>)>,
     markers: BTreeSet<u32>,
     state: StreamState,
     next_seq: u32,
@@ -96,6 +160,8 @@ impl Talker {
     pub fn new() -> Result<Self, String> {
         Ok(Self {
             decoder: Decoder::new(MIX_CHANNELS)?,
+            speex: None,
+            speex_playing: false,
             queue: BTreeMap::new(),
             markers: BTreeSet::new(),
             state: StreamState::Idle,
@@ -143,8 +209,12 @@ impl Talker {
         self.queue.len()
     }
 
-    fn begin(&mut self, seq: u16, data: &[u8]) {
+    fn begin(&mut self, seq: u16, codec: u8, data: &[u8]) {
         self.decoder.reset();
+        if let Some(line) = &mut self.speex {
+            line.reset();
+        }
+        self.speex_playing = false;
         self.queue.clear();
         self.markers.clear();
         self.pcm.clear();
@@ -163,11 +233,15 @@ impl Talker {
         self.faded = false;
         self.draining = false;
         self.last_ext = 0x0010_0000 + seq as u32;
-        self.queue.insert(self.last_ext, data.to_vec());
+        self.queue.insert(self.last_ext, (codec, data.to_vec()));
         self.state = StreamState::Buffering;
     }
 
     pub fn push(&mut self, seq: u16, data: &[u8]) {
+        self.push_coded(seq, CODEC_OPUS_VOICE, data);
+    }
+
+    pub fn push_coded(&mut self, seq: u16, codec: u8, data: &[u8]) {
         let quiet_for = self.idle_pulls;
         self.idle_pulls = 0;
         let diff = i32::from(seq.wrapping_sub(self.last_ext as u16) as i16);
@@ -190,12 +264,12 @@ impl Talker {
             if stale {
                 self.stats.late += 1;
             } else {
-                self.begin(seq, data);
+                self.begin(seq, codec, data);
             }
             return;
         }
         if diff.abs() > RESYNC_DISTANCE {
-            self.begin(seq, data);
+            self.begin(seq, codec, data);
             return;
         }
         let ext = (self.last_ext as i64 + diff as i64) as u32;
@@ -209,7 +283,7 @@ impl Talker {
             self.stats.late += 1;
             return;
         }
-        self.queue.entry(ext).or_insert_with(|| data.to_vec());
+        self.queue.entry(ext).or_insert_with(|| (codec, data.to_vec()));
         while self.queue.len() > MAX_QUEUE {
             if let Some((oldest, _)) = self.queue.pop_first() {
                 self.stats.skipped += 1;
@@ -391,6 +465,18 @@ impl Talker {
     }
 
     fn conceal(&mut self) {
+        if self.speex_playing {
+            let decoded = match self.speex.as_mut() {
+                Some(line) => {
+                    let decoded = line.conceal();
+                    spread(&line.wide, &mut self.scratch);
+                    decoded
+                }
+                None => 0,
+            };
+            self.finish_concealment(decoded);
+            return;
+        }
         if !self.celt_only {
             self.synthesize_concealment();
             self.stats.concealed += 1;
@@ -402,26 +488,47 @@ impl Talker {
         self.finish_concealment(n);
     }
 
+    fn decode_opus(&mut self, data: &[u8]) -> Option<usize> {
+        self.speex_playing = false;
+        let samples = Decoder::packet_samples(data).unwrap_or(FRAME_SAMPLES);
+        self.celt_only = data[0] >> 3 >= 16;
+        self.scratch.clear();
+        self.scratch.resize(samples * MIX_CHANNELS, 0.0);
+        self.decoder.decode(data, false, &mut self.scratch).ok().filter(|decoded| *decoded > 0)
+    }
+
+    fn decode_speex(&mut self, band: Band, data: &[u8]) -> Option<usize> {
+        self.speex_playing = true;
+        self.celt_only = false;
+        if self.speex.as_ref().map(|line| line.band) != Some(band) {
+            self.speex = Some(SpeexLine::new(band));
+        }
+        let line = self.speex.as_mut()?;
+        let decoded = line.decode(data).filter(|decoded| *decoded > 0)?;
+        spread(&line.wide, &mut self.scratch);
+        (frame_rms(&self.scratch) <= MAX_PLAUSIBLE_RMS).then_some(decoded)
+    }
+
     fn decode_next(&mut self) -> bool {
         while self.markers.first().is_some_and(|marker| *marker <= self.next_seq) {
             if self.markers.pop_first() == Some(self.next_seq) {
                 self.next_seq += 1;
             }
         }
-        if let Some(data) = self.queue.remove(&self.next_seq) {
-            let samples = Decoder::packet_samples(&data).unwrap_or(FRAME_SAMPLES);
-            self.celt_only = data[0] >> 3 >= 16;
-            self.scratch.clear();
-            self.scratch.resize(samples * MIX_CHANNELS, 0.0);
+        if let Some((codec, data)) = self.queue.remove(&self.next_seq) {
             self.draining = false;
-            match self.decoder.decode(&data, false, &mut self.scratch) {
-                Ok(n) if n > 0 => {
+            let decoded = match speex_band(codec) {
+                Some(band) => self.decode_speex(band, &data),
+                None => self.decode_opus(&data),
+            };
+            match decoded {
+                Some(n) => {
                     self.frame_samples = n;
                     let last = self.ended && self.queue.is_empty();
                     self.accept_good_frame(n, last);
                     self.stats.decoded += 1;
                 }
-                _ => self.conceal(),
+                None => self.conceal(),
             }
             self.next_seq += 1;
             self.stretched = 0;
@@ -515,7 +622,7 @@ impl Playback {
             }
         }
         if let Some(talker) = self.talkers.get_mut(&key) {
-            talker.push(voice_id, data);
+            talker.push_coded(voice_id, codec, data);
         }
     }
 
@@ -581,7 +688,10 @@ impl Playback {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec::{Encoder, CODEC_OPUS_MUSIC, CODEC_OPUS_VOICE, MAX_PACKET_BYTES, SAMPLE_RATE};
+    use crate::codec::{
+        Encoder, CODEC_OPUS_MUSIC, CODEC_OPUS_VOICE, CODEC_SPEEX_NARROW, CODEC_SPEEX_ULTRA_WIDE, CODEC_SPEEX_WIDE,
+        MAX_PACKET_BYTES, SAMPLE_RATE,
+    };
 
     fn tone_packets(count: usize, freq: f32, codec: u8, quality: u8) -> Vec<Vec<u8>> {
         let mut enc = Encoder::new(codec, quality).unwrap();
@@ -1057,6 +1167,185 @@ mod tests {
         assert!(t.stats.skipped >= 40);
     }
 
+    fn speex_stream(packets: &[u8], reference: &[u8]) -> (Vec<Vec<u8>>, Vec<f32>) {
+        let mut out = Vec::new();
+        let mut at = 0;
+        while at + 2 <= packets.len() {
+            let length = usize::from(packets[at]) | usize::from(packets[at + 1]) << 8;
+            at += 2;
+            out.push(packets[at..at + length].to_vec());
+            at += length;
+        }
+        let sound = reference.chunks_exact(2).map(|pair| f32::from(i16::from_le_bytes([pair[0], pair[1]])) / 32768.0).collect();
+        (out, sound)
+    }
+
+    fn wide_speex() -> (Vec<Vec<u8>>, Vec<f32>) {
+        speex_stream(
+            include_bytes!("../../ps-oldcodecs/tests/data/speex/wb_q6.pkt"),
+            include_bytes!("../../ps-oldcodecs/tests/data/speex/wb_q6.s16"),
+        )
+    }
+
+    fn play_speex(codec: u8, data: &[Vec<u8>], skip: Option<usize>) -> (Vec<f32>, Talker) {
+        let mut t = Talker::new().unwrap();
+        for (i, p) in data.iter().enumerate() {
+            if Some(i) != skip {
+                t.push_coded(i as u16, codec, p);
+            }
+        }
+        t.push_coded(data.len() as u16, codec, &[]);
+        let mut all = Vec::new();
+        let mut block = vec![0f32; BLOCK];
+        while t.pull(&mut block) {
+            all.extend_from_slice(&block);
+            assert!(all.len() < BLOCK * 400, "the stream never ends");
+        }
+        (all, t)
+    }
+
+    fn loudness_by_block(samples: &[f32], block: usize) -> Vec<f32> {
+        samples.chunks_exact(block).map(rms).collect()
+    }
+
+    fn alike(a: &[f32], b: &[f32]) -> f32 {
+        let n = a.len().min(b.len());
+        let (a, b) = (&a[..n], &b[..n]);
+        let mean = |x: &[f32]| x.iter().sum::<f32>() / n as f32;
+        let (ma, mb) = (mean(a), mean(b));
+        let top: f32 = a.iter().zip(b).map(|(x, y)| (x - ma) * (y - mb)).sum();
+        let spread = |x: &[f32], m: f32| x.iter().map(|v| (v - m) * (v - m)).sum::<f32>().sqrt();
+        top / (spread(a, ma) * spread(b, mb)).max(1e-9)
+    }
+
+    #[test]
+    fn speex_is_played_at_the_mixers_rate() {
+        let (data, reference) = wide_speex();
+        let (played, t) = play_speex(CODEC_SPEEX_WIDE, &data, None);
+        assert_eq!(t.stats.decoded, data.len() as u64);
+        assert_eq!(t.stats.concealed, 0);
+        let frames = played.len() / MIX_CHANNELS;
+        let wanted = data.len() * FRAME_SAMPLES;
+        assert!(frames + FRAME_SAMPLES >= wanted && frames <= wanted + 2 * FRAME_SAMPLES, "{frames} frames for {wanted}");
+        assert!(played.chunks_exact(MIX_CHANNELS).all(|pair| pair[0] == pair[1]), "one voice, the same on both sides");
+        assert!(played.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
+        let left: Vec<f32> = played.iter().step_by(MIX_CHANNELS).copied().collect();
+        let level = rms(&left[FRAME_SAMPLES..left.len() - 2 * FRAME_SAMPLES]);
+        let source = rms(&reference[320..reference.len() - 640]);
+        assert!((level / source - 1.0).abs() < 0.12, "level {level} against {source}");
+        let ours = loudness_by_block(&left, FRAME_SAMPLES);
+        let theirs = loudness_by_block(&reference, 320);
+        let shape = alike(&ours[1..ours.len() - 2], &theirs[1..theirs.len() - 2]);
+        assert!(shape > 0.97, "the loudness over time only matches the reference by {shape}");
+    }
+
+    #[test]
+    fn narrow_and_ultra_wide_speex_reach_the_mixer_too() {
+        for (codec, block, (data, reference)) in [
+            (
+                CODEC_SPEEX_NARROW,
+                160,
+                speex_stream(
+                    include_bytes!("../../ps-oldcodecs/tests/data/speex/nb_q6.pkt"),
+                    include_bytes!("../../ps-oldcodecs/tests/data/speex/nb_q6.s16"),
+                ),
+            ),
+            (
+                CODEC_SPEEX_ULTRA_WIDE,
+                640,
+                speex_stream(
+                    include_bytes!("../../ps-oldcodecs/tests/data/speex/uwb_q5.pkt"),
+                    include_bytes!("../../ps-oldcodecs/tests/data/speex/uwb_q5.s16"),
+                ),
+            ),
+        ] {
+            let (played, t) = play_speex(codec, &data, None);
+            assert_eq!(t.stats.decoded, data.len() as u64, "codec {codec}");
+            let left: Vec<f32> = played.iter().step_by(MIX_CHANNELS).copied().collect();
+            let wanted = data.len() * FRAME_SAMPLES;
+            assert!(left.len() + FRAME_SAMPLES >= wanted && left.len() <= wanted + 2 * FRAME_SAMPLES, "codec {codec}");
+            let ours = loudness_by_block(&left, FRAME_SAMPLES);
+            let theirs = loudness_by_block(&reference, block);
+            let shape = alike(&ours[1..ours.len() - 2], &theirs[1..theirs.len() - 2]);
+            assert!(shape > 0.95, "codec {codec}: the loudness over time only matches the reference by {shape}");
+        }
+    }
+
+    #[test]
+    fn several_speex_frames_in_one_packet_play_as_that_much_sound() {
+        let (data, _) = speex_stream(
+            include_bytes!("../../ps-oldcodecs/tests/data/speex/nb_q6_x3.pkt"),
+            include_bytes!("../../ps-oldcodecs/tests/data/speex/nb_q6_x3.s16"),
+        );
+        let (played, t) = play_speex(CODEC_SPEEX_NARROW, &data, None);
+        assert_eq!(t.stats.decoded, data.len() as u64);
+        let frames = played.len() / MIX_CHANNELS;
+        let wanted = data.len() * 3 * FRAME_SAMPLES;
+        assert!(frames + FRAME_SAMPLES >= wanted && frames <= wanted + 2 * FRAME_SAMPLES, "{frames} frames for {wanted}");
+    }
+
+    #[test]
+    fn a_lost_speex_packet_is_filled_in_without_a_step() {
+        let (data, _) = wide_speex();
+        let (whole, _) = play_speex(CODEC_SPEEX_WIDE, &data, None);
+        let (played, t) = play_speex(CODEC_SPEEX_WIDE, &data, Some(12));
+        assert_eq!(t.stats.lost, 1);
+        assert_eq!(t.stats.concealed, 1);
+        assert_eq!(t.stats.decoded, data.len() as u64 - 1);
+        assert_eq!(played.len(), whole.len(), "the gap is filled, not closed up");
+        assert!(largest_step(&played) <= largest_step(&whole) * 1.5 + 0.02, "{} against {}", largest_step(&played), largest_step(&whole));
+        assert!(played.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
+    }
+
+    #[test]
+    fn a_talker_can_change_between_opus_and_speex() {
+        let opus = packets(30, 440.0);
+        let (speex, _) = wide_speex();
+        let mut t = Talker::new().unwrap();
+        for i in 0..10 {
+            t.push_coded(i as u16, CODEC_OPUS_VOICE, &opus[i]);
+        }
+        for i in 10..20 {
+            t.push_coded(i as u16, CODEC_SPEEX_WIDE, &speex[i]);
+        }
+        for i in 20..30 {
+            t.push_coded(i as u16, CODEC_OPUS_VOICE, &opus[i]);
+        }
+        t.push_coded(30, CODEC_OPUS_VOICE, &[]);
+        let mut block = vec![0f32; BLOCK];
+        let mut all = Vec::new();
+        while t.pull(&mut block) {
+            all.extend_from_slice(&block);
+            assert!(all.len() < BLOCK * 200);
+        }
+        assert_eq!(t.stats.decoded, 30);
+        assert!(all.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
+        assert!(rms(&all) > 0.01);
+    }
+
+    #[test]
+    fn rubbish_marked_as_speex_is_survived() {
+        let mut seed = 0x9E37_79B9u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        for codec in [CODEC_SPEEX_NARROW, CODEC_SPEEX_WIDE, CODEC_SPEEX_ULTRA_WIDE] {
+            let mut p = Playback::new();
+            let mut out = vec![0f32; BLOCK];
+            for i in 0..400u16 {
+                let length = 2 + (next() % 120) as usize;
+                let packet: Vec<u8> = (0..length).map(|_| (next() >> 13) as u8).collect();
+                p.push(0, 9, i, codec, &packet);
+                p.mix(&mut out);
+                assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.0), "codec {codec}, packet {i}");
+            }
+            assert_eq!(p.take_unsupported_codec(), None);
+        }
+    }
+
     #[test]
     fn mixer_sums_talkers_and_limits() {
         let a = packets(30, 440.0);
@@ -1069,8 +1358,8 @@ mod tests {
             p.push(0, 1, i as u16, CODEC_OPUS_VOICE, &a[i]);
             p.push(0, 2, i as u16, CODEC_OPUS_VOICE, &b[i]);
         }
-        p.push(0, 3, 0, 2, &[1, 2, 3]);
-        assert_eq!(p.take_unsupported_codec(), Some(2));
+        p.push(0, 3, 0, 3, &[1, 2, 3]);
+        assert_eq!(p.take_unsupported_codec(), Some(3));
         assert_eq!(p.take_unsupported_codec(), None);
         p.set_volume(0, 2, 0.0);
         let mut solo = Vec::new();

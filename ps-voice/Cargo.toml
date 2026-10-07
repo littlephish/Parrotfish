@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+ps-oldcodecs = { path = "../ps-oldcodecs" }
 cpal = { workspace = true }
 rtrb = { workspace = true }
 unsafe-libopus = { workspace = true }

@@ -1,3 +1,4 @@
+use ps_oldcodecs::speex::Band;
 use unsafe_libopus as opus;
 use unsafe_libopus::varargs::{VarArg, VarArgs};
 
@@ -6,11 +7,24 @@ pub const FRAME_SAMPLES: usize = 960;
 pub const MAX_FRAME_SAMPLES: usize = 5760;
 pub const MAX_PACKET_BYTES: usize = 480;
 
+pub const CODEC_SPEEX_NARROW: u8 = 0;
+pub const CODEC_SPEEX_WIDE: u8 = 1;
+pub const CODEC_SPEEX_ULTRA_WIDE: u8 = 2;
+pub const CODEC_CELT_MONO: u8 = 3;
 pub const CODEC_OPUS_VOICE: u8 = 4;
 pub const CODEC_OPUS_MUSIC: u8 = 5;
 
+pub fn speex_band(codec: u8) -> Option<Band> {
+    match codec {
+        CODEC_SPEEX_NARROW => Some(Band::Narrow),
+        CODEC_SPEEX_WIDE => Some(Band::Wide),
+        CODEC_SPEEX_ULTRA_WIDE => Some(Band::UltraWide),
+        _ => None,
+    }
+}
+
 pub fn is_supported_codec(codec: u8) -> bool {
-    codec == CODEC_OPUS_VOICE || codec == CODEC_OPUS_MUSIC
+    codec == CODEC_OPUS_VOICE || codec == CODEC_OPUS_MUSIC || speex_band(codec).is_some()
 }
 
 pub fn is_end_marker(data: &[u8]) -> bool {
@@ -233,6 +247,9 @@ mod tests {
         assert_eq!(bitrate_for(CODEC_OPUS_VOICE, 200), 46_000);
         assert_eq!(bitrate_for(CODEC_OPUS_MUSIC, 10), 96_000);
         assert!(is_supported_codec(4) && is_supported_codec(5) && !is_supported_codec(3));
+        assert!(is_supported_codec(0) && is_supported_codec(1) && is_supported_codec(2) && !is_supported_codec(6));
+        assert_eq!(speex_band(CODEC_SPEEX_WIDE).map(|band| band.sample_rate()), Some(16_000));
+        assert_eq!(speex_band(CODEC_CELT_MONO), None);
         assert!(is_end_marker(&[]) && is_end_marker(&[0x78]) && !is_end_marker(&[0x78, 0]));
     }
 
