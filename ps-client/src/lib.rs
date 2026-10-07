@@ -1,6 +1,7 @@
 pub mod book;
 mod conn;
 pub mod filetransfer;
+mod resolve;
 pub mod spacer;
 mod stats;
 
@@ -306,6 +307,26 @@ impl ClientHandle {
                 .arg("client_away", u8::from(away))
                 .arg("client_away_message", message),
         );
+    }
+
+    pub fn poke(&self, client_id: u16, text: &str) {
+        self.send_command(Command::new("clientpoke").arg("clid", client_id).arg("msg", text));
+    }
+
+    pub fn request_details(&self, client_id: u16) {
+        self.send_command(Command::new("clientgetvariables").arg("clid", client_id));
+    }
+
+    pub fn request_talk(&self, wanted: bool, message: &str) {
+        self.send_command(
+            Command::new("clientupdate")
+                .arg("client_talk_request", u8::from(wanted))
+                .arg("client_talk_request_msg", if wanted { message } else { "" }),
+        );
+    }
+
+    pub fn use_privilege_key(&self, key: &str) {
+        self.send_command(Command::new("tokenuse").arg("token", key.trim()));
     }
 
     pub fn set_nickname(&self, nickname: &str) {

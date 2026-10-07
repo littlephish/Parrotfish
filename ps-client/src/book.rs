@@ -100,6 +100,14 @@ pub struct ClientInfo {
     pub server_groups: Vec<u64>,
     pub channel_group: u64,
     pub icons: Vec<u32>,
+    pub database_id: u64,
+    pub country: String,
+    pub version: String,
+    pub platform: String,
+    pub description: String,
+    pub talk_request: bool,
+    pub talk_request_message: String,
+    pub is_priority_speaker: bool,
 }
 
 impl ClientInfo {
@@ -145,6 +153,30 @@ impl ClientInfo {
         }
         if let Some(v) = cmd.get_at(item, "client_icon_id") {
             self.icon = icon_id(v);
+        }
+        if let Some(v) = cmd.num_at(item, "client_database_id") {
+            self.database_id = v;
+        }
+        if let Some(v) = cmd.get_at(item, "client_country") {
+            self.country = v.to_string();
+        }
+        if let Some(v) = cmd.get_at(item, "client_version") {
+            self.version = v.to_string();
+        }
+        if let Some(v) = cmd.get_at(item, "client_platform") {
+            self.platform = v.to_string();
+        }
+        if let Some(v) = cmd.get_at(item, "client_description") {
+            self.description = v.to_string();
+        }
+        if let Some(v) = cmd.get_at(item, "client_talk_request") {
+            self.talk_request = v.trim().parse::<i64>().map(|at| at != 0).unwrap_or(false);
+        }
+        if let Some(v) = cmd.get_at(item, "client_talk_request_msg") {
+            self.talk_request_message = v.to_string();
+        }
+        if let Some(v) = cmd.bool_at(item, "client_is_priority_speaker") {
+            self.is_priority_speaker = v;
         }
         if let Some(v) = cmd.num_at(item, "client_channel_group_id") {
             self.channel_group = v;
@@ -729,6 +761,27 @@ mod tests {
         book.set_groups(&Command::parse("notifyservergrouplist sgid=8 name=Guest type=1 iconid=0 sortid=20"), true);
         book.channel_group_changed(&Command::parse("notifyclientchannelgroupchanged cgid=8 cgi=1 cid=1 clid=4|cgid=5 clid=99"));
         assert!(book.view().client(4).unwrap().icons.is_empty());
+    }
+
+    #[test]
+    fn details_about_a_person_are_kept() {
+        let mut book = book_from("channellist cid=1 cpid=0 channel_order=0 channel_name=Lobby");
+        book.clients_entered(&Command::parse(
+            "notifycliententerview cfid=0 ctid=1 reasonid=0 clid=4 client_nickname=Marlin client_type=0 client_country=DE client_description=reef\\skeeper client_talk_request=0 client_is_priority_speaker=1 client_database_id=17",
+        ));
+        let marlin = &book.clients[&4];
+        assert_eq!((marlin.country.as_str(), marlin.description.as_str()), ("DE", "reef keeper"));
+        assert!(marlin.is_priority_speaker && !marlin.talk_request && marlin.version.is_empty());
+        assert_eq!(marlin.database_id, 17);
+        book.clients_updated(&Command::parse(
+            "notifyclientupdated clid=4 client_version=3.6.2\\s[Build:\\s1695203293] client_platform=Windows client_talk_request=1791300000 client_talk_request_msg=one\\squestion client_is_priority_speaker=0",
+        ));
+        let marlin = &book.clients[&4];
+        assert_eq!((marlin.version.as_str(), marlin.platform.as_str()), ("3.6.2 [Build: 1695203293]", "Windows"));
+        assert!(marlin.talk_request && !marlin.is_priority_speaker);
+        assert_eq!(marlin.talk_request_message, "one question");
+        book.clients_updated(&Command::parse("notifyclientupdated clid=4 client_talk_request=0 client_talk_request_msg"));
+        assert!(!book.clients[&4].talk_request && book.clients[&4].talk_request_message.is_empty());
     }
 
     #[test]

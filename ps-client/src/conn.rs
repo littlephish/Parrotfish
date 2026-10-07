@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::ErrorKind;
-use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
+use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::Arc;
@@ -26,6 +26,7 @@ use sha1::Sha1;
 
 use crate::book::{is_standard_icon, Book};
 use crate::filetransfer::{self, ICON_SIZE_LIMIT};
+use crate::resolve::{resolve, Found};
 use crate::stats::Stats;
 use crate::{
     ConnectOptions, ConnectionState, Event, LinkStats, Shared, TextTarget, VoicePacket, VoiceSink,
@@ -108,42 +109,6 @@ pub(crate) fn spawn(
     tx
 }
 
-fn split_host_port(host: &str, default_port: u16) -> (&str, u16) {
-    if let Some(rest) = host.strip_prefix('[') {
-        return match rest.split_once(']') {
-            Some((name, tail)) => {
-                let port = tail.strip_prefix(':').and_then(|p| p.parse().ok()).unwrap_or(default_port);
-                (name, port)
-            }
-            None => (rest, default_port),
-        };
-    }
-    match host.rsplit_once(':') {
-        Some((name, port)) if !name.contains(':') => match port.parse() {
-            Ok(port) => (name, port),
-            Err(_) => (host, default_port),
-        },
-        _ => (host, default_port),
-    }
-}
-
-fn resolve(host: &str, port: u16) -> Result<SocketAddr, String> {
-    let (name, port) = split_host_port(host.trim(), port);
-    if name.is_empty() {
-        return Err("no server address given".into());
-    }
-    let addrs: Vec<SocketAddr> = (name, port)
-        .to_socket_addrs()
-        .map_err(|e| format!("cannot resolve {name}: {e}"))?
-        .collect();
-    addrs
-        .iter()
-        .find(|a| a.is_ipv4())
-        .or_else(|| addrs.first())
-        .copied()
-        .ok_or_else(|| format!("{name} has no address"))
-}
-
 fn run(
     options: ConnectOptions,
     events: Sender<Event>,
@@ -154,8 +119,9 @@ fn run(
 ) {
     let _ = events.send(Event::State(ConnectionState::Resolving));
     let reason = match open(&options) {
-        Ok((socket, addr)) => {
-            let _ = events.send(Event::Log(format!("Connecting to {addr}")));
+        Ok((socket, found)) => {
+            let _ = events
+                .send(Event::Log(format!("Connecting to {} (found through {})", found.addr, found.how)));
             let reader = socket.try_clone();
             match reader {
                 Ok(reader) => {
@@ -179,18 +145,19 @@ fn run(
     let _ = events.send(Event::Disconnected { reason });
 }
 
-fn open(options: &ConnectOptions) -> Result<(UdpSocket, SocketAddr), String> {
+fn open(options: &ConnectOptions) -> Result<(UdpSocket, Found), String> {
     if options.identity.private_key.is_none() {
         return Err("the selected identity has no private key".into());
     }
-    let addr = resolve(&options.host, options.port)?;
+    let found = resolve(&options.host, options.port)?;
+    let addr = found.addr;
     let bind = if addr.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
     let socket = UdpSocket::bind(bind).map_err(|e| format!("cannot open UDP socket: {e}"))?;
     socket.connect(addr).map_err(|e| format!("cannot reach {addr}: {e}"))?;
     socket
         .set_read_timeout(Some(Duration::from_millis(250)))
         .map_err(|e| format!("socket setup failed: {e}"))?;
-    Ok((socket, addr))
+    Ok((socket, found))
 }
 
 fn read_loop(socket: UdpSocket, tx: Sender<Request>, shared: Arc<Shared>) {
@@ -1278,20 +1245,6 @@ impl Conn {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn resolves_literals_and_embedded_ports() {
-        assert_eq!(resolve("127.0.0.1", 9987).unwrap(), "127.0.0.1:9987".parse().unwrap());
-        assert_eq!(resolve(" 127.0.0.1:1234 ", 9987).unwrap(), "127.0.0.1:1234".parse().unwrap());
-        assert_eq!(resolve("[::1]", 9987).unwrap(), "[::1]:9987".parse().unwrap());
-        assert_eq!(resolve("::1", 9987).unwrap(), "[::1]:9987".parse().unwrap());
-        assert_eq!(resolve("[::1]:4321", 9987).unwrap(), "[::1]:4321".parse().unwrap());
-        assert!(resolve("localhost", 9987).unwrap().ip().is_loopback());
-        assert!(resolve("", 9987).is_err());
-        assert_eq!(split_host_port("ts.example.com:10000", 9987), ("ts.example.com", 10000));
-        assert_eq!(split_host_port("ts.example.com", 9987), ("ts.example.com", 9987));
-        assert_eq!(split_host_port("ts.example.com:abc", 9987), ("ts.example.com:abc", 9987));
-    }
 
     #[test]
     fn a_voice_packet_older_than_the_end_packet_is_recognised() {
