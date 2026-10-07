@@ -33,6 +33,9 @@ chat, and carries voice in both directions with Opus.
 - A connection that drops is picked up again by itself, back in the channel you were in.
 - Privilege keys, asking to talk in moderated channels, and the usual address lookups (SRV
   records and TSDNS), so a plain server name works as it does in the TeamSpeak client.
+- `ts3server://` links, if you switch that on under Settings, Bookmarks. A link opens the
+  connect window filled in and tells you what it carries; it never connects by itself.
+  Switching it off gives the links back to the program that had them.
 - One settings window with tabs: microphone, sound, identities, bookmarks, shortcuts, channels,
   about.
 
@@ -57,7 +60,8 @@ target\release\ps-app.exe --connect host[:port] --nickname YourName --channel "C
 ```
 
 `--connect` can be repeated to open several servers; `--nickname` and `--channel` are optional
-and apply to the `--connect` before them.
+and apply to the `--connect` before them. A `ts3server://` link can be given the same way. If
+PhishSpeak is already running, a second start passes these on to it and leaves.
 
 On first start PhishSpeak creates an identity for you. To use one from the TeamSpeak client,
 export it there and add the file under Settings, Identities; PhishSpeak reads the file where it

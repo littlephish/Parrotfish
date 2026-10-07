@@ -50,5 +50,8 @@ Source: "{#ReadmeFile}"; DestDir: "{app}"; DestName: "README.md"; Flags: ignorev
 Name: "{autoprograms}\PhishSpeak"; Filename: "{app}\PhishSpeak.exe"
 Name: "{autodesktop}\PhishSpeak"; Filename: "{app}\PhishSpeak.exe"; Tasks: desktopicon
 
+[UninstallRun]
+Filename: "{app}\PhishSpeak.exe"; Parameters: "--forget-links"; RunOnceId: "ForgetLinks"; Flags: runhidden
+
 [Run]
 Filename: "{app}\PhishSpeak.exe"; Description: "{cm:LaunchProgram,PhishSpeak}"; Flags: nowait postinstall skipifsilent

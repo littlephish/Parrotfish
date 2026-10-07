@@ -8,6 +8,7 @@ ps-identity = { path = "../ps-identity" }
 ps-client = { path = "../ps-client" }
 ps-voice = { path = "../ps-voice" }
 gif = { workspace = true }
+rand = { workspace = true }
 slint = { workspace = true }
 
 [build-dependencies]

@@ -4,7 +4,9 @@ mod app;
 mod bookmarks;
 mod hotkeys;
 mod icons;
+mod instance;
 mod keywatch;
+mod links;
 mod platform;
 mod scale;
 mod session;
@@ -18,40 +20,56 @@ use std::time::Duration;
 
 use slint::{CloseRequestResponse, ComponentHandle, LogicalSize, Timer, TimerMode};
 
-use app::{with_app, App, StartRequest};
+use app::{with_app, App};
+use instance::Wish;
 use settings::{Settings, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
 
 slint::include_modules!();
 
 const UI_TICK: Duration = Duration::from_millis(33);
 
-fn start_requests() -> Vec<StartRequest> {
-    let mut requests: Vec<StartRequest> = Vec::new();
-    let mut args = std::env::args().skip(1);
+fn start_wishes(arguments: &[String], scheme: &str) -> Vec<Wish> {
+    let mut wishes: Vec<Wish> = Vec::new();
+    let mut args = arguments.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--connect" => {
                 if let Some(target) = args.next() {
-                    requests.push(StartRequest { target, ..StartRequest::default() });
+                    wishes.push(Wish::Connect { target: target.clone(), nickname: String::new(), channel: String::new() });
                 }
             }
             "--nickname" => {
-                if let (Some(nickname), Some(last)) = (args.next(), requests.last_mut()) {
-                    last.nickname = nickname;
+                if let (Some(name), Some(Wish::Connect { nickname, .. })) = (args.next(), wishes.last_mut()) {
+                    *nickname = name.clone();
                 }
             }
             "--channel" => {
-                if let (Some(channel), Some(last)) = (args.next(), requests.last_mut()) {
-                    last.channel = channel;
+                if let (Some(name), Some(Wish::Connect { channel, .. })) = (args.next(), wishes.last_mut()) {
+                    *channel = name.clone();
                 }
             }
+            link if links::is_link(link, scheme) => wishes.push(Wish::Link(link.to_string())),
             _ => {}
         }
     }
-    requests
+    wishes
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    let scheme = links::scheme();
+    if arguments.iter().any(|arg| arg == "--forget-links") {
+        app::forget_links(&scheme);
+        return Ok(());
+    }
+    let wishes = start_wishes(&arguments, &scheme);
+    let folder = settings::config_dir();
+    let to_hand_over = if wishes.is_empty() { vec![Wish::Show] } else { wishes.clone() };
+    if instance::hand_over(&folder, &to_hand_over) {
+        return Ok(());
+    }
+    let listener = instance::listen(&folder);
+
     let ui = PhishSpeakApp::new()?;
     let settings_window = SettingsWindow::new()?;
     let speakers_window = SpeakersWindow::new()?;
@@ -59,8 +77,10 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.window().set_size(LogicalSize::new(settings.window_width, settings.window_height));
 
     let app = Rc::new(RefCell::new(App::new(&ui, &settings_window, &speakers_window, settings)));
-    let requests = start_requests();
-    with_app(&app, |state, w| state.start(w, &requests));
+    if let (Some(listener), Ok(mut state)) = (listener, app.try_borrow_mut()) {
+        state.attach_instance(listener);
+    }
+    with_app(&app, |state, w| state.start(w, &wishes));
 
     let a = app.clone();
     ui.on_view_server(move |id| with_app(&a, |s, w| s.view_server(w, id.clamp(0, 0xffff) as u16)));
@@ -113,6 +133,8 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     let a = app.clone();
     settings_window.on_speakers_changed(move || with_app(&a, |s, w| s.speakers_changed(w)));
+    let a = app.clone();
+    settings_window.on_links_changed(move || with_app(&a, |s, w| s.links_changed(w)));
     let a = app.clone();
     ui.on_person_voice_changed(move || with_app(&a, |s, w| s.person_voice_changed(w)));
     let a = app.clone();

@@ -187,6 +187,7 @@ export component PhishSpeakApp inherits Window {
     in-out property <int> dlg-identity;
     in-out property <bool> dlg-save: true;
     in property <string> dlg-error;
+    in property <string> dlg-note;
     in property <int> dlg-error-field;
     in property <string> prompt-name;
     in-out property <string> prompt-password;
@@ -925,6 +926,13 @@ export component PhishSpeakApp inherits Window {
                         color: Theme.foam;
                         font-size: 16px;
                         font-weight: 600;
+                    }
+
+                    if root.dlg-note != "": Text {
+                        text: root.dlg-note;
+                        color: Theme.drift-bright;
+                        font-size: Theme.small;
+                        wrap: word-wrap;
                     }
 
                     FieldLabel {

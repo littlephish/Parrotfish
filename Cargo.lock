@@ -3990,6 +3990,7 @@ dependencies = [
  "ps-client",
  "ps-identity",
  "ps-voice",
+ "rand",
  "slint",
  "slint-build",
 ]

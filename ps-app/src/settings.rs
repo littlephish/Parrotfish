@@ -3,6 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::hotkeys::Chord;
+use crate::links::Claim;
 use crate::speakers;
 
 const LEGACY_TALK_KEYS: [u16; 17] =
@@ -62,6 +63,7 @@ pub struct Settings {
     pub reply_key: Chord,
     pub mute_mic_key: Chord,
     pub mute_sound_key: Chord,
+    pub links: Claim,
     pub allow_whispers: bool,
     pub fold_mode: i32,
     pub speakers_shown: bool,
@@ -101,6 +103,7 @@ impl Default for Settings {
             reply_key: Chord::default(),
             mute_mic_key: Chord::default(),
             mute_sound_key: Chord::default(),
+            links: Claim::default(),
             allow_whispers: true,
             fold_mode: 1,
             speakers_shown: false,
@@ -223,6 +226,9 @@ impl Settings {
                 "reply_key" => s.reply_key = Chord::parse(value),
                 "mute_mic_key" => s.mute_mic_key = Chord::parse(value),
                 "mute_sound_key" => s.mute_sound_key = Chord::parse(value),
+                "links" => s.links.on = value == "1",
+                "links_command" => s.links.command = value.to_string(),
+                "links_previous" => s.links.previous = value.to_string(),
                 "allow_whispers" => s.allow_whispers = value != "0",
                 "fold_mode" => s.fold_mode = value.parse().unwrap_or(1).clamp(0, 2),
                 "speakers_shown" => s.speakers_shown = value == "1",
@@ -293,6 +299,13 @@ impl Settings {
         put("reply_key", self.reply_key.to_text());
         put("mute_mic_key", self.mute_mic_key.to_text());
         put("mute_sound_key", self.mute_sound_key.to_text());
+        put("links", u8::from(self.links.on).to_string());
+        if !self.links.command.is_empty() {
+            put("links_command", self.links.command.clone());
+        }
+        if !self.links.previous.is_empty() {
+            put("links_previous", self.links.previous.clone());
+        }
         put("allow_whispers", u8::from(self.allow_whispers).to_string());
         put("fold_mode", self.fold_mode.to_string());
         put("speakers_shown", u8::from(self.speakers_shown).to_string());
@@ -338,6 +351,22 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn who_opens_links_is_remembered() {
+        assert_eq!(Settings::default().links, Claim::default());
+        let mut s = Settings::default();
+        s.links = Claim {
+            on: true,
+            command: "\"D:\\Apps\\PhishSpeak.exe\" \"%1\"".to_string(),
+            previous: "\"D:\\Other\\voice.exe\" --open=\"%1\"".to_string(),
+        };
+        let text = s.serialize();
+        assert!(text.contains("links=1\n"));
+        assert_eq!(Settings::parse(&text), s);
+        let plain = Settings::default().serialize();
+        assert!(plain.contains("links=0\n") && !plain.contains("links_command") && !plain.contains("links_previous"));
+    }
 
     #[test]
     fn the_speaking_window_is_remembered() {

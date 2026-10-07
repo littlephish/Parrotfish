@@ -490,6 +490,7 @@ pub struct ConnectRequest {
     pub channel: String,
     pub channel_id: u64,
     pub channel_password: String,
+    pub token: String,
     pub save_bookmark: bool,
     pub quiet: bool,
 }

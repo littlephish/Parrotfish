@@ -76,14 +76,18 @@ Added on 2026-10-07:
   pass through it and it is invisible until someone speaks. It can stay above other windows
   while the main window does not, and can be made see-through.
 - A window dragged to a display with another scale keeps its size and its limits.
+- `ts3server://` links: a switch under Settings, Bookmarks makes PhishSpeak the program that
+  opens them. A link never connects by itself: it opens the connect dialog filled in, with a
+  line saying what else the link carries. Starting PhishSpeak while it is already running
+  hands the link (or a `--connect`) to the running one.
 - Version 0.1.0 was built and published by the release workflow.
 
 Planned, not built: reading keys through Windows' Raw Input as a switch in settings
 (`docs/superpowers/plans/2026-10-07-raw-input-keys.md`).
 
 Not done yet: ServerQuery browser (v1.1), tabs for several private chats (one is shown at a
-time), permissions UI, channel create/edit, file browser and avatars, `ts3server://` links,
-legacy Speex/CELT codecs (reported in the log, not decoded), pre-3.1 servers (`initivexpand`),
+time), permissions UI, channel create/edit, file browser and avatars,
+the old CELT codec (see below), pre-3.1 servers (`initivexpand`),
 hotkeys other than talk, whisper and mute keys, game controller buttons, and an overlay inside
 games that run in exclusive full screen (the speaking window is an ordinary window on top).
 
@@ -372,6 +376,16 @@ ConnectOk", "level 213"). What is actually on the wire:
   and size survive a restart; closing the main window ends the program with the speaking
   window open; and the window did not become the active window when it was shown from the menu,
   clicked, dragged or locked. Moving and sizing were done with mouse messages sent by program.
+- Links, with a stand-in scheme so that the PC's own `ts3server` entry was never touched
+  (`PHISHSPEAK_LINK_SCHEME=ts3server-test`): the switch wrote the per-user entry and Windows
+  named PhishSpeak as the program it would run for such a link; a second start with a link
+  handed it over and left, and the first one showed the dialog with the address, the nickname
+  and the line about what the link carried; after Connect the client was in the channel the
+  link named, the server had put it in the group of the privilege key the link carried, and
+  the bookmark the link asked for was saved with that channel and without any password; a
+  plain second start left again with one program still running; switching off removed the
+  entry, and so did `--forget-links`, which also set the switch off in the settings file.
+  Not done: clicking a real link in a browser, and the real `ts3server` entry.
 
 Dev tools (examples): `cargo run -p ps-client --example probe -- <host> [--identity file] [--say TEXT]
 [--join CID] [--loss 0.2] [--auto-level] [--log]`, `cargo run -p ps-voice --example voicetest --
@@ -387,6 +401,8 @@ it is audible unless the output is a virtual device),
 `cargo run -p ps-client --example whispertest -- <host> --booth CID --drift CID` (re-runs the
 who-hears-what table and fails if a server behaves differently).
 `PHISHSPEAK_TRACE=1` makes the GUI show every command in the chat drawer.
+`PHISHSPEAK_LINK_SCHEME=<name>` makes the links switch and the link reader use another scheme
+than `ts3server`, so that links can be tried without touching the PC's real entry.
 `probe` also takes `--icon ID` (repeatable), `--all-icons`, `--save DIR`, `--ft-port N`,
 `--voice` (how each talker's stream ends: packet sizes and timing, no sound), `--token KEY`
 (use a privilege key), `--send COMMAND` (repeatable), `--nick NAME` and `--seconds N`.
@@ -477,6 +493,31 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
 - When a window lands on a display with another scale, the toolkit keeps the smallest allowed
   size in the old display's pixels. PhishSpeak has the limits worked out again and then puts
   the window back to the size it had, measured in the new scale (`scale.rs`).
+- Links (`links.rs`, `instance.rs`). A link is `ts3server://host[:port]` with the optional parts
+  TeamSpeak documents: `port`, `nickname`, `password`, `channel`, `cid`, `channelpassword`,
+  `token`, `addbookmark` (a `cid` wins over a `channel`; a `+` stays a plus sign). A link is
+  refused when it names no server, hides the server behind an `@` or an escaped character,
+  contains a line break or other control character, or is longer than 2048 characters.
+  A link never connects by itself. It opens the connect dialog with the address, the nickname
+  and a server password filled in, and a line that says what else it carries (a channel, a
+  channel password, a privilege key, a bookmark name). Those extras are used only if the address
+  is still the link's when Connect is pressed. A link to a server that is already open only
+  shows it; a link to a server that has a bookmark uses that bookmark's identity and does not
+  change the bookmark. Passwords from a link are used once and never saved.
+- Who opens links is a switch (Settings, Bookmarks), off by default. On writes
+  `HKCU\Software\Classes\ts3server` for the signed-in user only, no administrator rights, and
+  remembers the command that was there (`links_previous` in `settings.ini`); off puts that
+  command back, or removes the entry when there was none, so a machine-wide entry of another
+  program counts again. If another program has taken the links in the meantime, PhishSpeak
+  leaves them alone and the switch goes off. If PhishSpeak's own file has moved, the entry is
+  pointed at the new place at the next start. `PhishSpeak.exe --forget-links` does the same as
+  switching off and is what the uninstaller runs.
+- One PhishSpeak per profile. A second start hands its link or `--connect` to the first and
+  leaves; with nothing to hand over it brings the first one's window to the front. The first one
+  listens on a loopback port and writes the port and a random word to
+  `%APPDATA%\PhishSpeak\instance`; only a program that can read that file is listened to, so a
+  web page cannot talk to the port. If the hand-over is not answered within two seconds the
+  second start carries on as a program of its own.
 - A whisper key opens the microphone by itself whatever "Send my voice" says, acts on the server
   being viewed, and never falls back to the channel: if its targets are gone, offline or on
   another server, the frames are dropped and the dock says why. Whispers are always Opus Voice,

@@ -20,6 +20,8 @@ use crate::hotkeys::chord_name;
 use crate::icons::{IconStore, Lookup};
 use crate::keywatch::KeyWatcher;
 use crate::platform;
+use crate::instance::{self, Wish};
+use crate::links::{self, Link};
 use crate::scale::{ScaleWatch, Step};
 use crate::speakers::{self, Member, Room, Roster};
 use crate::session::{
@@ -34,6 +36,7 @@ use crate::{
 };
 
 const SPEAKERS_TITLE: &str = "PhishSpeak speaking";
+const MAIN_TITLE: &str = "PhishSpeak";
 
 mod shortcuts;
 
@@ -160,6 +163,38 @@ fn same_address(a: &str, b: &str) -> bool {
     a.trim().eq_ignore_ascii_case(b.trim())
 }
 
+pub fn forget_links(scheme: &str) {
+    let mut settings = Settings::load();
+    if !settings.links.on {
+        return;
+    }
+    if links::release(&mut LinkRegistry { scheme: scheme.to_string() }, &mut settings.links) {
+        let _ = settings.save();
+    }
+}
+
+fn own_program() -> Option<String> {
+    std::env::current_exe().ok().and_then(|path| path.to_str().map(str::to_string))
+}
+
+struct LinkRegistry {
+    scheme: String,
+}
+
+impl links::Handlers for LinkRegistry {
+    fn current(&self) -> Option<String> {
+        platform::link_handler(&self.scheme)
+    }
+
+    fn set(&mut self, command: &str) -> bool {
+        platform::set_link_handler(&self.scheme, command)
+    }
+
+    fn clear(&mut self) -> bool {
+        platform::clear_link_handler(&self.scheme)
+    }
+}
+
 pub struct Windows {
     pub main: PhishSpeakApp,
     pub settings: SettingsWindow,
@@ -256,6 +291,9 @@ pub struct App {
     key_prompt: Option<u16>,
     channel_sheet: Option<(u16, u64)>,
     scales: [ScaleWatch; 3],
+    instance: Option<instance::Listener>,
+    pending_link: Option<Link>,
+    link_scheme: String,
     dirty: Dirty,
     silent_since: Option<Instant>,
     silence_warned: bool,
@@ -353,6 +391,9 @@ impl App {
             key_prompt: None,
             channel_sheet: None,
             scales: [ScaleWatch::default(), ScaleWatch::default(), ScaleWatch::default()],
+            instance: None,
+            pending_link: None,
+            link_scheme: links::scheme(),
             dirty: Dirty::everything(),
             silent_since: None,
             silence_warned: false,
@@ -367,7 +408,7 @@ impl App {
         }
     }
 
-    pub fn start(&mut self, w: &Windows, requests: &[StartRequest]) {
+    pub fn start(&mut self, w: &Windows, wishes: &[Wish]) {
         w.main.set_tree(ModelRc::from(self.tree.clone()));
         w.main.set_chat(ModelRc::from(self.chat.clone()));
         w.settings.set_talk_keys(ModelRc::from(self.talk_rows.clone()));
@@ -404,6 +445,7 @@ impl App {
         }
         self.refresh_devices(w);
         self.apply_audio(w);
+        self.refresh_links(w);
         self.push_bindings();
         self.rebuild_lanes(true);
         self.save_at = None;
@@ -414,9 +456,95 @@ impl App {
             request.quiet = true;
             self.begin(w, request);
         }
-        for request in requests {
-            self.connect_from_start(w, request);
+        for wish in wishes {
+            self.grant(w, wish.clone());
         }
+    }
+
+    pub fn attach_instance(&mut self, listener: instance::Listener) {
+        self.instance = Some(listener);
+    }
+
+    fn refresh_links(&mut self, w: &Windows) {
+        let before = self.settings.links.clone();
+        if let Some(program) = own_program() {
+            links::refresh(&mut LinkRegistry { scheme: self.link_scheme.clone() }, &program, &mut self.settings.links);
+        }
+        if self.settings.links != before {
+            self.mark_settings_dirty();
+        }
+        w.settings.set_links_on(self.settings.links.on);
+    }
+
+    pub fn links_changed(&mut self, w: &Windows) {
+        let wanted = w.settings.get_links_on();
+        let mut registry = LinkRegistry { scheme: self.link_scheme.clone() };
+        let done = match own_program() {
+            Some(program) if wanted => links::claim(&mut registry, &program, &mut self.settings.links),
+            Some(_) => links::release(&mut registry, &mut self.settings.links),
+            None => false,
+        };
+        w.settings.set_links_on(self.settings.links.on);
+        w.settings.set_links_note(if done { "" } else { "Windows did not allow that change." }.into());
+        self.mark_settings_dirty();
+    }
+
+    fn grant(&mut self, w: &Windows, wish: Wish) {
+        match wish {
+            Wish::Show => {}
+            Wish::Link(text) => self.open_link(w, &text),
+            Wish::Connect { target, nickname, channel } => {
+                self.connect_from_start(w, &StartRequest { target, nickname, channel });
+            }
+        }
+    }
+
+    fn take_wishes(&mut self, w: &Windows) {
+        let wishes: Vec<Wish> =
+            self.instance.as_ref().map(|listener| listener.wishes.try_iter().collect()).unwrap_or_default();
+        if wishes.is_empty() {
+            return;
+        }
+        for wish in wishes {
+            self.grant(w, wish);
+        }
+        platform::show_own_window(MAIN_TITLE);
+    }
+
+    pub fn open_link(&mut self, w: &Windows, text: &str) {
+        let Ok(link) = links::parse(text, &self.link_scheme) else {
+            w.main.set_notice("That link could not be read, so nothing was done with it.".into());
+            return;
+        };
+        let open = self.sessions.iter().find(|s| same_address(&s.request.address, &link.address)).map(|s| s.id);
+        if let Some(id) = open {
+            self.view_server(w, id);
+            return;
+        }
+        let known = self.bookmarks.find_address(&link.address).map(|index| self.bookmarks.items[index].clone());
+        let mut request = match &known {
+            Some(bookmark) => self.bookmark_request(bookmark),
+            None => {
+                let index = self.default_identity();
+                ConnectRequest {
+                    nickname: self.default_nickname(),
+                    identity_uid: if index >= 0 { self.identities[index as usize].identity.uid() } else { String::new() },
+                    ..ConnectRequest::default()
+                }
+            }
+        };
+        request.address = link.address.clone();
+        request.password = link.password.clone();
+        if !link.nickname.is_empty() {
+            request.nickname = link.nickname.clone();
+        }
+        let mut link = link;
+        if known.is_some() {
+            link.bookmark.clear();
+        }
+        request.save_bookmark = !link.bookmark.is_empty();
+        self.pending_link = Some(link);
+        self.show_dialog(w, &request, None);
     }
 
     fn mark_settings_dirty(&mut self) {
@@ -889,6 +1017,8 @@ impl App {
             self.identity_index(&request.identity_uid).map(|i| i as i32).unwrap_or(self.default_identity()),
         );
         w.main.set_dlg_save(request.save_bookmark);
+        let from_link = self.pending_link.as_ref().filter(|link| same_address(&link.address, &request.address));
+        w.main.set_dlg_note(from_link.map(links::summary).unwrap_or_default().into());
         match error {
             Some((field, text)) => {
                 w.main.set_dlg_error_field(field.index());
@@ -901,6 +1031,7 @@ impl App {
     }
 
     pub fn open_connect(&mut self, w: &Windows) {
+        self.pending_link = None;
         let request = ConnectRequest {
             nickname: self.default_nickname(),
             identity_uid: self.settings.identity_uid.clone(),
@@ -942,9 +1073,19 @@ impl App {
                 request.password = self.bookmarks.items[existing].server_password.clone();
             }
         }
+        if let Some(link) = self.pending_link.take().filter(|link| same_address(&link.address, &request.address)) {
+            request.channel = link.channel;
+            request.channel_id = link.channel_id;
+            request.channel_password = link.channel_password;
+            request.token = link.token;
+            if request.save_bookmark && request.name.is_empty() {
+                request.name = link.bookmark;
+            }
+        }
         w.main.set_dialog_open(false);
         w.main.set_dlg_password("".into());
         w.main.set_dlg_error("".into());
+        w.main.set_dlg_note("".into());
         self.settings.server_address = request.address.clone();
         if !request.nickname.is_empty() {
             self.settings.nickname = request.nickname.clone();
@@ -1906,6 +2047,7 @@ impl App {
             session.folds.chosen = kept.into_iter().collect();
         }
         let save = std::mem::take(&mut session.request.save_bookmark);
+        let token = std::mem::take(&mut session.request.token);
         let request = session.request.clone();
         let name = session.name.clone();
         if let (true, Some(client)) = (self.mic_muted || self.sound_muted, self.session(id).and_then(|s| s.client.clone()))
@@ -1918,8 +2060,17 @@ impl App {
             bookmark.address = request.address.clone();
             bookmark.nickname = request.nickname.clone();
             bookmark.identity_uid = request.identity_uid.clone();
+            if bookmark.channel.is_empty() && bookmark.channel_id == 0 {
+                bookmark.channel = request.channel.clone();
+                bookmark.channel_id = request.channel_id;
+            }
             self.bookmarks.upsert(bookmark);
             self.save_bookmarks(w);
+        }
+        if !token.is_empty() {
+            if let Some(client) = self.session(id).and_then(|s| s.client.clone()) {
+                client.use_privilege_key(&token);
+            }
         }
         self.route_mic();
         self.dirty = Dirty::everything();
@@ -2232,6 +2383,7 @@ impl App {
                 self.on_outcome(w, id, was_connecting, outcome);
             }
         }
+        self.take_wishes(w);
         self.follow_scale(w);
         self.watch_speakers(w);
         self.retry_lost_connections(w);

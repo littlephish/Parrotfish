@@ -183,6 +183,161 @@ mod imp {
         }
     }
 
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn RegCreateKeyExW(
+            key: isize,
+            sub: *const u16,
+            reserved: u32,
+            class: *const u16,
+            options: u32,
+            access: u32,
+            security: *const core::ffi::c_void,
+            result: *mut isize,
+            disposition: *mut u32,
+        ) -> i32;
+        fn RegSetValueExW(key: isize, name: *const u16, reserved: u32, kind: u32, data: *const u8, size: u32) -> i32;
+        fn RegGetValueW(
+            key: isize,
+            sub: *const u16,
+            name: *const u16,
+            flags: u32,
+            kind: *mut u32,
+            data: *mut core::ffi::c_void,
+            size: *mut u32,
+        ) -> i32;
+        fn RegDeleteTreeW(key: isize, sub: *const u16) -> i32;
+        fn RegCloseKey(key: isize) -> i32;
+    }
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SHChangeNotify(event: i32, flags: u32, first: *const core::ffi::c_void, second: *const core::ffi::c_void);
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn AllowSetForegroundWindow(process: u32) -> i32;
+        fn ShowWindow(window: isize, command: i32) -> i32;
+        fn IsIconic(window: isize) -> i32;
+    }
+
+    const CURRENT_USER: isize = 0x8000_0001u32 as i32 as isize;
+    const MAY_WRITE: u32 = 0x0002_0006;
+    const PLAIN_TEXT: u32 = 1;
+    const ANY_TEXT_AS_STORED: u32 = 0x1000_0006;
+    const NOT_THERE: i32 = 2;
+    const ASSOCIATIONS_CHANGED: i32 = 0x0800_0000;
+    const RESTORE: i32 = 9;
+
+    fn wide(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    fn scheme_key(scheme: &str) -> String {
+        format!("Software\\Classes\\{scheme}")
+    }
+
+    fn set_text(path: &str, name: Option<&str>, value: &str) -> bool {
+        let path = wide(path);
+        let mut key = 0isize;
+        let opened = unsafe {
+            RegCreateKeyExW(
+                CURRENT_USER,
+                path.as_ptr(),
+                0,
+                std::ptr::null(),
+                0,
+                MAY_WRITE,
+                std::ptr::null(),
+                &mut key,
+                std::ptr::null_mut(),
+            )
+        };
+        if opened != 0 {
+            return false;
+        }
+        let name = name.map(wide);
+        let name_ptr = name.as_ref().map_or(std::ptr::null(), |name| name.as_ptr());
+        let data = wide(value);
+        let size = (data.len() * 2) as u32;
+        let done = unsafe { RegSetValueExW(key, name_ptr, 0, PLAIN_TEXT, data.as_ptr().cast(), size) } == 0;
+        unsafe { RegCloseKey(key) };
+        done
+    }
+
+    fn tell_the_shell() {
+        unsafe { SHChangeNotify(ASSOCIATIONS_CHANGED, 0, std::ptr::null(), std::ptr::null()) };
+    }
+
+    pub fn link_handler(scheme: &str) -> Option<String> {
+        let path = wide(&format!("{}\\shell\\open\\command", scheme_key(scheme)));
+        let mut size = 0u32;
+        let asked = unsafe {
+            RegGetValueW(
+                CURRENT_USER,
+                path.as_ptr(),
+                std::ptr::null(),
+                ANY_TEXT_AS_STORED,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut size,
+            )
+        };
+        if asked != 0 || size < 2 || size > 65_536 {
+            return None;
+        }
+        let mut data = vec![0u16; (size as usize).div_ceil(2) + 1];
+        let mut size = ((data.len() - 1) * 2) as u32;
+        let read = unsafe {
+            RegGetValueW(
+                CURRENT_USER,
+                path.as_ptr(),
+                std::ptr::null(),
+                ANY_TEXT_AS_STORED,
+                std::ptr::null_mut(),
+                data.as_mut_ptr().cast(),
+                &mut size,
+            )
+        };
+        if read != 0 {
+            return None;
+        }
+        let end = data.iter().position(|unit| *unit == 0).unwrap_or(data.len());
+        let text = String::from_utf16_lossy(&data[..end]);
+        (!text.trim().is_empty()).then_some(text)
+    }
+
+    pub fn set_link_handler(scheme: &str, command: &str) -> bool {
+        let base = scheme_key(scheme);
+        let done = set_text(&base, None, &format!("URL:{scheme} link"))
+            && set_text(&base, Some("URL Protocol"), "")
+            && set_text(&format!("{base}\\shell\\open\\command"), None, command);
+        tell_the_shell();
+        done
+    }
+
+    pub fn clear_link_handler(scheme: &str) -> bool {
+        let path = wide(&scheme_key(scheme));
+        let code = unsafe { RegDeleteTreeW(CURRENT_USER, path.as_ptr()) };
+        tell_the_shell();
+        code == 0 || code == NOT_THERE
+    }
+
+    pub fn allow_front(process: u32) {
+        unsafe { AllowSetForegroundWindow(process) };
+    }
+
+    pub fn show_own_window(title: &str) -> bool {
+        let Some(window) = own_window(title) else {
+            return false;
+        };
+        if unsafe { IsIconic(window) } != 0 {
+            unsafe { ShowWindow(window, RESTORE) };
+        }
+        unsafe { SetForegroundWindow(window) != 0 }
+    }
+
     pub fn protect(data: &[u8]) -> Option<Vec<u8>> {
         seal(data, false)
     }
@@ -222,6 +377,24 @@ mod imp {
 
     pub fn bring_front(_window: isize) {}
 
+    pub fn link_handler(_scheme: &str) -> Option<String> {
+        None
+    }
+
+    pub fn set_link_handler(_scheme: &str, _command: &str) -> bool {
+        false
+    }
+
+    pub fn clear_link_handler(_scheme: &str) -> bool {
+        false
+    }
+
+    pub fn allow_front(_process: u32) {}
+
+    pub fn show_own_window(_title: &str) -> bool {
+        false
+    }
+
     pub fn protect(_data: &[u8]) -> Option<Vec<u8>> {
         None
     }
@@ -240,7 +413,8 @@ mod imp {
 }
 
 pub use imp::{
-    bring_front, key_char, key_down, local_hms, on_a_screen, overlay_style, own_front_window, protect, unprotect,
+    allow_front, bring_front, clear_link_handler, key_char, key_down, link_handler, local_hms, on_a_screen,
+    overlay_style, own_front_window, protect, set_link_handler, show_own_window, unprotect,
 };
 
 pub fn timestamp() -> String {

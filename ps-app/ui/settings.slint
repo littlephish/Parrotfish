@@ -119,6 +119,8 @@ export component SettingsWindow inherits Window {
     in-out property <bool> sp-all;
     in-out property <float> sp-opacity: 85;
     in-out property <float> sp-linger: 10;
+    in-out property <bool> links-on;
+    in property <string> links-note;
 
     in property <string> version;
     in property <float> scale-nudge;
@@ -157,6 +159,7 @@ export component SettingsWindow inherits Window {
     callback editor-cancel();
     callback view-changed();
     callback speakers-changed();
+    callback links-changed();
     callback done();
 
     forward-focus: keys;
@@ -627,6 +630,29 @@ export component SettingsWindow inherits Window {
                             clicked => {
                                 root.bookmark-new();
                             }
+                        }
+
+                        Rectangle {
+                            height: 12px;
+                        }
+
+                        Divider { }
+
+                        Check {
+                            text: "Open ts3server:// links here";
+                            checked <=> root.links-on;
+                            toggled => {
+                                root.links-changed();
+                            }
+                        }
+
+                        Hint {
+                            text: "Server links on web pages then open in PhishSpeak, which shows where a link leads before it connects. Switching this off gives the links back to the program that had them.";
+                        }
+
+                        if root.links-note != "": Hint {
+                            text: root.links-note;
+                            color: Theme.coral;
                         }
                     }
 
