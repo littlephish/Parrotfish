@@ -95,6 +95,8 @@ export component SettingsWindow inherits Window {
     in property <[WhisperKeyRow]> whisper-keys;
     in property <bool> can-add-whisper: true;
     in property <string> reply-key;
+    in property <string> mute-mic-key;
+    in property <string> mute-sound-key;
     in-out property <bool> allow-whispers: true;
 
     in property <bool> editor-open;
@@ -138,6 +140,8 @@ export component SettingsWindow inherits Window {
     callback whisper-key-change(index: int);
     callback reply-key-change();
     callback reply-key-clear();
+    callback action-key-change(which: int);
+    callback action-key-clear(which: int);
     callback editor-key-change();
     callback editor-key-clear();
     callback editor-toggle(index: int);
@@ -1026,6 +1030,73 @@ export component SettingsWindow inherits Window {
 
                                 Hint {
                                     text: "Talks to whoever whispered to you last.";
+                                }
+                            }
+                        }
+
+                        Divider { }
+
+                        HorizontalLayout {
+                            spacing: 16px;
+
+                            Caption {
+                                text: "Mute keys";
+                            }
+
+                            VerticalLayout {
+                                spacing: 6px;
+
+                                HorizontalLayout {
+                                    spacing: 10px;
+
+                                    KeyChip {
+                                        text: root.mute-mic-key;
+                                        listening: root.listening == 61;
+                                        clicked => {
+                                            root.action-key-change(0);
+                                        }
+                                        removed => {
+                                            root.action-key-clear(0);
+                                        }
+                                    }
+
+                                    Hint {
+                                        text: "microphone on and off";
+                                        vertical-alignment: center;
+                                    }
+
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 10px;
+
+                                    KeyChip {
+                                        text: root.mute-sound-key;
+                                        listening: root.listening == 62;
+                                        clicked => {
+                                            root.action-key-change(1);
+                                        }
+                                        removed => {
+                                            root.action-key-clear(1);
+                                        }
+                                    }
+
+                                    Hint {
+                                        text: "sound on and off";
+                                        vertical-alignment: center;
+                                    }
+
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+
+                                if root.shortcut-note != "" && root.shortcut-note-place == 3: Hint {
+                                    text: root.shortcut-note;
+                                    color: Theme.coral;
                                 }
                             }
                         }

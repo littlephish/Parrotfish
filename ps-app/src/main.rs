@@ -145,6 +145,10 @@ fn main() -> Result<(), slint::PlatformError> {
     let a = app.clone();
     settings_window.on_reply_key_clear(move || with_app(&a, |s, w| s.reply_key_clear(w)));
     let a = app.clone();
+    settings_window.on_action_key_change(move |which| with_app(&a, |s, w| s.action_key_change(w, which)));
+    let a = app.clone();
+    settings_window.on_action_key_clear(move |which| with_app(&a, |s, w| s.action_key_clear(w, which)));
+    let a = app.clone();
     settings_window.on_editor_key_change(move || with_app(&a, |s, w| s.editor_key_change(w)));
     let a = app.clone();
     settings_window.on_editor_key_clear(move || with_app(&a, |s, w| s.editor_key_clear(w)));

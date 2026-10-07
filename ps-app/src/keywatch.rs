@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::hotkeys::{evaluate, usable, Bindings, Capture, CaptureStep, Held, Latch};
+use crate::hotkeys::{evaluate, usable, Bindings, Capture, CaptureStep, Edges, Held, Latch};
 use crate::platform;
 
 #[derive(Default)]
@@ -12,6 +12,7 @@ pub struct WatchState {
     delay_ms: AtomicU32,
     capturing: AtomicBool,
     captured: Mutex<Option<CaptureStep>>,
+    fired: AtomicU32,
     stop: AtomicBool,
 }
 
@@ -19,6 +20,7 @@ pub struct WatchState {
 pub struct WatchCore {
     latch: Latch,
     capture: Option<Capture>,
+    edges: Edges,
 }
 
 impl WatchCore {
@@ -34,11 +36,18 @@ impl WatchCore {
                 self.capture = None;
             }
             self.latch = Latch::default();
+            self.edges.block();
             return Held::default();
         }
         self.capture = None;
         let raw = match state.bindings.lock() {
-            Ok(bindings) => evaluate(&bindings, down),
+            Ok(bindings) => {
+                let fired = self.edges.update(&bindings.actions, down);
+                if fired != 0 {
+                    state.fired.fetch_or(fired, Ordering::Relaxed);
+                }
+                evaluate(&bindings, down)
+            }
             Err(_) => Held::default(),
         };
         self.latch.update(now, raw, Duration::from_millis(u64::from(state.delay_ms.load(Ordering::Relaxed))))
@@ -68,6 +77,10 @@ impl WatchState {
         if let Ok(mut slot) = self.captured.lock() {
             *slot = None;
         }
+    }
+
+    pub fn take_fired(&self) -> u32 {
+        self.fired.swap(0, Ordering::Relaxed)
     }
 
     pub fn take_captured(&self) -> Option<CaptureStep> {
@@ -125,6 +138,7 @@ mod tests {
             talk: vec![Chord::new(&[0x87])],
             whisper: vec![Chord::new(&[0x86])],
             reply: Chord::default(),
+            actions: vec![Chord::new(&[0x88])],
         });
         let mut core = WatchCore::default();
         let now = Instant::now();
@@ -145,5 +159,21 @@ mod tests {
         state.cancel_capture();
         assert_eq!(state.take_captured(), None);
         assert_eq!(core.step(&state, now, &|vk| vk == 0x87), Held { talk: true, lane: 0 });
+
+        assert_eq!(state.take_fired(), 0);
+        core.step(&state, now, &|_| false);
+        core.step(&state, now, &|vk| vk == 0x88);
+        core.step(&state, now, &|vk| vk == 0x88);
+        assert_eq!(state.take_fired(), 1, "one press of an action key is reported once");
+        assert_eq!(state.take_fired(), 0);
+        state.begin_capture();
+        core.step(&state, now, &|_| false);
+        core.step(&state, now, &|vk| vk == 0x88);
+        core.step(&state, now, &|_| false);
+        assert_eq!(state.take_captured(), Some(CaptureStep::Done(Chord::new(&[0x88]))));
+        assert_eq!(state.take_fired(), 0, "choosing a key is not using it");
+        core.step(&state, now, &|_| false);
+        core.step(&state, now, &|vk| vk == 0x88);
+        assert_eq!(state.take_fired(), 1);
     }
 }

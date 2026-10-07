@@ -22,12 +22,15 @@ const MAX_PICK_DEPTH: u32 = 12;
 const NOTE_TALK: i32 = 0;
 const NOTE_WHISPER: i32 = 1;
 const NOTE_REPLY: i32 = 2;
+const NOTE_ACTION: i32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CaptureTarget {
     Talk(usize),
     NewTalk,
     Reply,
+    MuteMic,
+    MuteSound,
     Whisper(usize),
     EditorKey,
 }
@@ -38,6 +41,8 @@ impl CaptureTarget {
             CaptureTarget::Talk(index) => index as i32,
             CaptureTarget::NewTalk => 50,
             CaptureTarget::Reply => 60,
+            CaptureTarget::MuteMic => 61,
+            CaptureTarget::MuteSound => 62,
             CaptureTarget::EditorKey => 70,
             CaptureTarget::Whisper(index) => 100 + index as i32,
         }
@@ -48,6 +53,7 @@ impl CaptureTarget {
             CaptureTarget::Talk(_) | CaptureTarget::NewTalk => NOTE_TALK,
             CaptureTarget::Whisper(_) | CaptureTarget::EditorKey => NOTE_WHISPER,
             CaptureTarget::Reply => NOTE_REPLY,
+            CaptureTarget::MuteMic | CaptureTarget::MuteSound => NOTE_ACTION,
         }
     }
 }
@@ -409,6 +415,7 @@ impl App {
             talk: self.settings.talk_keys.clone(),
             whisper: self.whisper_keys.items.iter().map(|key| key.chord.clone()).collect(),
             reply: self.settings.reply_key.clone(),
+            actions: vec![self.settings.mute_mic_key.clone(), self.settings.mute_sound_key.clone()],
         };
         self.watcher.state().set_bindings(bindings);
         self.watcher.state().set_release_delay(self.settings.talk_release_ms);
@@ -562,6 +569,12 @@ impl App {
         if self.settings.reply_key == *chord && target != CaptureTarget::Reply {
             return Some("the reply key");
         }
+        if self.settings.mute_mic_key == *chord && target != CaptureTarget::MuteMic {
+            return Some("muting your microphone");
+        }
+        if self.settings.mute_sound_key == *chord && target != CaptureTarget::MuteSound {
+            return Some("muting sound");
+        }
         let own = match target {
             CaptureTarget::Whisper(index) => Some(index),
             CaptureTarget::EditorKey => self.editor.as_ref().and_then(|editor| editor.index),
@@ -601,6 +614,8 @@ impl App {
                 }
             }
             CaptureTarget::Reply => self.settings.reply_key = chord,
+            CaptureTarget::MuteMic => self.settings.mute_mic_key = chord,
+            CaptureTarget::MuteSound => self.settings.mute_sound_key = chord,
             CaptureTarget::Whisper(index) => {
                 if let Some(key) = self.whisper_keys.items.get_mut(index) {
                     key.chord = chord;
@@ -684,6 +699,22 @@ impl App {
             self.mark_settings_dirty();
             self.keys_changed();
         }
+    }
+
+    pub fn action_key_change(&mut self, _w: &Windows, which: i32) {
+        self.begin_capture(if which == 0 { CaptureTarget::MuteMic } else { CaptureTarget::MuteSound });
+    }
+
+    pub fn action_key_clear(&mut self, _w: &Windows, which: i32) {
+        self.stop_capture();
+        self.clear_notes();
+        if which == 0 {
+            self.settings.mute_mic_key = Chord::default();
+        } else {
+            self.settings.mute_sound_key = Chord::default();
+        }
+        self.mark_settings_dirty();
+        self.keys_changed();
     }
 
     pub fn reply_key_change(&mut self, _w: &Windows) {
@@ -853,6 +884,8 @@ impl App {
         sync_rows(&self.whisper_rows, keys);
         w.settings.set_can_add_whisper(self.whisper_keys.items.len() < MAX_WHISPER_KEYS);
         w.settings.set_reply_key(name(&self.settings.reply_key).into());
+        w.settings.set_mute_mic_key(name(&self.settings.mute_mic_key).into());
+        w.settings.set_mute_sound_key(name(&self.settings.mute_sound_key).into());
         w.settings.set_allow_whispers(self.settings.allow_whispers);
         w.settings.set_fold_mode(self.settings.fold_mode);
 
@@ -939,6 +972,8 @@ mod tests {
             CaptureTarget::Talk(3),
             CaptureTarget::NewTalk,
             CaptureTarget::Reply,
+            CaptureTarget::MuteMic,
+            CaptureTarget::MuteSound,
             CaptureTarget::EditorKey,
             CaptureTarget::Whisper(0),
             CaptureTarget::Whisper(11),
@@ -946,7 +981,7 @@ mod tests {
         .iter()
         .map(|target| target.code())
         .collect();
-        assert_eq!(codes, vec![0, 3, 50, 60, 70, 100, 111]);
+        assert_eq!(codes, vec![0, 3, 50, 60, 61, 62, 70, 100, 111]);
         for index in 0..7 {
             assert_eq!(scope_from_index(index) as i32, index);
         }

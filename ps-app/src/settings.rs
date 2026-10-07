@@ -59,6 +59,8 @@ pub struct Settings {
     pub talk_keys: Vec<Chord>,
     pub talk_release_ms: u32,
     pub reply_key: Chord,
+    pub mute_mic_key: Chord,
+    pub mute_sound_key: Chord,
     pub allow_whispers: bool,
     pub fold_mode: i32,
     pub folds: BTreeMap<String, BTreeMap<u64, bool>>,
@@ -88,6 +90,8 @@ impl Default for Settings {
             talk_keys: Vec::new(),
             talk_release_ms: 0,
             reply_key: Chord::default(),
+            mute_mic_key: Chord::default(),
+            mute_sound_key: Chord::default(),
             allow_whispers: true,
             fold_mode: 1,
             folds: BTreeMap::new(),
@@ -200,6 +204,8 @@ impl Settings {
                 }
                 "talk_release_ms" => s.talk_release_ms = value.parse::<u32>().unwrap_or(0).min(1000),
                 "reply_key" => s.reply_key = Chord::parse(value),
+                "mute_mic_key" => s.mute_mic_key = Chord::parse(value),
+                "mute_sound_key" => s.mute_sound_key = Chord::parse(value),
                 "allow_whispers" => s.allow_whispers = value != "0",
                 "fold_mode" => s.fold_mode = value.parse().unwrap_or(1).clamp(0, 2),
                 "window_width" => {
@@ -246,6 +252,8 @@ impl Settings {
         }
         put("talk_release_ms", self.talk_release_ms.to_string());
         put("reply_key", self.reply_key.to_text());
+        put("mute_mic_key", self.mute_mic_key.to_text());
+        put("mute_sound_key", self.mute_sound_key.to_text());
         put("allow_whispers", u8::from(self.allow_whispers).to_string());
         put("fold_mode", self.fold_mode.to_string());
         put("window_width", format!("{:.0}", self.window_width));
@@ -361,6 +369,9 @@ mod tests {
         assert_eq!(Settings::default().talk_release_ms, 0);
         let whisper = Settings::parse("reply_key=96\nallow_whispers=0\n");
         assert_eq!(whisper.reply_key, Chord::new(&[0x60]));
+        let mutes = Settings::parse("mute_mic_key=162+77\nmute_sound_key=123\n");
+        assert_eq!((mutes.mute_mic_key.keys().len(), mutes.mute_sound_key.clone()), (2, Chord::new(&[123])));
+        assert_eq!(Settings::parse(&mutes.serialize()), mutes);
         assert!(!whisper.allow_whispers);
         assert_eq!(Settings::parse(&whisper.serialize()), whisper);
         assert!(Settings::default().allow_whispers && Settings::default().reply_key.is_empty());

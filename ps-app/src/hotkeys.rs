@@ -120,6 +120,35 @@ pub struct Bindings {
     pub talk: Vec<Chord>,
     pub whisper: Vec<Chord>,
     pub reply: Chord,
+    pub actions: Vec<Chord>,
+}
+
+#[derive(Debug, Default)]
+pub struct Edges {
+    before: Vec<bool>,
+    blocked: bool,
+}
+
+impl Edges {
+    pub fn block(&mut self) {
+        self.blocked = true;
+    }
+
+    pub fn update(&mut self, actions: &[Chord], down: &dyn Fn(u16) -> bool) -> u32 {
+        let now: Vec<bool> = actions.iter().map(|chord| chord.is_down(down)).collect();
+        let mut fired = 0u32;
+        if self.blocked {
+            self.blocked = now.iter().any(|held| *held);
+        } else {
+            for (index, held) in now.iter().enumerate().take(32) {
+                if *held && !self.before.get(index).copied().unwrap_or(false) {
+                    fired |= 1 << index;
+                }
+            }
+        }
+        self.before = now;
+        fired
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -218,6 +247,26 @@ impl Capture {
 mod tests {
     use super::*;
 
+    #[test]
+    fn an_action_key_fires_once_per_press() {
+        let actions = vec![Chord::new(&[0x70]), Chord::new(&[0xA2, 0x71]), Chord::default()];
+        let mut edges = Edges::default();
+        let held = |keys: &'static [u16]| move |vk: u16| keys.contains(&vk);
+        assert_eq!(edges.update(&actions, &held(&[])), 0);
+        assert_eq!(edges.update(&actions, &held(&[0x70])), 1);
+        assert_eq!(edges.update(&actions, &held(&[0x70])), 0, "holding it does not fire again");
+        assert_eq!(edges.update(&actions, &held(&[])), 0);
+        assert_eq!(edges.update(&actions, &held(&[0x70])), 1);
+        assert_eq!(edges.update(&actions, &held(&[0x71])), 0, "half a combination is nothing");
+        assert_eq!(edges.update(&actions, &held(&[0xA2, 0x71])), 2);
+        assert_eq!(edges.update(&actions, &held(&[0xA2, 0x71, 0x70])), 1);
+        edges.block();
+        assert_eq!(edges.update(&actions, &held(&[0x70])), 0, "a key still down from choosing it does not fire");
+        assert_eq!(edges.update(&actions, &held(&[0x70])), 0);
+        assert_eq!(edges.update(&actions, &held(&[])), 0);
+        assert_eq!(edges.update(&actions, &held(&[0x70])), 1);
+    }
+
     fn down_set(keys: &[u16]) -> impl Fn(u16) -> bool + '_ {
         move |vk| keys.contains(&vk)
     }
@@ -266,6 +315,7 @@ mod tests {
             talk: vec![Chord::new(&[0xA2]), Chord::new(&[0x05])],
             whisper: vec![Chord::new(&[0x65]), Chord::new(&[0xA2, 0x31]), Chord::new(&[0x31])],
             reply: Chord::new(&[0x60]),
+            actions: Vec::new(),
         };
         assert_eq!(evaluate(&bindings, &down_set(&[])), Held { talk: false, lane: 0 });
         assert_eq!(evaluate(&bindings, &down_set(&[0xA2])), Held { talk: true, lane: 0 });

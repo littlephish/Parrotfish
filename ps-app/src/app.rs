@@ -1980,6 +1980,13 @@ impl App {
         self.retry_lost_connections(w);
         self.poll_level_jobs(w);
         self.poll_capture(w);
+        let fired = self.watcher.state().take_fired();
+        if fired & 1 != 0 {
+            self.toggle_mic(w);
+        }
+        if fired & 2 != 0 {
+            self.toggle_sound(w);
+        }
         self.watch_whispers();
 
         let level = self.engine.shared().input_level();
