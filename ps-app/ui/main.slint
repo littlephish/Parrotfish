@@ -1,6 +1,6 @@
 import { ListView, ScrollView, Palette } from "std-widgets.slint";
 import { Theme, Icons, Frame } from "theme.slint";
-import { Icon, Badge, Pressable, Btn, IconButton, Tile, Meter, Field, Dropdown, Check, Segmented, TreeRowView, ChatRowView, TreeRow, ServerTile, BookmarkRow, ChatRow, IdentityRow, WhisperKeyRow, PickRow } from "widgets.slint";
+import { Icon, Badge, Pressable, Btn, IconButton, Tile, Meter, Slide, Field, Dropdown, Check, Segmented, TreeRowView, ChatRowView, TreeRow, ServerTile, BookmarkRow, ChatRow, IdentityRow, WhisperKeyRow, PickRow } from "widgets.slint";
 import { SettingsWindow } from "settings.slint";
 
 export { SettingsWindow, Icons, TreeRow, ServerTile, BookmarkRow, ChatRow, IdentityRow, WhisperKeyRow, PickRow }
@@ -191,6 +191,18 @@ export component PhishSpeakApp inherits Window {
     in-out property <string> prompt-password;
     in-out property <string> chat-input;
     in-out property <int> chat-target;
+    in property <string> chat-peer;
+    in-out property <bool> person-open;
+    in property <string> person-name;
+    in property <string> person-line;
+    in property <string> person-about;
+    in property <string> person-status;
+    in property <bool> person-me;
+    in-out property <float> person-volume: 100;
+    in-out property <bool> person-muted;
+    in-out property <string> person-poke;
+    in-out property <bool> person-away;
+    in-out property <string> person-away-message;
 
     callback view-server(id: int);
     callback connect-bookmark(index: int);
@@ -206,6 +218,10 @@ export component PhishSpeakApp inherits Window {
     callback toggle-fold(id: int);
     callback toggle-commander();
     callback toggle-start-here();
+    callback person-voice-changed();
+    callback person-message();
+    callback person-poke-sent();
+    callback person-away-toggled();
 
     forward-focus: keys;
     init => {
@@ -236,7 +252,9 @@ export component PhishSpeakApp inherits Window {
             if (event.text != Key.Escape) {
                 return reject;
             }
-            if (root.prompt-open) {
+            if (root.person-open) {
+                root.person-open = false;
+            } else if (root.prompt-open) {
                 root.prompt-open = false;
             } else if (root.dialog-open) {
                 root.dialog-open = false;
@@ -514,6 +532,9 @@ export component PhishSpeakApp inherits Window {
 
             if root.viewing && root.chat-open: Rectangle {
                 min-height: 240px;
+                init => {
+                    chat-field.focus-input();
+                }
                 vertical-stretch: 1;
                 background: Theme.shoal;
 
@@ -527,7 +548,7 @@ export component PhishSpeakApp inherits Window {
                         spacing: 8px;
 
                         Segmented {
-                            options: [root.channel-name == "" ? "Channel" : root.channel-name, "Server"];
+                            options: root.chat-peer == "" ? [root.channel-name == "" ? "Channel" : root.channel-name, "Server"] : [root.channel-name == "" ? "Channel" : root.channel-name, "Server", root.chat-peer];
                             current <=> root.chat-target;
                         }
 
@@ -569,9 +590,9 @@ export component PhishSpeakApp inherits Window {
                         padding-right: 12px;
                         padding-bottom: 12px;
 
-                        Field {
+                        chat-field := Field {
                             text <=> root.chat-input;
-                            placeholder: root.chat-target == 1 ? "Message everyone on the server" : (root.channel-name == "" ? "Message" : "Message " + root.channel-name);
+                            placeholder: root.chat-target == 2 ? "Message " + root.chat-peer + " privately" : (root.chat-target == 1 ? "Message everyone on the server" : (root.channel-name == "" ? "Message" : "Message " + root.channel-name));
                             accepted => {
                                 root.send-chat();
                             }
@@ -946,6 +967,160 @@ export component PhishSpeakApp inherits Window {
                             clicked => {
                                 root.connect-new();
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.person-open: Rectangle {
+            background: Theme.scrim;
+
+            TouchArea {
+                clicked => {
+                    root.person-open = false;
+                }
+            }
+
+            Sheet {
+                width: min(380px, parent.width - 32px);
+                height: self.preferred-height;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+
+                TouchArea { }
+
+                VerticalLayout {
+                    padding: 18px;
+                    spacing: 6px;
+
+                    HorizontalLayout {
+                        spacing: 8px;
+
+                        Text {
+                            text: root.person-name;
+                            color: Theme.foam;
+                            font-size: 16px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+
+                        IconButton {
+                            icon: Icons.close;
+                            clicked => {
+                                root.person-open = false;
+                            }
+                        }
+                    }
+
+                    if root.person-line != "": Dim {
+                        text: root.person-line;
+                        wrap: word-wrap;
+                    }
+
+                    if root.person-about != "": Dim {
+                        text: root.person-about;
+                        wrap: word-wrap;
+                    }
+
+                    if root.person-status != "": Text {
+                        text: root.person-status;
+                        color: Theme.foam;
+                        font-size: Theme.small;
+                        wrap: word-wrap;
+                    }
+
+                    if !root.person-me: FieldLabel {
+                        text: "How loud they are for me";
+                    }
+
+                    if !root.person-me: HorizontalLayout {
+                        spacing: 10px;
+
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+
+                            Slide {
+                                minimum: 0;
+                                maximum: 200;
+                                value <=> root.person-volume;
+                                changed => {
+                                    root.person-voice-changed();
+                                }
+                            }
+                        }
+
+                        Dim {
+                            width: 44px;
+                            text: "\{round(root.person-volume)}%";
+                            horizontal-alignment: right;
+                        }
+                    }
+
+                    if !root.person-me: Check {
+                        text: "Mute them for me";
+                        checked <=> root.person-muted;
+                        toggled => {
+                            root.person-voice-changed();
+                        }
+                    }
+
+                    if !root.person-me: FieldLabel {
+                        text: "Poke";
+                    }
+
+                    if !root.person-me: HorizontalLayout {
+                        spacing: 8px;
+
+                        Field {
+                            text <=> root.person-poke;
+                            placeholder: "a short note, or nothing";
+                            accepted => {
+                                root.person-poke-sent();
+                            }
+                        }
+
+                        VerticalLayout {
+                            alignment: center;
+
+                            Btn {
+                                text: "Poke";
+                                clicked => {
+                                    root.person-poke-sent();
+                                }
+                            }
+                        }
+                    }
+
+                    if !root.person-me: HorizontalLayout {
+                        alignment: end;
+                        padding-top: 10px;
+
+                        Btn {
+                            text: "Message";
+                            primary: true;
+                            clicked => {
+                                root.person-message();
+                            }
+                        }
+                    }
+
+                    if root.person-me: Check {
+                        text: "I am away";
+                        checked <=> root.person-away;
+                        toggled => {
+                            root.person-away-toggled();
+                        }
+                    }
+
+                    if root.person-me: Field {
+                        text <=> root.person-away-message;
+                        placeholder: "what others should see, or nothing";
+                        accepted => {
+                            root.person-away-toggled();
                         }
                     }
                 }

@@ -140,6 +140,12 @@ impl AudioEngine {
         }
     }
 
+    pub fn set_volume(&self, session: u16, client_id: u16, volume: f32) {
+        if let Ok(mut playback) = self.shared.playback.lock() {
+            playback.set_volume(session, client_id, volume);
+        }
+    }
+
     pub fn remove_talker(&self, session: u16, client_id: u16) {
         if let Ok(mut playback) = self.shared.playback.lock() {
             playback.remove(session, client_id);

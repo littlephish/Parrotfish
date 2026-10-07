@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,9 +22,9 @@ use crate::keywatch::KeyWatcher;
 use crate::platform;
 use crate::session::{
     self, build_rows_folded, connect_failure, mic_move, next_view, ChannelIcon, ChatKind, ChatLine, ConnectRequest,
-    DialogField, FoldMode, MicMove, Outcome, RowData, RowKind, Session,
+    DialogField, FoldMode, MicMove, Outcome, Peer, RowData, RowKind, Session,
 };
-use crate::settings::{self, Settings};
+use crate::settings::{self, Settings, Voice, MAX_REMEMBERED_VOICES};
 use crate::whisper::{route, Route, WhisperKeys};
 use crate::{
     BookmarkRow, ChatRow, Icons, IdentityRow, PhishSpeakApp, PickRow, ServerTile, SettingsWindow, TreeRow,
@@ -239,6 +240,7 @@ pub struct App {
     outputs: Vec<DeviceInfo>,
     level_jobs: Vec<LevelJob>,
     prompt: Option<(u16, u64)>,
+    person: Option<(u16, u16)>,
     dirty: Dirty,
     silent_since: Option<Instant>,
     silence_warned: bool,
@@ -319,6 +321,7 @@ impl App {
             outputs: Vec::new(),
             level_jobs: Vec::new(),
             prompt: None,
+            person: None,
             dirty: Dirty::everything(),
             silent_since: None,
             silence_warned: false,
@@ -1222,6 +1225,10 @@ impl App {
     }
 
     pub fn row_activated(&mut self, w: &Windows, row: TreeRow) {
+        if row.kind == 4 {
+            self.open_person(w, row.id.clamp(0, 0xffff) as u16);
+            return;
+        }
         if row.kind != 3 {
             return;
         }
@@ -1260,6 +1267,205 @@ impl App {
         }
     }
 
+    fn open_person(&mut self, w: &Windows, client_id: u16) {
+        let Some(session) = self.viewed_session().filter(|s| s.is_connected()) else {
+            return;
+        };
+        let Some(view) = &session.view else {
+            return;
+        };
+        let Some(person) = view.client(client_id) else {
+            return;
+        };
+        let me = client_id == view.own_id;
+        if let (false, Some(client)) = (me, &session.client) {
+            client.request_details(client_id);
+        }
+        let voice = self.settings.voices.get(&person.uid).copied().unwrap_or(Voice::plain());
+        w.main.set_person_volume(f32::from(voice.percent));
+        w.main.set_person_muted(voice.muted);
+        w.main.set_person_poke("".into());
+        w.main.set_person_away(person.away);
+        w.main.set_person_away_message(person.away_message.as_str().into());
+        self.person = Some((session.id, client_id));
+        self.publish_person(w);
+        w.main.set_menu_open(false);
+        w.main.set_person_open(self.person.is_some());
+    }
+
+    fn publish_person(&mut self, w: &Windows) {
+        let Some((session_id, client_id)) = self.person else {
+            return;
+        };
+        let shown = self
+            .session(session_id)
+            .filter(|s| self.viewed == Some(s.id) && s.is_connected())
+            .and_then(|s| s.view.as_ref().map(|view| (s, view)))
+            .and_then(|(s, view)| view.client(client_id).map(|person| (s, view, person)));
+        let Some((session, view, person)) = shown else {
+            self.person = None;
+            w.main.set_person_open(false);
+            return;
+        };
+        let mut groups: Vec<&str> = session
+            .server_groups
+            .iter()
+            .filter(|group| person.server_groups.contains(&group.id))
+            .map(|group| group.name.as_str())
+            .collect();
+        if let Some(group) = session.channel_groups.iter().find(|group| group.id == person.channel_group) {
+            if !groups.contains(&group.name.as_str()) {
+                groups.push(group.name.as_str());
+            }
+        }
+        let mut about: Vec<String> = Vec::new();
+        let version = person.version.split_whitespace().next().unwrap_or("");
+        match (version.is_empty(), person.platform.is_empty()) {
+            (false, false) => about.push(format!("Client {version} on {}", person.platform)),
+            (false, true) => about.push(format!("Client {version}")),
+            (true, false) => about.push(person.platform.clone()),
+            (true, true) => {}
+        }
+        if !person.country.trim().is_empty() {
+            about.push(person.country.trim().to_uppercase());
+        }
+        if !person.description.trim().is_empty() {
+            about.push(person.description.trim().to_string());
+        }
+        let mut status: Vec<String> = Vec::new();
+        if person.away {
+            let note = person.away_message.trim();
+            status.push(if note.is_empty() { "Away".to_string() } else { format!("Away: {note}") });
+        }
+        if person.talk_request {
+            let note = person.talk_request_message.trim();
+            status.push(if note.is_empty() { "Asks to talk".to_string() } else { format!("Asks to talk: {note}") });
+        }
+        if person.is_recording {
+            status.push("Recording".to_string());
+        }
+        if person.is_channel_commander {
+            status.push("Channel commander".to_string());
+        }
+        if person.is_priority_speaker {
+            status.push("Priority speaker".to_string());
+        }
+        w.main.set_person_name(person.nickname.as_str().into());
+        w.main.set_person_me(client_id == view.own_id);
+        w.main.set_person_line(groups.join(", ").into());
+        w.main.set_person_about(about.join("  \u{b7}  ").into());
+        w.main.set_person_status(status.join("  \u{b7}  ").into());
+    }
+
+    pub fn person_voice_changed(&mut self, w: &Windows) {
+        let Some((session_id, client_id)) = self.person else {
+            return;
+        };
+        let uid = self
+            .session(session_id)
+            .and_then(|s| s.view.as_ref())
+            .and_then(|view| view.client(client_id))
+            .map(|person| person.uid.clone())
+            .filter(|uid| !uid.is_empty());
+        let Some(uid) = uid else {
+            return;
+        };
+        let voice = Voice {
+            percent: w.main.get_person_volume().round().clamp(0.0, 200.0) as u16,
+            muted: w.main.get_person_muted(),
+        };
+        if voice.is_plain() {
+            self.settings.voices.remove(&uid);
+        } else if self.settings.voices.len() < MAX_REMEMBERED_VOICES || self.settings.voices.contains_key(&uid) {
+            self.settings.voices.insert(uid, voice);
+        }
+        self.mark_settings_dirty();
+        let ids: Vec<u16> = self.sessions.iter().map(|s| s.id).collect();
+        for id in ids {
+            self.apply_voices(id);
+        }
+        self.dirty.tree = true;
+    }
+
+    fn apply_voices(&mut self, id: u16) {
+        let Some(session) = self.session(id) else {
+            return;
+        };
+        let Some(view) = &session.view else {
+            return;
+        };
+        let mut wanted: HashMap<u16, (String, f32)> = HashMap::new();
+        let mut silenced: HashSet<u16> = HashSet::new();
+        for person in view.channels.iter().flat_map(|node| node.clients.iter()).filter(|c| c.id != view.own_id) {
+            let voice = self.settings.voices.get(&person.uid).copied().unwrap_or(Voice::plain());
+            if voice.muted {
+                silenced.insert(person.id);
+            }
+            wanted.insert(person.id, (person.uid.clone(), voice.gain()));
+        }
+        let changed: Vec<(u16, f32)> = wanted
+            .iter()
+            .filter(|(client, entry)| session.voices_applied.get(*client) != Some(*entry))
+            .map(|(client, entry)| (*client, entry.1))
+            .collect();
+        for (client, gain) in changed {
+            self.engine.set_volume(id, client, gain);
+        }
+        if let Some(session) = self.session_mut(id) {
+            session.voices_applied = wanted;
+            session.silenced = silenced;
+        }
+    }
+
+    pub fn person_message(&mut self, w: &Windows) {
+        let Some((session_id, client_id)) = self.person.take() else {
+            return;
+        };
+        w.main.set_person_open(false);
+        let Some(session) = self.session_mut(session_id) else {
+            return;
+        };
+        let Some(person) = session.view.as_ref().and_then(|view| view.client(client_id)) else {
+            return;
+        };
+        let peer = Peer { id: client_id, uid: person.uid.clone(), name: person.nickname.clone() };
+        w.main.set_chat_peer(peer.name.as_str().into());
+        session.peer = Some(peer);
+        w.main.set_chat_target(2);
+        w.main.set_chat_open(true);
+        self.dirty.sessions = true;
+    }
+
+    pub fn person_poke(&mut self, w: &Windows) {
+        let Some((session_id, client_id)) = self.person.take() else {
+            return;
+        };
+        w.main.set_person_open(false);
+        let text: String = w.main.get_person_poke().trim().chars().take(100).collect();
+        w.main.set_person_poke("".into());
+        let viewed = self.viewed == Some(session_id);
+        let Some(session) = self.session_mut(session_id) else {
+            return;
+        };
+        let name = session.view.as_ref().and_then(|view| view.client(client_id)).map(|person| person.nickname.clone());
+        let (Some(name), Some(client)) = (name, session.client.clone()) else {
+            return;
+        };
+        client.poke(client_id, &text);
+        session.system(&if text.is_empty() { format!("You poked {name}") } else { format!("You poked {name}: {text}") });
+        self.dirty.chat |= viewed;
+    }
+
+    pub fn person_away(&mut self, w: &Windows) {
+        let away = w.main.get_person_away();
+        let message: String = w.main.get_person_away_message().trim().chars().take(80).collect();
+        for session in self.sessions.iter().filter(|s| s.is_connected()) {
+            if let Some(client) = &session.client {
+                client.set_away(away, if away { &message } else { "" });
+            }
+        }
+    }
+
     pub fn send_chat(&mut self, w: &Windows) {
         let text = w.main.get_chat_input().trim().to_string();
         if text.is_empty() {
@@ -1271,8 +1477,20 @@ impl App {
         let (Some(client), true) = (&session.client, session.is_connected()) else {
             return;
         };
-        let to_server = w.main.get_chat_open() && w.main.get_chat_target() == 1;
-        client.send_text(if to_server { TextTarget::Server } else { TextTarget::Channel }, &text);
+        let target = if w.main.get_chat_open() { w.main.get_chat_target() } else { 0 };
+        match (target, &session.peer) {
+            (1, _) => client.send_text(TextTarget::Server, &text),
+            (2, Some(peer)) => {
+                let here = session.view.as_ref().and_then(|view| view.client(peer.id)).is_some_and(|c| c.uid == peer.uid);
+                if !here {
+                    w.main.set_notice(format!("{} is not connected any more.", peer.name).into());
+                    return;
+                }
+                client.send_text(TextTarget::Client(peer.id), &text);
+            }
+            (2, None) => return,
+            _ => client.send_text(TextTarget::Channel, &text),
+        }
         w.main.set_chat_input("".into());
     }
 
@@ -1424,6 +1642,9 @@ impl App {
         }
         if outcome.folds {
             self.remember_folds(id);
+        }
+        if outcome.tree {
+            self.apply_voices(id);
         }
         if let Some((channel, locked)) = outcome.start_channel {
             self.enter_start_channel(w, id, channel, locked, &outcome.start_password);
@@ -1784,6 +2005,11 @@ impl App {
                 self.default_nickname()
             }
         };
+        let peer = self.viewed_session().and_then(|s| s.peer.as_ref()).map(|peer| peer.name.clone()).unwrap_or_default();
+        if peer.is_empty() && w.main.get_chat_target() == 2 {
+            w.main.set_chat_target(0);
+        }
+        w.main.set_chat_peer(peer.into());
         w.main.set_initials(initials(&nickname).into());
         w.main.set_nickname(nickname.into());
         w.main.set_menu_bookmarks(ModelRc::new(VecModel::from(self.bookmark_rows(true))));
@@ -1808,8 +2034,12 @@ impl App {
             None => (Vec::new(), String::new(), None),
         };
         let mut rows: Vec<TreeRow> = Vec::with_capacity(data.len());
+        let silenced = self.viewed_session().map(|s| s.silenced.clone()).unwrap_or_default();
         for row in &data {
             let mut shown = tree_row(row);
+            if row.kind == RowKind::Person && row.tag.is_empty() && silenced.contains(&(row.id as u16)) {
+                shown.tag = "muted by you".into();
+            }
             for icon in &row.icons {
                 if let Some((picture, tinted)) = self.picture(&uid, *icon, client.as_ref(), now) {
                     set_badge(&mut shown, picture, tinted);
@@ -1873,6 +2103,7 @@ impl App {
         }
         if dirty.tree {
             self.publish_tree();
+            self.publish_person(w);
         }
         if dirty.chat {
             self.publish_chat(w);

@@ -14,6 +14,31 @@ pub const MIN_WINDOW_HEIGHT: f32 = 520.0;
 const MAX_WINDOW_SIDE: f32 = 8000.0;
 pub const MAX_REMEMBERED_FOLDS: usize = 512;
 pub const MAX_REMEMBERED_SERVERS: usize = 64;
+pub const MAX_REMEMBERED_VOICES: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Voice {
+    pub percent: u16,
+    pub muted: bool,
+}
+
+impl Voice {
+    pub fn plain() -> Self {
+        Self { percent: 100, muted: false }
+    }
+
+    pub fn is_plain(self) -> bool {
+        self == Self::plain()
+    }
+
+    pub fn gain(self) -> f32 {
+        if self.muted {
+            return 0.0;
+        }
+        let level = f32::from(self.percent.min(200)) / 100.0;
+        level * level
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
@@ -34,6 +59,7 @@ pub struct Settings {
     pub allow_whispers: bool,
     pub fold_mode: i32,
     pub folds: BTreeMap<String, BTreeMap<u64, bool>>,
+    pub voices: BTreeMap<String, Voice>,
     pub window_width: f32,
     pub window_height: f32,
     pub key_offsets: BTreeMap<String, u64>,
@@ -59,6 +85,7 @@ impl Default for Settings {
             allow_whispers: true,
             fold_mode: 1,
             folds: BTreeMap::new(),
+            voices: BTreeMap::new(),
             window_width: DEFAULT_WINDOW_WIDTH,
             window_height: DEFAULT_WINDOW_HEIGHT,
             key_offsets: BTreeMap::new(),
@@ -99,6 +126,20 @@ impl Settings {
                 if let Some((uid, offset)) = rest.rsplit_once('=') {
                     if let Ok(offset) = offset.trim().parse() {
                         s.key_offsets.insert(uid.to_string(), offset);
+                    }
+                }
+                continue;
+            }
+            if let Some(rest) = line.trim().strip_prefix("voice.") {
+                if let Some((uid, value)) = rest.rsplit_once('=') {
+                    let mut parts = value.split(',');
+                    let percent = parts.next().and_then(|part| part.trim().parse::<u16>().ok());
+                    let muted = parts.next().is_some_and(|flag| flag.trim() == "muted");
+                    if let (Some(percent), false) = (percent, uid.is_empty()) {
+                        let voice = Voice { percent: percent.min(200), muted };
+                        if !voice.is_plain() && s.voices.len() < MAX_REMEMBERED_VOICES {
+                            s.voices.insert(uid.to_string(), voice);
+                        }
                     }
                 }
                 continue;
@@ -200,6 +241,11 @@ impl Settings {
         for (uid, offset) in &self.key_offsets {
             put(&format!("key_offset.{uid}"), offset.to_string());
         }
+        for (uid, voice) in &self.voices {
+            if !voice.is_plain() {
+                put(&format!("voice.{uid}"), format!("{}{}", voice.percent, if voice.muted { ",muted" } else { "" }));
+            }
+        }
         for (uid, chosen) in &self.folds {
             if !chosen.is_empty() {
                 let list: Vec<String> =
@@ -223,6 +269,32 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn how_loud_each_person_is_for_me_is_kept() {
+        let mut s = Settings::default();
+        s.voices.insert("test/9PZ9vww/Bpf5vJxtJhpz80=".into(), Voice { percent: 150, muted: false });
+        s.voices.insert("lks7QL5OVMKo4pZ79cEOI5r5oEA=".into(), Voice { percent: 100, muted: true });
+        s.voices.insert("plain".into(), Voice::plain());
+        let text = s.serialize();
+        assert!(text.contains("voice.test/9PZ9vww/Bpf5vJxtJhpz80==150\n"));
+        assert!(text.contains("voice.lks7QL5OVMKo4pZ79cEOI5r5oEA==100,muted\n"));
+        assert!(!text.contains("voice.plain"));
+        let back = Settings::parse(&text);
+        assert_eq!(back.voices.len(), 2);
+        assert_eq!(back.voices["test/9PZ9vww/Bpf5vJxtJhpz80="], Voice { percent: 150, muted: false });
+        assert!(back.voices["lks7QL5OVMKo4pZ79cEOI5r5oEA="].muted);
+        let odd = Settings::parse("voice.a=900\nvoice.b=x\nvoice.=50\nvoice.c=100\nvoice.d=0, muted \nvoice.e\n");
+        assert_eq!(odd.voices.len(), 2);
+        assert_eq!(odd.voices["a"].percent, 200);
+        assert_eq!(odd.voices["d"], Voice { percent: 0, muted: true });
+        let crowd: String = (0..400).map(|n| format!("voice.person{n}=50\n")).collect();
+        assert_eq!(Settings::parse(&crowd).voices.len(), MAX_REMEMBERED_VOICES);
+        assert_eq!(Voice::plain().gain(), 1.0);
+        assert_eq!(Voice { percent: 50, muted: false }.gain(), 0.25);
+        assert_eq!(Voice { percent: 200, muted: false }.gain(), 4.0);
+        assert_eq!(Voice { percent: 200, muted: true }.gain(), 0.0);
+    }
 
     #[test]
     fn round_trip() {

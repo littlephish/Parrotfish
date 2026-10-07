@@ -87,6 +87,14 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_toggle_commander(move || with_app(&a, |s, w| s.toggle_commander(w)));
     let a = app.clone();
     ui.on_toggle_start_here(move || with_app(&a, |s, w| s.toggle_start_here(w)));
+    let a = app.clone();
+    ui.on_person_voice_changed(move || with_app(&a, |s, w| s.person_voice_changed(w)));
+    let a = app.clone();
+    ui.on_person_message(move || with_app(&a, |s, w| s.person_message(w)));
+    let a = app.clone();
+    ui.on_person_poke_sent(move || with_app(&a, |s, w| s.person_poke(w)));
+    let a = app.clone();
+    ui.on_person_away_toggled(move || with_app(&a, |s, w| s.person_away(w)));
 
     let a = app.clone();
     settings_window.on_audio_changed(move || with_app(&a, |s, w| s.apply_audio(w)));

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
@@ -488,6 +488,13 @@ pub struct ConnectRequest {
     pub quiet: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Peer {
+    pub id: u16,
+    pub uid: String,
+    pub name: String,
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Outcome {
     pub tree: bool,
@@ -535,6 +542,9 @@ pub struct Session {
     pub reply_to: Option<(u16, String)>,
     pub server_uid: String,
     pub start_pending: bool,
+    pub peer: Option<Peer>,
+    pub voices_applied: HashMap<u16, (String, f32)>,
+    pub silenced: HashSet<u16>,
 }
 
 impl Session {
@@ -565,6 +575,9 @@ impl Session {
             reply_to: None,
             server_uid: String::new(),
             start_pending: false,
+            peer: None,
+            voices_applied: HashMap::new(),
+            silenced: HashSet::new(),
         }
     }
 
@@ -790,7 +803,23 @@ impl Session {
                 let name = match target {
                     TextTarget::Channel => from_name,
                     TextTarget::Server => format!("{from_name} (server)"),
-                    TextTarget::Client(_) => format!("{from_name} (private)"),
+                    TextTarget::Client(to) if mine => {
+                        let peer = self.view.as_ref().and_then(|view| view.client(to)).map(|client| client.nickname.clone());
+                        format!("to {}", peer.unwrap_or_else(|| "someone".to_string()))
+                    }
+                    TextTarget::Client(_) => {
+                        if self.peer.is_none() {
+                            let uid = self
+                                .view
+                                .as_ref()
+                                .and_then(|view| view.client(from_id))
+                                .map(|client| client.uid.clone())
+                                .unwrap_or_default();
+                            self.peer = Some(Peer { id: from_id, uid, name: from_name.clone() });
+                            out.header = true;
+                        }
+                        format!("{from_name} (private)")
+                    }
                 };
                 self.push_line(if mine { ChatKind::Mine } else { ChatKind::Message }, &name, &text);
             }
@@ -1186,6 +1215,37 @@ mod tests {
         assert!(s.apply(Event::View(view.clone())).folds);
         assert!(!s.folds.chosen.contains_key(&20));
         assert!(!s.apply(Event::View(view)).folds);
+    }
+
+    #[test]
+    fn private_messages_name_who_they_are_with() {
+        let mut s = session();
+        s.apply(Event::Connected { client_id: 7, server: ServerInfo::default() });
+        s.apply(Event::View(sample_view()));
+        let out = s.apply(Event::TextMessage {
+            target: TextTarget::Client(7),
+            from_id: 8,
+            from_name: "Marlin".into(),
+            text: "psst".into(),
+        });
+        assert!(out.header);
+        assert_eq!(s.peer.as_ref().map(|peer| (peer.id, peer.name.as_str())), Some((8, "Marlin")));
+        assert_eq!(s.chat.back().unwrap().name, "Marlin (private)");
+        s.apply(Event::TextMessage {
+            target: TextTarget::Client(8),
+            from_id: 7,
+            from_name: "Minnow".into(),
+            text: "yes?".into(),
+        });
+        let last = s.chat.back().unwrap();
+        assert_eq!((last.kind, last.name.as_str()), (ChatKind::Mine, "to Marlin"));
+        s.apply(Event::TextMessage {
+            target: TextTarget::Client(7),
+            from_id: 9,
+            from_name: "Coralline".into(),
+            text: "hi".into(),
+        });
+        assert_eq!(s.peer.as_ref().map(|peer| peer.id), Some(8), "a second sender does not take over the reply");
     }
 
     #[test]
