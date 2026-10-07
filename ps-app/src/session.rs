@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
+use ps_voice::Cue;
+
 use ps_client::spacer::{parse_spacer, Spacer, SpacerAlign, SpacerLine};
 use ps_client::{
     ChannelNode, ClientHandle, ConnectionState, Event, Group, ERROR_NO_WHISPER_TARGETS, ServerView, TextTarget, CODEC_OPUS_MUSIC, CODEC_OPUS_VOICE,
@@ -597,6 +599,7 @@ pub struct Outcome {
     pub start_channel: Option<(u64, bool)>,
     pub start_password: String,
     pub retry: bool,
+    pub cue: Option<Cue>,
     pub icon: Option<(u32, Result<Vec<u8>, String>)>,
 }
 
@@ -811,6 +814,7 @@ impl Session {
                 self.start_pending = !self.request.channel.trim().is_empty() || self.request.channel_id != 0;
                 self.waiting_level = None;
                 self.was_connected = true;
+                out.cue = Some(Cue::Connected);
                 self.retries = 0;
                 self.retry_at = None;
                 self.kept_password = std::mem::take(&mut self.request.password);
@@ -926,6 +930,7 @@ impl Session {
                             self.peer = Some(Peer { id: from_id, uid, name: from_name.clone() });
                             out.header = true;
                         }
+                        out.cue = Some(Cue::Message);
                         format!("{from_name} (private)")
                     }
                 };
@@ -938,21 +943,35 @@ impl Session {
                     format!("{from_name} poked you: {}", tidy(&text))
                 };
                 self.system(&line);
+                out.cue = Some(Cue::Poke);
                 out.notice = Some(line);
             }
             Event::ClientEntered { client } => {
+                if !client.is_query && self.view.as_ref().is_some_and(|view| view.own_channel == client.channel) {
+                    out.cue = Some(Cue::Joined);
+                }
                 if !client.is_query {
                     self.system(&format!("{} connected", client.nickname));
                 }
             }
             Event::ClientLeft { client, reason } => {
                 out.forget.push(client.id);
+                if !client.is_query && self.view.as_ref().is_some_and(|view| view.own_channel == client.channel) {
+                    out.cue = Some(Cue::Left);
+                }
                 if !client.is_query {
                     self.system(&describe_leave(&client.nickname, &reason));
                 }
             }
-            Event::ClientMoved { client, to, .. } => {
+            Event::ClientMoved { client, from, to } => {
                 let channel = self.channel_name(to);
+                let mine = self.view.as_ref().map(|view| view.own_channel).unwrap_or(0);
+                out.cue = match (client.id == self.own_id, client.is_query) {
+                    (true, _) => Some(Cue::Moved),
+                    (false, false) if to == mine && mine != 0 => Some(Cue::Joined),
+                    (false, false) if from == mine && mine != 0 => Some(Cue::Left),
+                    _ => None,
+                };
                 if client.id == self.own_id {
                     out.forget_all = true;
                     self.system(&format!("You joined {channel}"));
@@ -1006,6 +1025,9 @@ impl Session {
                 out.forget_all = true;
                 out.tree = true;
                 out.header = true;
+                if self.was_connected && !self.leaving {
+                    out.cue = Some(Cue::ConnectionLost);
+                }
                 if self.waiting_level.is_some() && !self.leaving {
                     self.phase = Phase::Connecting;
                     self.state_text = "Making your identity stronger".to_string();
@@ -1433,6 +1455,39 @@ mod tests {
         assert_eq!(plain_text("a\r\n\r\n\r\n\r\nb  \n"), "a\n\nb");
         assert_eq!(plain_text(""), "");
         assert_eq!(plain_text(&"x".repeat(5000)).chars().count(), 4000);
+    }
+
+    #[test]
+    fn events_ask_for_their_sounds() {
+        let mut s = session();
+        assert_eq!(s.apply(Event::Connected { client_id: 7, server: ServerInfo::default() }).cue, Some(Cue::Connected));
+        s.apply(Event::View(sample_view()));
+        let here = person(30, 1, "Pike");
+        let elsewhere = person(31, 4, "Bream");
+        assert_eq!(s.apply(Event::ClientEntered { client: here.clone() }).cue, Some(Cue::Joined));
+        assert_eq!(s.apply(Event::ClientEntered { client: elsewhere.clone() }).cue, None);
+        assert_eq!(s.apply(Event::ClientLeft { client: here.clone(), reason: "left".into() }).cue, Some(Cue::Left));
+        assert_eq!(s.apply(Event::ClientLeft { client: elsewhere.clone(), reason: "left".into() }).cue, None);
+        assert_eq!(s.apply(Event::ClientMoved { client: elsewhere.clone(), from: 4, to: 1 }).cue, Some(Cue::Joined));
+        assert_eq!(s.apply(Event::ClientMoved { client: here.clone(), from: 1, to: 4 }).cue, Some(Cue::Left));
+        assert_eq!(s.apply(Event::ClientMoved { client: elsewhere, from: 4, to: 3 }).cue, None);
+        assert_eq!(s.apply(Event::ClientMoved { client: person(7, 4, "Minnow"), from: 1, to: 4 }).cue, Some(Cue::Moved));
+        let mut robot = here;
+        robot.is_query = true;
+        assert_eq!(s.apply(Event::ClientEntered { client: robot }).cue, None);
+        let private = Event::TextMessage { target: TextTarget::Client(7), from_id: 8, from_name: "Marlin".into(), text: "psst".into() };
+        assert_eq!(s.apply(private).cue, Some(Cue::Message));
+        let mine = Event::TextMessage { target: TextTarget::Client(8), from_id: 7, from_name: "Minnow".into(), text: "yes".into() };
+        assert_eq!(s.apply(mine).cue, None);
+        let public = Event::TextMessage { target: TextTarget::Channel, from_id: 8, from_name: "Marlin".into(), text: "hi".into() };
+        assert_eq!(s.apply(public).cue, None);
+        assert_eq!(s.apply(Event::Poke { from_name: "Marlin".into(), text: String::new() }).cue, Some(Cue::Poke));
+        let lost = s.apply(Event::Disconnected { reason: "connection lost (the server stopped responding)".into() });
+        assert_eq!(lost.cue, Some(Cue::ConnectionLost));
+        let mut leaving = session();
+        leaving.apply(Event::Connected { client_id: 7, server: ServerInfo::default() });
+        leaving.leaving = true;
+        assert_eq!(leaving.apply(Event::Disconnected { reason: "disconnected".into() }).cue, None);
     }
 
     #[test]

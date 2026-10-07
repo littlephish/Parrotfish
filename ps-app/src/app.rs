@@ -12,7 +12,7 @@ use ps_client::{
     ClientHandle, ConnectOptions, TextTarget, VoiceSink, WhisperTarget, CODEC_OPUS_VOICE, DEFAULT_PORT,
 };
 use ps_identity::Identity;
-use ps_voice::{AudioEngine, DeviceInfo, FrameSink, TxMode};
+use ps_voice::{AudioEngine, Cue, DeviceInfo, FrameSink, TxMode};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel, Weak};
 
 use crate::bookmarks::{initials, Bookmark, Bookmarks};
@@ -362,6 +362,9 @@ impl App {
         w.settings.set_mic_gain(self.settings.mic_gain);
         w.settings.set_output_volume(self.settings.output_volume);
         w.settings.set_echo_cancel(self.settings.echo_cancel);
+        w.settings.set_noise_suppression(self.settings.noise_suppression);
+        w.settings.set_auto_gain(self.settings.auto_gain);
+        w.settings.set_cue_volume(self.settings.cue_volume);
         let problems = self.load_identities();
         if self.identities.is_empty() {
             if let Err(problem) = self.create_identity() {
@@ -591,6 +594,12 @@ impl App {
         shared.set_output_volume(volume / 100.0);
         let echo = w.settings.get_echo_cancel();
         shared.set_echo_cancel(echo);
+        let denoise = w.settings.get_noise_suppression();
+        let even = w.settings.get_auto_gain();
+        let cues = w.settings.get_cue_volume().clamp(0.0, 100.0);
+        shared.set_noise_suppression(denoise);
+        shared.set_auto_gain(even);
+        shared.set_cue_volume(cues / 100.0);
         self.engine.set_loopback(w.settings.get_mic_test());
         w.main.set_threshold_position(if tx_mode == 0 { level_position(threshold) } else { -1.0 });
         self.settings.tx_mode = tx_mode;
@@ -598,6 +607,9 @@ impl App {
         self.settings.mic_gain = gain;
         self.settings.output_volume = volume;
         self.settings.echo_cancel = echo;
+        self.settings.noise_suppression = denoise;
+        self.settings.auto_gain = even;
+        self.settings.cue_volume = cues;
         self.mark_settings_dirty();
     }
 
@@ -1163,11 +1175,13 @@ impl App {
     pub fn toggle_mic(&mut self, w: &Windows) {
         self.mic_muted = !self.mic_muted;
         self.apply_mute(w);
+        self.engine.play_cue(if self.mic_muted { Cue::MicOff } else { Cue::MicOn });
     }
 
     pub fn toggle_sound(&mut self, w: &Windows) {
         self.sound_muted = !self.sound_muted;
         self.apply_mute(w);
+        self.engine.play_cue(if self.sound_muted { Cue::SoundOff } else { Cue::SoundOn });
     }
 
     fn remember_folds(&mut self, id: u16) {
@@ -1735,6 +1749,9 @@ impl App {
 
     fn on_outcome(&mut self, w: &Windows, id: u16, was_connecting: bool, outcome: Outcome) {
         let viewed = self.viewed == Some(id);
+        if let Some(cue) = outcome.cue {
+            self.engine.play_cue(cue);
+        }
         for client in &outcome.forget {
             self.engine.remove_talker(id, *client);
         }

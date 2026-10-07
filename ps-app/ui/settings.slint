@@ -38,9 +38,9 @@ component Divider inherits Rectangle {
 export component SettingsWindow inherits Window {
     title: "PhishSpeak settings";
     preferred-width: 700px;
-    preferred-height: 540px;
+    preferred-height: 600px;
     min-width: 640px;
-    min-height: 520px;
+    min-height: 590px;
     background: Theme.reef;
     default-font-size: Theme.text;
 
@@ -61,6 +61,9 @@ export component SettingsWindow inherits Window {
     in property <string> sound-status;
     in property <string> talk-hint;
     in-out property <bool> echo-cancel;
+    in-out property <bool> noise-suppression;
+    in-out property <bool> auto-gain;
+    in-out property <float> cue-volume: 50;
     in property <string> echo-status;
 
     in property <[IdentityRow]> identities;
@@ -336,6 +339,34 @@ export component SettingsWindow inherits Window {
                         spacing: 16px;
 
                         Caption {
+                            text: "Clean-up";
+                        }
+
+                        VerticalLayout {
+                            spacing: 2px;
+
+                            Check {
+                                text: "Take steady background noise out of my voice";
+                                checked <=> root.noise-suppression;
+                                toggled => {
+                                    root.audio-changed();
+                                }
+                            }
+
+                            Check {
+                                text: "Keep my voice at an even level";
+                                checked <=> root.auto-gain;
+                                toggled => {
+                                    root.audio-changed();
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 16px;
+
+                        Caption {
                             text: "Echo";
                         }
 
@@ -421,6 +452,28 @@ export component SettingsWindow inherits Window {
 
                         Reading {
                             text: "\{round(root.output-volume)}%";
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 16px;
+
+                        Caption {
+                            text: "Event sounds";
+                        }
+
+                        Slide {
+                            minimum: 0;
+                            maximum: 100;
+                            step: 5;
+                            value <=> root.cue-volume;
+                            changed => {
+                                root.audio-changed();
+                            }
+                        }
+
+                        Reading {
+                            text: root.cue-volume < 1 ? "off" : "\{round(root.cue-volume)}%";
                         }
                     }
                 }
