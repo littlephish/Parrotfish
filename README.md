@@ -12,21 +12,33 @@ chat, and carries voice in both directions with Opus.
   bookmark can connect when PhishSpeak starts and can keep the server's and the channel's
   password, stored encrypted for your Windows account.
 - The icons a server sets up: on channels, on people (their groups and their own) and for the
-  server itself. PNG and JPEG; GIF icons are not shown yet.
+  server itself. PNG, JPEG, and GIF as a still picture.
 - Several servers at once. You hear all of them; your microphone goes to the one you are viewing.
+- Click a person for private messages, a poke, their details, and a volume and mute that apply
+  to that person only and are remembered. Right-click a channel for its topic and description.
+- A small "who is speaking" window you can put anywhere: it lists who is talking and, for a few
+  seconds, who just did. Lock it and it lets clicks through and hides while nobody speaks. It can
+  stay above other windows and be made see-through. It is an ordinary window, so it shows over
+  games that run in a window or borderless window, not over exclusive full screen.
 - Talk keys you choose by pressing them: any key, mouse button 3 to 5, or a combination, and
-  more than one if you like. They work while PhishSpeak is in the background.
+  more than one if you like. They work while PhishSpeak is in the background. Keys for muting
+  the microphone and the sound work the same way.
 - Whisper keys that send your voice to the channels and people you tick, or to everyone, the
   channel commanders or a server or channel group in the channels above, below or around yours,
   plus a key that replies to whoever whispered to you last.
-- Echo cancelling for when you listen through speakers, so the people you talk to do not hear
-  themselves. It is off by default and has not been tried in a real room yet.
+- For the microphone: echo cancelling for when you listen through speakers, steady-noise
+  suppression, and automatic gain. All three are off by default and none has been judged by ear
+  yet.
+- Short sounds for events such as someone joining or a message arriving, with their own volume.
+- A connection that drops is picked up again by itself, back in the channel you were in.
+- Privilege keys, asking to talk in moderated channels, and the usual address lookups (SRV
+  records and TSDNS), so a plain server name works as it does in the TeamSpeak client.
 - One settings window with tabs: microphone, sound, identities, bookmarks, shortcuts, channels,
   about.
 
 It is early software. It has been tested against a TeamSpeak 3.13.8 server, but not yet in a
-conversation with the official client or on a public server. [PLAN.md](PLAN.md) lists what works,
-what has been verified and what is still missing.
+conversation with the official client, and voice has not been tried on a public server.
+[PLAN.md](PLAN.md) lists what works, what has been verified and what is still missing.
 
 ## Build and run
 
@@ -59,8 +71,8 @@ Pushing a tag builds a release; nothing else does. Set the version in `Cargo.tom
 (`[workspace.package]`), commit, then:
 
 ```
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 The `Release` workflow checks that the tag is `v` plus that version, runs the tests, builds the

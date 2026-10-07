@@ -3,11 +3,11 @@
 A TeamSpeak 3 client in Rust with a Slint GUI. It logs in with real TS3 identities (P-256),
 joins a server, shows the channel tree, chats, and does voice (Opus) both ways.
 
-## Status (2026-10-06)
+## Status (2026-10-07)
 
 Working end to end against a real TeamSpeak 3.13.8 server: login, channel tree, channel
 switching (incl. password channels), text chat, microphone capture → Opus → server, and
-server → Opus → speakers, with and without voice encryption. 195 unit tests green.
+server → Opus → speakers, with and without voice encryption. 256 unit tests green.
 
 The window is the compact tree layout in the Twilight reef palette (design:
 `docs/superpowers/specs/2026-10-06-compact-window-design.md`): spacer channels are drawn as
@@ -47,25 +47,57 @@ cargo run --release -p ps-app -- --connect <bookmark name or host[:port]> [--nic
 
 Icons a server defines are shown: on channels, on people (channel group, server groups, their
 own icon, at most four) and the server's own icon after its name. They are fetched once, two a
-second at most, and kept in `%APPDATA%\PhishSpeak\cache\icons`. PNG and JPEG only.
+second at most, and kept in `%APPDATA%\PhishSpeak\cache\icons`. PNG and JPEG, and the first
+frame of a GIF.
 
 A bookmark can connect when PhishSpeak starts and can keep a server password and a password
 for its start channel. Passwords are stored encrypted for the Windows account, never as text.
 
-Not done yet: ServerQuery browser (v1.1), private-chat tabs, permissions UI,
-channel create/edit, file browser and avatars, GIF icons, SRV/TSDNS lookup (use `host:port`), legacy
-Speex/CELT codecs (reported in the log, not decoded), pre-3.1 servers (`initivexpand`),
-hotkeys for anything but talking, game controller buttons, noise suppression and automatic
-gain.
+Added on 2026-10-07:
+
+- An address without a port is looked up the way the TeamSpeak client does it: an SRV record
+  (`_ts3._udp`), then TSDNS, then the plain name.
+- Clicking a person opens a panel: private messages, poke, a volume slider and a mute for that
+  person alone (remembered by their UID), and what the server tells about them. On your own row
+  the panel sets you away.
+- A lost connection is retried by itself after 2, 4, 8 and 15 seconds and then every 30, and
+  you are put back in the channel you were in.
+- Privilege keys can be used from the server menu. In a moderated channel you can ask to talk.
+  People who record, and people who asked to talk, are marked.
+- Right-clicking a channel shows its topic and description. A server's host message is shown
+  when you sign in.
+- Event sounds (connected, connection lost, someone joins, leaves or is moved, a message, a
+  poke, microphone and sound muted and unmuted) with their own volume.
+- For the microphone: steady background noise can be taken out and the level can be kept even.
+  Both are off by default.
+- Keys that mute the microphone and the sound, chosen like talk keys.
+- A small separate window that lists who is speaking, and for a few seconds who just spoke
+  (Settings, Channels, or the server menu). You move and size it, then lock it: locked, clicks
+  pass through it and it is invisible until someone speaks. It can stay above other windows
+  while the main window does not, and can be made see-through.
+- A window dragged to a display with another scale keeps its size and its limits.
+- Version 0.1.0 was built and published by the release workflow.
+
+Planned, not built: reading keys through Windows' Raw Input as a switch in settings
+(`docs/superpowers/plans/2026-10-07-raw-input-keys.md`).
+
+Not done yet: ServerQuery browser (v1.1), tabs for several private chats (one is shown at a
+time), permissions UI, channel create/edit, file browser and avatars, `ts3server://` links,
+legacy Speex/CELT codecs (reported in the log, not decoded), pre-3.1 servers (`initivexpand`),
+hotkeys other than talk, whisper and mute keys, game controller buttons, and an overlay inside
+games that run in exclusive full screen (the speaking window is an ordinary window on top).
 
 Not yet verified by anyone: a conversation or a whisper with the **official** TS3 client
 (everything so far is PhishSpeak ↔ real server ↔ PhishSpeak), and voice on a real
 internet server (signing in to one has worked). Do that first before trusting it for daily use.
-Also unverified: sound by ear, a talk key held on a real keyboard or mouse (the checks pressed
-F13 to F24 by program), keys while a game running as administrator has the focus, two different
-servers at once (the multi-server tests used two connections to one server), and the release
-workflow and installer script, which have never run (there is no Inno Setup on this PC and
-GitHub Actions cannot be run locally). Echo cancelling has been measured on simulated rooms
+Also unverified: sound by ear (which includes the event sounds, noise suppression and automatic
+gain), a talk key held on a real keyboard or mouse (the checks pressed F13 to F24 by program),
+keys while a game running as administrator has the focus, two different servers at once (the
+multi-server tests used two connections to one server), the speaking window over a game, the
+look with any renderer but the software one, a window dragged between two displays with
+different scales (both displays of this PC have the same one, so that change was made from
+reading the toolkit's code), and SRV and TSDNS lookups against a domain that publishes such
+records (the tests feed made-up answers). Echo cancelling has been measured on simulated rooms
 and on a sound device's own digital loopback, never in a real room with loudspeakers, never
 by ear, and never with a microphone and speakers that are separate USB devices. The fix for
 noise at the end of someone's speech is checked by tests on the decoded sound and by packet
@@ -89,9 +121,9 @@ order against the test server, not by ear and not with an official client talkin
 | `ps-identity` | INI parse, identity (de)obfuscation, DER, P-256, UID, hashcash level, sign/verify, generate/save | done, 14 tests |
 | `ps-crypto` | EAX-AES128 (8-byte MAC), dummy key, per-packet key/nonce, license chain, Ed25519 shared secret, RSA puzzle | done, 16 tests |
 | `ps-protocol` | Packet headers, command escape/parse/build, QuickLZ + fragmentation, receive windows/generations, Init1 payloads, voice and whisper payloads | done, 34 tests |
-| `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client/group book, voice and whispers in/out, events; `spacer` recognises spacer channels, `filetransfer` fetches icons over the server's file port | done, 20 tests + live tests |
-| `ps-voice` | Opus codec, resampler, jitter buffer + mixer (talkers keyed by connection and client), VAD/PTT gate, lanes (which key is held decides where a frame goes), echo canceller (`echo.rs`), cpal device I/O (WASAPI) | done, 55 tests + live tests |
-| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history), `app.rs` all sessions, the viewed one and where the microphone goes, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main and settings windows, `icons.rs` checks, shrinks and caches icons | done, 56 tests + live tests |
+| `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client/group book, voice and whispers in/out, events; `spacer` recognises spacer channels, `filetransfer` fetches icons over the server's file port, `resolve` finds a server through SRV, TSDNS or its plain name | done, 32 tests + live tests |
+| `ps-voice` | Opus codec, resampler, jitter buffer + mixer (talkers keyed by connection and client, a volume per talker), VAD/PTT gate, lanes (which key is held decides where a frame goes), echo canceller (`echo.rs`), noise suppression (`denoise.rs`), automatic gain (`agc.rs`), event sounds (`cues.rs`), cpal device I/O (WASAPI) | done, 79 tests + live tests |
+| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` keeping a window's size across displays, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 81 tests + live tests |
 | `ps-serverquery` | Text protocol over TCP 10011 | not started |
 
 Threads: UI thread (Slint, 33 ms timer drains client events) · `ps-client` actor + UDP reader ·
@@ -321,6 +353,25 @@ ConnectOk", "level 213"). What is actually on the wire:
   the three "Channels start" choices change the tree at once, a folded channel shows how many
   people are inside and tints its icon while one of them talks, joining a folded channel opens
   the way to it, and a fold made by hand was still there after a restart.
+- 2026-10-07, live against the test server with clicks and keys sent by program: the person
+  panel (a private message each way, a poke, volume and mute for one person, away); a server
+  stopped and started again, after which the client came back by itself into the channel it had
+  been in; a privilege key used from the menu; asking to talk in a moderated channel; the
+  channel panel with topic and description on right-click; the host message at sign-in; the
+  mute keys (F13 and F14 pressed by program); a GIF icon shown as a still picture.
+- The release workflow: tag `v0.1.0` built on GitHub Actions and published an installer, a zip
+  and checksums. The checksums matched after download; the installer installed, started and
+  uninstalled on this PC.
+- The speaking window, with a second client talking in the channel: a name appears lit while
+  its owner talks, stays dimmed for the set time after they stop (the wait starts when they
+  stop, however long they talked) and then goes; moving, sizing by the corner down to the
+  smallest size and up again, locking and unlocking from the window, the menu and settings;
+  locked, the window lets clicks through and is fully transparent while nobody is listed;
+  "above other windows", the see-through slider and "list everyone" take effect at once; two
+  connections give a heading each; a box too small for everyone shows who fits and "+N"; place
+  and size survive a restart; closing the main window ends the program with the speaking
+  window open; and the window did not become the active window when it was shown from the menu,
+  clicked, dragged or locked. Moving and sizing were done with mouse messages sent by program.
 
 Dev tools (examples): `cargo run -p ps-client --example probe -- <host> [--identity file] [--say TEXT]
 [--join CID] [--loss 0.2] [--auto-level] [--log]`, `cargo run -p ps-voice --example voicetest --
@@ -336,8 +387,11 @@ it is audible unless the output is a virtual device),
 `cargo run -p ps-client --example whispertest -- <host> --booth CID --drift CID` (re-runs the
 who-hears-what table and fails if a server behaves differently).
 `PHISHSPEAK_TRACE=1` makes the GUI show every command in the chat drawer.
-`probe` also takes `--icon ID` (repeatable), `--all-icons`, `--save DIR`, `--ft-port N` and
-`--voice` (how each talker's stream ends: packet sizes and timing, no sound).
+`probe` also takes `--icon ID` (repeatable), `--all-icons`, `--save DIR`, `--ft-port N`,
+`--voice` (how each talker's stream ends: packet sizes and timing, no sound), `--token KEY`
+(use a privilege key), `--send COMMAND` (repeatable), `--nick NAME` and `--seconds N`.
+`cargo run -p ps-client --example resolve -- <address>` shows where an address leads and by
+which of the three lookups.
 
 Scripts in `tools/`: `hold_keys.py F13..F24[+F13..F24] <seconds>` presses keys no keyboard has,
 for checking talk and whisper keys; `seed_whisper_tree.py --password <query password>` (run
@@ -389,7 +443,40 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   has the focus. Not seen: keys of a game that runs as administrator (unless PhishSpeak does
   too), and buttons on controllers, joysticks and pedals. Left and right mouse buttons cannot be
   bound; Esc alone cancels choosing a key. Old `ptt_key=<number>` settings are read once and
-  rewritten as `talk_key=<key codes joined with +>`.
+  rewritten as `talk_key=<key codes joined with +>`. A second way of reading keys, in which
+  Windows reports each key as it moves (Raw Input, as Mumble does), is planned as a switch and
+  was tried in a throwaway copy: `docs/superpowers/plans/2026-10-07-raw-input-keys.md`.
+- Mute keys (`mute_mic_key`, `mute_sound_key`) are combinations like talk keys and act once per
+  press. A key still held from choosing it does not fire.
+- The speaking window (`ui/speakers.slint`, `speakers.rs`) is an ordinary top-level window
+  without a frame, not something drawn inside a game: it shows over programs that run in a
+  window or a borderless window, not over exclusive full screen. It lists the people talking in
+  your channel on every connected server, people whispering to you from elsewhere, and yourself
+  while you send; with more than one server each gets a heading. A name stays, dimmed, for
+  `speakers_linger` seconds after its owner stops (10 by default, 0 to 60), counted from the
+  moment they stop. Unlocked it has an outline, a corner to size it and buttons to lock and
+  hide it; locked it passes clicks through and is fully transparent while it lists nobody.
+  Transparency is for the whole window (20 to 100 %). The window is marked so that clicking it
+  never makes it the active window, and showing it hands the focus back to the window that had
+  it. Place and size are kept in `settings.ini`. It has a taskbar button of its own.
+- Per-person volume and mute are kept by the person's UID (`voice.<uid>=<percent>[,muted]`, 256
+  people at most) and applied whenever that person is seen. The slider is squared before use,
+  so half way is a quarter of the power.
+- Reconnecting: only a connection that had been up is retried, after 2, 4, 8, 15 and then every
+  30 seconds. The password in use and the channel you were in are kept for the retry; a refusal
+  that trying again cannot cure (a ban, a wrong password) stops it.
+- A server address without a port is tried as an SRV record `_ts3._udp.<name>`, then through
+  TSDNS (an SRV record `_tsdns._tcp` or port 41144 on the domain), then as a plain name; with a
+  port typed, the SRV step is skipped. The lookups share a 4 second limit.
+- Event sounds are short tones made in code, no sound files, mixed into the output after the
+  voices with their own volume (`cue_volume`).
+- Noise suppression lowers each frequency band by how much steady noise it holds and delays
+  your voice by 4 ms. Automatic gain steers speech towards -20 dB, between -6 and +24 dB, and
+  does not turn up while you are silent. The order is echo cancelling, noise suppression,
+  automatic gain, then the microphone boost.
+- When a window lands on a display with another scale, the toolkit keeps the smallest allowed
+  size in the old display's pixels. PhishSpeak has the limits worked out again and then puts
+  the window back to the size it had, measured in the new scale (`scale.rs`).
 - A whisper key opens the microphone by itself whatever "Send my voice" says, acts on the server
   being viewed, and never falls back to the channel: if its targets are gone, offline or on
   another server, the frames are dropped and the dock says why. Whispers are always Opus Voice,
@@ -476,9 +563,14 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
     and installer script (written, never run).
 12. ✅ A start channel per bookmark; echo cancelling for the microphone.
 13. ✅ Bookmarks that connect at start and keep passwords; clean ends of speech.
-14. Next: test against the official client and a public server; try echo cancelling in a real
-   room; SRV/TSDNS resolution; noise suppression / AGC; per-user volume in the UI (the mixer
-   already supports it).
+14. ✅ SRV and TSDNS lookup, GIF icons, the person panel with private messages, poke and
+    per-person volume, reconnecting, privilege keys, asking to talk, the channel panel, event
+    sounds, noise suppression, automatic gain, mute keys; the first release built by the
+    workflow (0.1.0).
+15. ✅ The speaking window; windows keep their size across displays with different scales.
+16. Next: test against the official client and a public server; try echo cancelling, noise
+    suppression and the event sounds by ear; reading keys through Raw Input (planned);
+    `ts3server://` links; avatars.
 
 ## References
 

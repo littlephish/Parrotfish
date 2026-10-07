@@ -2,8 +2,9 @@
 
 Date: 2026-10-06. Plan: `2026-10-06-custom-icons.md`.
 
-Tasks 1 to 5 are finished. Task 6 (GIF icons) is not started; it needs the `gif` crate as a
-direct dependency, which the plan left as your decision. This file records where the work
+Tasks 1 to 5 were finished on 2026-10-06. Task 6 (GIF icons) was done on 2026-10-07, after you
+asked whether TeamSpeak supports GIF and then for the remaining parity items: `gif` is now a
+direct dependency of `ps-app`, and a GIF icon is shown as its first frame. This file records where the work
 departed from the plan (each one is a "Ruling"), what you added while it was running, what was
 checked and how, and what was not checked.
 
@@ -82,4 +83,5 @@ checked and how, and what was not checked.
 - The default renderer. Every screenshot used the software renderer.
 - A server with hundreds of icons, or one that names another address for file transfer (the
   address in the answer is ignored on purpose).
-- GIF, BMP and SVG icons are not shown at all.
+- BMP and SVG icons are not shown at all. A GIF is shown as a still picture (its first frame);
+  one was seeded on the test server and seen in the tree on 2026-10-07.

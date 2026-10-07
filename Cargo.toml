@@ -3,7 +3,7 @@ resolver = "2"
 members = ["ps-identity", "ps-crypto", "ps-protocol", "ps-client", "ps-voice", "ps-app"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [workspace.dependencies]

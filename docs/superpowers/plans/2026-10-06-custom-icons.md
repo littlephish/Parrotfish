@@ -10,7 +10,7 @@
 
 **Spec:** none yet. Nothing here is built. The next two sections are the scope and the decisions I made for you; change them before anyone starts.
 
-**Status:** Tasks 1 to 5 are built and checked (2026-10-06); what changed on the way is in `2026-10-06-custom-icons.ledger.md`. Task 6 (GIF) waits for your yes.
+**Status:** Tasks 1 to 5 are built and checked (2026-10-06); what changed on the way is in `2026-10-06-custom-icons.ledger.md`. Task 6 (GIF) was built on 2026-10-07.
 
 **How to read the tasks:** tests and the functions that guard against bad input are given in full. Steps that connect existing code are described by what they must do and are held to the tests and live checks listed with them.
 
@@ -837,10 +837,10 @@ if root.entry.badges > 0: VerticalLayout {
 
 **Interfaces:** Changes `accept` to return `Ok(Format::Gif)`, and `IconStore::load` to decode GIF itself.
 
-- [ ] **Step 1: Change the test** `rejects_what_must_not_be_decoded`: the GIF line becomes `assert_eq!(accept(b"GIF89a\x10\x00\x10\x00\x00\x00\x00"), Ok(Format::Gif));`, and add `assert_eq!(accept(b"GIF89a\x01\x01\x10\x00\x00\x00\x00"), Err(Reject::TooLarge));` (257 wide). Add a test `decodes_the_first_gif_frame` that builds a 2 x 2 GIF with `gif::Encoder` in memory (four palette colours), passes it to `gif_first_frame`, and asserts width 2, height 2 and the four RGBA pixels.
-- [ ] **Step 2:** Run `cargo test -p ps-app icons`; expect failures.
-- [ ] **Step 3: Implement** `fn gif_first_frame(data: &[u8]) -> Option<(u32, u32, Vec<u8>)>` with `gif::DecodeOptions` set to `ColorOutput::RGBA` and a memory limit of 1 MiB, reading one frame and compositing it onto a transparent canvas of the logical screen size (already limited to 256 x 256 by `accept`). `IconStore::load` uses it for GIF and builds the image with `slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(&pixels, width, height))`.
-- [ ] **Step 4:** Run `cargo test --workspace`; expect pass. Seed one GIF icon by hand through the script's `upload`, assign it to Lobby, and confirm it in a screenshot.
+- [x] **Step 1: Change the test** `rejects_what_must_not_be_decoded`: the GIF line becomes `assert_eq!(accept(b"GIF89a\x10\x00\x10\x00\x00\x00\x00"), Ok(Format::Gif));`, and add `assert_eq!(accept(b"GIF89a\x01\x01\x10\x00\x00\x00\x00"), Err(Reject::TooLarge));` (257 wide). Add a test `decodes_the_first_gif_frame` that builds a 2 x 2 GIF with `gif::Encoder` in memory (four palette colours), passes it to `gif_first_frame`, and asserts width 2, height 2 and the four RGBA pixels.
+- [x] **Step 2:** Run `cargo test -p ps-app icons`; expect failures.
+- [x] **Step 3: Implement** `fn gif_first_frame(data: &[u8]) -> Option<(u32, u32, Vec<u8>)>` with `gif::DecodeOptions` set to `ColorOutput::RGBA` and a memory limit of 1 MiB, reading one frame and compositing it onto a transparent canvas of the logical screen size (already limited to 256 x 256 by `accept`). `IconStore::load` uses it for GIF and builds the image with `slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(&pixels, width, height))`.
+- [x] **Step 4:** Run `cargo test --workspace`; expect pass. Seed one GIF icon by hand through the script's `upload`, assign it to Lobby, and confirm it in a screenshot.
 
 ## Not covered, on purpose
 
