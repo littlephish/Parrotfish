@@ -1,8 +1,10 @@
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
 
 use crate::capture::SILENCE_DB;
 use crate::codec::{CODEC_OPUS_VOICE, MAX_PACKET_BYTES};
+use crate::cues::Cue;
 use crate::playback::Playback;
 
 pub const LOOPBACK_CLIENT_ID: u16 = 0xffff;
@@ -10,6 +12,7 @@ pub const LOOPBACK_SESSION: u16 = 0xffff;
 pub const LANES: usize = 16;
 const NO_LANE: u8 = 255;
 const MIN_LANE_ROOM: usize = 24;
+const MAX_WAITING_CUES: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TxMode {
@@ -56,6 +59,8 @@ pub struct Shared {
     lane_room: [AtomicU16; LANES],
     pub loopback: AtomicBool,
     echo_cancel: AtomicBool,
+    noise_suppression: AtomicBool,
+    auto_gain: AtomicBool,
     echo_reduction: AtomicU32,
     echo_delay: AtomicU32,
     echo_drift: AtomicU32,
@@ -66,11 +71,13 @@ pub struct Shared {
     vad_threshold: AtomicU32,
     input_gain: AtomicU32,
     output_volume: AtomicU32,
+    cue_volume: AtomicU32,
     input_level: AtomicU32,
     output_level: AtomicU32,
     pub frames_captured: AtomicU64,
     pub frames_played: AtomicU64,
     pub capture_overruns: AtomicU64,
+    waiting_cues: Mutex<VecDeque<Cue>>,
     pub playback: Mutex<Playback>,
     pub sink: Mutex<Option<FrameSink>>,
     pub status: Mutex<DeviceStatus>,
@@ -88,6 +95,8 @@ impl Default for Shared {
             lane_room: std::array::from_fn(|_| AtomicU16::new(0)),
             loopback: AtomicBool::new(false),
             echo_cancel: AtomicBool::new(false),
+            noise_suppression: AtomicBool::new(false),
+            auto_gain: AtomicBool::new(false),
             echo_reduction: AtomicU32::new(f32::NAN.to_bits()),
             echo_delay: AtomicU32::new(f32::NAN.to_bits()),
             echo_drift: AtomicU32::new(0f32.to_bits()),
@@ -98,11 +107,13 @@ impl Default for Shared {
             vad_threshold: AtomicU32::new((-40.0f32).to_bits()),
             input_gain: AtomicU32::new(1.0f32.to_bits()),
             output_volume: AtomicU32::new(1.0f32.to_bits()),
+            cue_volume: AtomicU32::new(0.5f32.to_bits()),
             input_level: AtomicU32::new(SILENCE_DB.to_bits()),
             output_level: AtomicU32::new(SILENCE_DB.to_bits()),
             frames_captured: AtomicU64::new(0),
             frames_played: AtomicU64::new(0),
             capture_overruns: AtomicU64::new(0),
+            waiting_cues: Mutex::new(VecDeque::new()),
             playback: Mutex::new(Playback::new()),
             sink: Mutex::new(None),
             status: Mutex::new(DeviceStatus::default()),
@@ -163,6 +174,22 @@ impl Shared {
         }
     }
 
+    pub fn noise_suppression(&self) -> bool {
+        self.noise_suppression.load(Ordering::Relaxed)
+    }
+
+    pub fn set_noise_suppression(&self, on: bool) {
+        self.noise_suppression.store(on, Ordering::Relaxed);
+    }
+
+    pub fn auto_gain(&self) -> bool {
+        self.auto_gain.load(Ordering::Relaxed)
+    }
+
+    pub fn set_auto_gain(&self, on: bool) {
+        self.auto_gain.store(on, Ordering::Relaxed);
+    }
+
     pub fn echo_reduction(&self) -> Option<f32> {
         Some(load(&self.echo_reduction)).filter(|db| db.is_finite())
     }
@@ -216,6 +243,29 @@ impl Shared {
         store(&self.output_volume, volume.clamp(0.0, 4.0));
     }
 
+    pub fn cue_volume(&self) -> f32 {
+        load(&self.cue_volume)
+    }
+
+    pub fn set_cue_volume(&self, volume: f32) {
+        store(&self.cue_volume, volume.clamp(0.0, 1.0));
+    }
+
+    pub fn queue_cue(&self, cue: Cue) {
+        if let Ok(mut waiting) = self.waiting_cues.lock() {
+            if waiting.len() < MAX_WAITING_CUES {
+                waiting.push_back(cue);
+            }
+        }
+    }
+
+    pub(crate) fn take_cues(&self, out: &mut Vec<Cue>) {
+        out.clear();
+        if let Ok(mut waiting) = self.waiting_cues.lock() {
+            out.extend(waiting.drain(..));
+        }
+    }
+
     pub fn input_level(&self) -> f32 {
         load(&self.input_level)
     }
@@ -250,6 +300,23 @@ mod tests {
     }
 
     #[test]
+    fn cues_queue_up_until_they_are_taken() {
+        let s = Shared::default();
+        let mut taken = vec![Cue::Poke];
+        s.take_cues(&mut taken);
+        assert!(taken.is_empty());
+        for _ in 0..MAX_WAITING_CUES + 4 {
+            s.queue_cue(Cue::Joined);
+        }
+        s.queue_cue(Cue::Left);
+        s.take_cues(&mut taken);
+        assert_eq!(taken.len(), MAX_WAITING_CUES);
+        assert!(taken.iter().all(|cue| *cue == Cue::Joined), "the extra ones were dropped");
+        s.take_cues(&mut taken);
+        assert!(taken.is_empty());
+    }
+
+    #[test]
     fn defaults_and_round_trips() {
         let s = Shared::default();
         assert_eq!(s.tx_mode(), TxMode::VoiceActivation);
@@ -269,6 +336,15 @@ mod tests {
         assert_eq!(s.input_gain(), 8.0);
         s.set_output_volume(-1.0);
         assert_eq!(s.output_volume(), 0.0);
+        assert!(!s.noise_suppression() && !s.auto_gain());
+        s.set_noise_suppression(true);
+        s.set_auto_gain(true);
+        assert!(s.noise_suppression() && s.auto_gain());
+        assert_eq!(s.cue_volume(), 0.5);
+        s.set_cue_volume(4.0);
+        assert_eq!(s.cue_volume(), 1.0);
+        s.set_cue_volume(-1.0);
+        assert_eq!(s.cue_volume(), 0.0);
         for m in [TxMode::VoiceActivation, TxMode::PushToTalk, TxMode::Continuous] {
             assert_eq!(TxMode::from_index(m.index()), m);
         }

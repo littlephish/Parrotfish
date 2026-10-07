@@ -10,7 +10,8 @@ use cpal::{Data, ErrorKind, SampleFormat, StreamConfig};
 
 use crate::capture::{level_db, SILENCE_DB};
 use crate::codec::SAMPLE_RATE;
-use crate::playback::{BLOCK, MIX_CHANNELS};
+use crate::cues::{Cue, CueMixer};
+use crate::playback::{soft_limit, BLOCK, MIX_CHANNELS};
 use crate::resample::Resampler;
 use crate::state::Shared;
 
@@ -212,6 +213,8 @@ struct OutputRenderer {
     fifo: VecDeque<f32>,
     block: Vec<f32>,
     converted: Vec<f32>,
+    cues: CueMixer,
+    waiting: Vec<Cue>,
     far: rtrb::Producer<f32>,
     tap: bool,
 }
@@ -226,6 +229,8 @@ impl OutputRenderer {
             fifo: VecDeque::new(),
             block: vec![0.0; BLOCK],
             converted: Vec::new(),
+            cues: CueMixer::new(),
+            waiting: Vec::new(),
         }
     }
 
@@ -248,6 +253,22 @@ impl OutputRenderer {
                 for s in self.block.iter_mut() {
                     *s = (*s * volume).clamp(-1.0, 1.0);
                 }
+            }
+            let heard = self.shared.cue_volume() * self.shared.output_volume();
+            self.shared.take_cues(&mut self.waiting);
+            for cue in self.waiting.drain(..) {
+                let silenced = muted && !matches!(cue, Cue::SoundOff | Cue::SoundOn);
+                if heard > 0.0 && !silenced {
+                    self.cues.start(cue);
+                }
+            }
+            let cued = self.cues.mix(&mut self.block, MIX_CHANNELS, heard);
+            if cued {
+                for s in self.block.iter_mut() {
+                    *s = soft_limit(*s);
+                }
+            }
+            if active > 0 || cued {
                 self.shared.set_output_level(level_db(&self.block));
             } else {
                 self.shared.set_output_level(SILENCE_DB);

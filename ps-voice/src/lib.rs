@@ -1,5 +1,8 @@
+pub mod agc;
 pub mod capture;
 pub mod codec;
+pub mod cues;
+pub mod denoise;
 mod device;
 pub mod echo;
 pub mod playback;
@@ -12,6 +15,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+pub use cues::{cue_samples, Cue};
 pub use device::{list_input_devices, list_output_devices, DeviceInfo};
 pub use state::{DeviceStatus, FrameSink, Shared, TxMode, LANES, LOOPBACK_CLIENT_ID, LOOPBACK_SESSION};
 
@@ -179,6 +183,10 @@ impl AudioEngine {
 
     pub fn set_speaker_muted(&self, muted: bool) {
         self.shared.speaker_muted.store(muted, Ordering::Relaxed);
+    }
+
+    pub fn play_cue(&self, cue: Cue) {
+        self.shared.queue_cue(cue);
     }
 
     pub fn set_loopback(&self, enabled: bool) {

@@ -1,7 +1,9 @@
 use std::collections::VecDeque;
 use std::sync::atomic::Ordering;
 
+use crate::agc::AutoGain;
 use crate::codec::{Encoder, CODEC_OPUS_MUSIC, CODEC_OPUS_VOICE, FRAME_SAMPLES, MAX_PACKET_BYTES, SAMPLE_RATE};
+use crate::denoise::Denoiser;
 use crate::echo::EchoCanceller;
 use crate::resample::Resampler;
 use crate::state::{Shared, TxMode};
@@ -45,6 +47,8 @@ pub struct Transmitter {
     resampled: Vec<f32>,
     far: Option<(rtrb::Consumer<f32>, u32)>,
     echo: Option<Box<EchoPath>>,
+    denoiser: Option<Box<Denoiser>>,
+    agc: Option<Box<AutoGain>>,
 }
 
 impl Transmitter {
@@ -65,6 +69,8 @@ impl Transmitter {
             resampled: Vec::new(),
             far: None,
             echo: None,
+            denoiser: None,
+            agc: None,
         }
     }
 
@@ -171,6 +177,16 @@ impl Transmitter {
             self.cancel_echo(frame, shared);
         } else if self.echo.take().is_some() {
             shared.set_echo_reduction(None);
+        }
+        if shared.noise_suppression() {
+            self.denoiser.get_or_insert_with(|| Box::new(Denoiser::new())).process(frame);
+        } else {
+            self.denoiser = None;
+        }
+        if shared.auto_gain() {
+            self.agc.get_or_insert_with(|| Box::new(AutoGain::new())).process(frame);
+        } else {
+            self.agc = None;
         }
         let gain = shared.input_gain();
         if (gain - 1.0).abs() > 1e-3 {
@@ -406,6 +422,117 @@ mod tests {
         tx.process(&heard[48_000..48_960], &shared, &mut |_, _, _| {});
         assert!(shared.input_level() > loudest - 6.0);
         assert!(shared.echo_reduction().is_none());
+    }
+
+    fn voice_like(samples: usize, level: f32) -> Vec<f32> {
+        let mut out = Vec::with_capacity(samples);
+        let mut phase = 0.0f32;
+        for n in 0..samples {
+            let t = n as f32 / 48_000.0;
+            let pitch = 130.0 + 30.0 * (2.0 * std::f32::consts::PI * 0.6 * t).sin();
+            phase += 2.0 * std::f32::consts::PI * pitch / 48_000.0;
+            let syllable = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * 3.0 * t).cos();
+            let gate = if (0.6 * t).fract() < 0.6 { 1.0 } else { 0.0 };
+            let voiced: f32 = (1..=14).map(|h| (h as f32 * phase).sin() / h as f32).sum();
+            out.push(gate * syllable * voiced);
+        }
+        let rms = (out.iter().map(|s| s * s).sum::<f32>() / out.len() as f32).sqrt();
+        let scale = if rms > 0.0 { level / rms } else { 0.0 };
+        out.iter_mut().for_each(|s| *s *= scale);
+        out
+    }
+
+    fn hiss(seed: u64, samples: usize, level: f32) -> Vec<f32> {
+        let mut seed = seed | 1;
+        (0..samples)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                level * (((seed >> 40) as f32 / (1u64 << 23) as f32) - 1.0)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn with_the_switches_off_a_frame_is_not_touched() {
+        let shared = Shared::default();
+        shared.set_tx_mode(TxMode::Continuous);
+        shared.tx_enabled.store(true, Ordering::Relaxed);
+        assert!(!shared.noise_suppression() && !shared.auto_gain());
+        let mut tx = Transmitter::new(48_000);
+        let mut frame = tone(1, 0.3, 48_000, 0);
+        let before = frame.clone();
+        tx.process_frame(&mut frame, &shared, &mut |_, _, _| {});
+        assert_eq!(frame, before);
+
+        shared.set_noise_suppression(true);
+        shared.set_auto_gain(true);
+        let mut changed = before.clone();
+        tx.process_frame(&mut changed, &shared, &mut |_, _, _| {});
+        assert_ne!(changed, before, "with them on the frame does change");
+
+        shared.set_noise_suppression(false);
+        shared.set_auto_gain(false);
+        let mut again = before.clone();
+        tx.process_frame(&mut again, &shared, &mut |_, _, _| {});
+        assert_eq!(again, before, "switching them off brings back the plain path");
+    }
+
+    #[test]
+    fn noise_suppression_keeps_the_gate_shut_but_lets_speech_through() {
+        let shared = Shared::default();
+        shared.set_tx_mode(TxMode::VoiceActivation);
+        shared.set_vad_threshold(-40.0);
+        shared.tx_enabled.store(true, Ordering::Relaxed);
+        shared.set_noise_suppression(true);
+        let quiet = hiss(5, 48_000, 0.011);
+        assert!(level_db(&quiet) < -40.0 && level_db(&quiet) > -46.0, "{:.1} dB", level_db(&quiet));
+        let mut shut = Transmitter::new(48_000);
+        let mut sent = 0;
+        let mut loudest = SILENCE_DB;
+        for frame in quiet.chunks(960) {
+            shut.process(frame, &shared, &mut |_, _, data| sent += usize::from(!data.is_empty()));
+            loudest = loudest.max(shared.input_level());
+        }
+        assert!(loudest < -40.0, "the quiet noise peaked at {loudest:.1} dB");
+        assert_eq!(sent, 0, "the gate never opened");
+
+        let background = hiss(7, 48_000 * 2, 0.05);
+        assert!(level_db(&background) > -40.0, "this noise alone would open an unhelped gate");
+        shared.set_noise_suppression(false);
+        let mut plain = Transmitter::new(48_000);
+        let mut opened = 0;
+        for frame in background.chunks(960) {
+            plain.process(frame, &shared, &mut |_, _, data| opened += usize::from(!data.is_empty()));
+        }
+        assert!(opened > 90, "without help the noise keeps the gate open, {opened} frames");
+
+        shared.set_noise_suppression(true);
+        let mut tx = Transmitter::new(48_000);
+        let mut late = 0;
+        let mut after = SILENCE_DB;
+        for (index, frame) in background.chunks(960).enumerate() {
+            tx.process(frame, &shared, &mut |_, _, data| {
+                if index >= 50 {
+                    late += usize::from(!data.is_empty());
+                }
+            });
+            if index >= 50 {
+                after = after.max(shared.input_level());
+            }
+        }
+        assert!(after < -40.0, "once settled the suppressed noise peaked at {after:.1} dB");
+        assert_eq!(late, 0, "the gate stayed shut");
+
+        let speech = voice_like(48_000 * 3, 0.1);
+        let more = hiss(9, speech.len(), 0.05);
+        let noisy: Vec<f32> = speech.iter().zip(more.iter()).map(|(s, n)| s + n).collect();
+        let mut talk = 0;
+        for frame in noisy.chunks(960) {
+            tx.process(frame, &shared, &mut |_, _, data| talk += usize::from(!data.is_empty()));
+        }
+        assert!(talk > 80, "speech still opens the gate, {talk} frames went out");
     }
 
     #[test]
