@@ -11,7 +11,7 @@ use ps_client::{
 
 use crate::mic::{self, Report};
 use crate::platform;
-use crate::settings::MAX_REMEMBERED_FOLDS;
+use crate::settings::{Voice, MAX_REMEMBERED_FOLDS};
 
 pub const MAX_CHAT_LINES: usize = 400;
 const MAX_LINE_CHARS: usize = 2000;
@@ -300,6 +300,43 @@ pub fn mic_move(old: Option<u16>, new: Option<u16>, transmitting: bool) -> MicMo
         return MicMove::None;
     }
     MicMove::Switch { end_talk_on: if transmitting { old } else { None }, send_to: new }
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub struct VoicePlan {
+    pub volumes: Vec<(u16, f32)>,
+    pub priority: Vec<(u16, bool)>,
+    pub dim: Option<Option<f32>>,
+}
+
+pub fn priority_speakers(view: &ServerView) -> HashSet<u16> {
+    view.channels
+        .iter()
+        .flat_map(|node| node.clients.iter())
+        .filter(|person| person.id != view.own_id && person.is_priority_speaker)
+        .map(|person| person.id)
+        .collect()
+}
+
+pub fn priority_dim(view: &ServerView, enabled: bool) -> Option<f32> {
+    let one_myself = view.client(view.own_id).is_some_and(|own| own.is_priority_speaker);
+    let db = view.server.priority_dim_db;
+    (enabled && !one_myself && db.is_finite() && db < 0.0).then_some(db)
+}
+
+pub fn adjustment_text(leveled_db: f32, lowered_db: f32) -> String {
+    let leveled = leveled_db.round() as i32;
+    let lowered = -lowered_db.round() as i32;
+    let matched = match leveled {
+        i32::MIN..=-1 => format!("Turned down {} dB to match the others", -leveled),
+        1..=i32::MAX => format!("Turned up {leveled} dB to match the others"),
+        _ => String::new(),
+    };
+    match (matched.is_empty(), lowered >= 1) {
+        (_, false) => matched,
+        (true, true) => format!("Lowered {lowered} dB while a priority speaker talks"),
+        (false, true) => format!("{matched}, and {lowered} dB lower while a priority speaker talks"),
+    }
 }
 
 pub fn people_online(count: usize) -> String {
@@ -639,6 +676,8 @@ pub struct Session {
     pub peer: Option<Peer>,
     pub voices_applied: HashMap<u16, (String, f32)>,
     pub silenced: HashSet<u16>,
+    pub priority_applied: HashSet<u16>,
+    pub dim_applied: Option<f32>,
     pub mic: Report,
     pub mic_seems_on: bool,
 }
@@ -679,6 +718,8 @@ impl Session {
             peer: None,
             voices_applied: HashMap::new(),
             silenced: HashSet::new(),
+            priority_applied: HashSet::new(),
+            dim_applied: None,
             mic: Report::new(true),
             mic_seems_on: true,
         }
@@ -693,6 +734,44 @@ impl Session {
 
     pub fn is_connected(&self) -> bool {
         self.phase == Phase::Connected
+    }
+
+    pub fn forget_voices(&mut self) {
+        self.voices_applied.clear();
+        self.priority_applied.clear();
+        self.dim_applied = None;
+    }
+
+    pub fn plan_voices(&mut self, voices: &BTreeMap<String, Voice>, lower_for_priority: bool) -> VoicePlan {
+        let Some(view) = &self.view else {
+            return VoicePlan::default();
+        };
+        let mut wanted: HashMap<u16, (String, f32)> = HashMap::new();
+        let mut silenced: HashSet<u16> = HashSet::new();
+        for person in view.channels.iter().flat_map(|node| node.clients.iter()).filter(|c| c.id != view.own_id) {
+            let voice = voices.get(&person.uid).copied().unwrap_or(Voice::plain());
+            if voice.muted {
+                silenced.insert(person.id);
+            }
+            wanted.insert(person.id, (person.uid.clone(), voice.gain()));
+        }
+        let mut volumes: Vec<(u16, f32)> = wanted
+            .iter()
+            .filter(|(client, entry)| self.voices_applied.get(*client) != Some(*entry))
+            .map(|(client, entry)| (*client, entry.1))
+            .collect();
+        volumes.sort_by_key(|(client, _)| *client);
+        let speakers = priority_speakers(view);
+        let mut priority: Vec<(u16, bool)> =
+            speakers.symmetric_difference(&self.priority_applied).map(|client| (*client, speakers.contains(client))).collect();
+        priority.sort_unstable();
+        let dim = priority_dim(view, lower_for_priority);
+        let plan = VoicePlan { volumes, priority, dim: (dim != self.dim_applied).then_some(dim) };
+        self.voices_applied = wanted;
+        self.silenced = silenced;
+        self.priority_applied = speakers;
+        self.dim_applied = dim;
+        plan
     }
 
     pub fn set_allow_whispers(&mut self, allow: bool) {
@@ -981,6 +1060,7 @@ impl Session {
                 };
                 if client.id == self.own_id {
                     out.forget_all = true;
+                    self.forget_voices();
                     self.system(&format!("You joined {channel}"));
                 } else {
                     out.forget.push(client.id);
@@ -1033,6 +1113,7 @@ impl Session {
                 self.talkers = 0;
                 self.ping.clear();
                 out.forget_all = true;
+                self.forget_voices();
                 out.tree = true;
                 out.header = true;
                 if self.was_connected && !self.leaving {
@@ -1742,8 +1823,15 @@ mod tests {
         assert_eq!(out.forget, vec![9]);
         assert_eq!(s.chat.back().unwrap().text, "Coralline left (bye)");
 
+        s.voices_applied.insert(9, ("someone".into(), 0.25));
+        s.priority_applied.insert(8);
+        s.dim_applied = Some(-18.0);
         let out = s.apply(Event::ClientMoved { client: person(7, 1, "Minnow"), from: 1, to: 3 });
         assert!(out.forget_all);
+        assert!(
+            s.voices_applied.is_empty() && s.priority_applied.is_empty() && s.dim_applied.is_none(),
+            "what the mixer was told is told again after it forgets this connection"
+        );
         assert_eq!(s.chat.back().unwrap().text, "You joined Squad Alpha");
 
         let out = s.apply(Event::ClientMoved { client: person(8, 1, "Marlin"), from: 1, to: 2 });
@@ -1766,9 +1854,11 @@ mod tests {
         assert!(out.header);
         assert_eq!(s.ping, "23 ms");
 
+        s.voices_applied.insert(9, ("someone".into(), 0.25));
         let out = s.apply(Event::Disconnected { reason: "kicked from the server by Marlin".into() });
         assert_eq!(out.closed.as_deref(), Some("kicked from the server by Marlin"));
         assert!(out.forget_all);
+        assert!(s.voices_applied.is_empty());
         assert_eq!(s.phase, Phase::Closed("kicked from the server by Marlin".into()));
         assert!(s.view.is_none());
     }
@@ -1846,6 +1936,107 @@ mod tests {
         other.mic = Report::new(false);
         other.apply(Event::ServerError { id: 0x030d, message: "invalid channel password".into(), extra: String::new() });
         assert_eq!(other.mic.step(true, Some(false), Instant::now()), Some(true));
+    }
+
+    #[test]
+    fn priority_speakers_and_how_far_to_lower_the_others() {
+        let mut view = ServerView::default();
+        view.own_id = 7;
+        view.server.priority_dim_db = -18.0;
+        let mut chief = person(8, 1, "Marlin");
+        chief.is_priority_speaker = true;
+        let mut node = ChannelNode { channel: channel(1, 0, "Lobby"), depth: 0, clients: Vec::new() };
+        node.clients = vec![person(7, 1, "Minnow"), chief, person(9, 1, "Coralline")];
+        view.channels = vec![node];
+        assert_eq!(priority_speakers(&view), HashSet::from([8]));
+        assert_eq!(priority_dim(&view, true), Some(-18.0));
+        assert_eq!(priority_dim(&view, false), None, "the setting is off");
+        view.server.priority_dim_db = 0.0;
+        assert_eq!(priority_dim(&view, true), None, "the server lowers by nothing");
+        view.server.priority_dim_db = 6.0;
+        assert_eq!(priority_dim(&view, true), None, "a server cannot make others louder");
+        view.server.priority_dim_db = -40.0;
+        view.channels[0].clients[0].is_priority_speaker = true;
+        assert_eq!(priority_dim(&view, true), None, "a priority speaker hears everyone as usual");
+        assert_eq!(priority_speakers(&view), HashSet::from([8]), "I am never in the list myself");
+        view.channels[0].clients[0].is_priority_speaker = false;
+        assert_eq!(priority_dim(&view, true), Some(-40.0));
+    }
+
+    #[test]
+    fn what_is_being_done_to_a_persons_volume_reads_as_a_sentence() {
+        assert_eq!(adjustment_text(0.0, 0.0), "");
+        assert_eq!(adjustment_text(-0.4, -0.3), "");
+        assert_eq!(adjustment_text(-14.2, 0.0), "Turned down 14 dB to match the others");
+        assert_eq!(adjustment_text(6.6, 0.0), "Turned up 7 dB to match the others");
+        assert_eq!(adjustment_text(0.0, -18.0), "Lowered 18 dB while a priority speaker talks");
+        assert_eq!(
+            adjustment_text(-9.0, -18.0),
+            "Turned down 9 dB to match the others, and 18 dB lower while a priority speaker talks"
+        );
+    }
+
+    #[test]
+    fn the_mixer_is_told_what_changed_and_everything_again_after_it_forgets() {
+        let mut s = session();
+        assert_eq!(s.plan_voices(&BTreeMap::new(), true), VoicePlan::default(), "nothing is known before the first view");
+        s.apply(Event::Connected { client_id: 7, server: ServerInfo::default() });
+        let mut view = ServerView::default();
+        view.own_id = 7;
+        view.own_channel = 1;
+        view.server.priority_dim_db = -18.0;
+        let mut marlin = person(8, 1, "Marlin");
+        marlin.uid = "marlin=".into();
+        let mut coralline = person(9, 1, "Coralline");
+        coralline.uid = "coralline=".into();
+        coralline.is_priority_speaker = true;
+        let node = ChannelNode { channel: channel(1, 0, "Lobby"), depth: 0, clients: vec![person(7, 1, "Minnow"), marlin, coralline] };
+        view.channels = vec![node];
+        s.apply(Event::View(view.clone()));
+        let mut voices: BTreeMap<String, Voice> = BTreeMap::new();
+        voices.insert("marlin=".into(), Voice { percent: 50, muted: false });
+
+        let first = s.plan_voices(&voices, true);
+        assert_eq!(first.volumes, vec![(8, Voice { percent: 50, muted: false }.gain()), (9, 1.0)]);
+        assert_eq!(first.priority, vec![(9, true)]);
+        assert_eq!(first.dim, Some(Some(-18.0)));
+        assert_eq!(s.plan_voices(&voices, true), VoicePlan::default(), "nothing changed, nothing is sent");
+
+        voices.insert("coralline=".into(), Voice { percent: 100, muted: true });
+        let muted = s.plan_voices(&voices, true);
+        assert_eq!((muted.volumes, muted.priority, muted.dim), (vec![(9, 0.0)], vec![], None));
+        assert!(s.silenced.contains(&9));
+
+        assert_eq!(s.plan_voices(&voices, false).dim, Some(None), "the switch was turned off");
+        assert_eq!(s.plan_voices(&voices, true).dim, Some(Some(-18.0)));
+
+        view.channels[0].clients[2].is_priority_speaker = false;
+        view.channels[0].clients[1].is_priority_speaker = true;
+        s.apply(Event::View(view.clone()));
+        assert_eq!(s.plan_voices(&voices, true).priority, vec![(8, true), (9, false)]);
+
+        view.channels[0].clients[0].is_priority_speaker = true;
+        s.apply(Event::View(view.clone()));
+        assert_eq!(s.plan_voices(&voices, true).dim, Some(None), "being a priority speaker myself, nobody is lowered for me");
+        view.channels[0].clients[0].is_priority_speaker = false;
+        view.server.priority_dim_db = -30.0;
+        s.apply(Event::View(view.clone()));
+        assert_eq!(s.plan_voices(&voices, true).dim, Some(Some(-30.0)), "the server changed its value");
+
+        let out = s.apply(Event::ClientMoved { client: person(7, 1, "Minnow"), from: 1, to: 2 });
+        assert!(out.forget_all);
+        let again = s.plan_voices(&voices, true);
+        assert_eq!(again.volumes, vec![(8, Voice { percent: 50, muted: false }.gain()), (9, 0.0)]);
+        assert_eq!(again.priority, vec![(8, true)]);
+        assert_eq!(again.dim, Some(Some(-30.0)));
+
+        let mut stranger = person(8, 1, "Wrasse");
+        stranger.uid = "wrasse=".into();
+        view.channels[0].clients[1] = stranger;
+        s.apply(Event::View(view));
+        let reused = s.plan_voices(&voices, true);
+        assert_eq!(reused.volumes, vec![(8, 1.0)], "another person with the same number does not inherit the volume");
+        assert_eq!(reused.priority, vec![(8, false)]);
     }
 
     #[test]

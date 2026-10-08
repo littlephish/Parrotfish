@@ -130,6 +130,26 @@ fn arg_value(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
 }
 
+fn arg_values(args: &[String], name: &str) -> Vec<String> {
+    args.iter().enumerate().filter(|(_, a)| *a == name).filter_map(|(i, _)| args.get(i + 1)).cloned().collect()
+}
+
+fn strength_db(samples: &[f32], freq: f32) -> f32 {
+    let (mut sin, mut cos) = (0.0f64, 0.0f64);
+    for (n, sample) in samples.iter().enumerate() {
+        let angle = 2.0 * std::f64::consts::PI * f64::from(freq) * n as f64 / f64::from(SAMPLE_RATE);
+        sin += f64::from(*sample) * angle.sin();
+        cos += f64::from(*sample) * angle.cos();
+    }
+    let amplitude = 2.0 * (sin * sin + cos * cos).sqrt() / samples.len().max(1) as f64;
+    (20.0 * (amplitude / std::f64::consts::SQRT_2).max(1e-9).log10()) as f32
+}
+
+fn level_db(samples: &[f32]) -> f32 {
+    let mean = samples.iter().map(|s| f64::from(*s) * f64::from(*s)).sum::<f64>() / samples.len().max(1) as f64;
+    (10.0 * mean.max(1e-18).log10()) as f32
+}
+
 fn mic_word(word: &str) -> Option<bool> {
     match word {
         "on" => Some(true),
@@ -148,7 +168,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "--help") {
         eprintln!(
-            "usage: channeltest <host> [--port N] [--nick NAME] [--join CHANNEL_ID] [--seconds N]\n                   [--talk SECONDS] [--talk-after SECONDS]\n                   [--whisper client:ID|channel:ID|commanders|everyone] [--commander] [--abrupt-end]\n                   [--codec N] [--frames FILE] [--frame-ms N] [--save DIR]\n                   [--speex] [--speex-reference FILE] [--mic-off] [--mic SECONDS:on|off]...\nListens for voice and whispers and reports who was heard; with --talk it also sends a tone, as a whisper when --whisper is given.\n--mic-off signs in with the microphone reported as switched off; --mic tells the server so that many seconds after connecting. Neither stops --talk from sending.\nIt also reports whose microphone it sees switched off or muted, and when that changes.\n--codec writes that codec number on what is sent. --frames sends ready-made packets from a file (each one a two-byte length, low byte first, then the bytes), one every --frame-ms.\n--save writes every packet heard to DIR in the same form, one file per talker and codec.\n--speex decodes the Speex packets it heard at the end and reports on them; --speex-reference compares that with a file of 16-bit samples.\nThe end packet follows one frame after the last sound, as in the app; --abrupt-end sends it right behind the last sound,\nwhich a server may deliver the other way round."
+            "usage: channeltest <host> [--port N] [--nick NAME] [--join CHANNEL_ID] [--seconds N]\n                   [--talk SECONDS] [--talk-after SECONDS]\n                   [--whisper client:ID|channel:ID|commanders|everyone] [--commander] [--abrupt-end]\n                   [--codec N] [--frames FILE] [--frame-ms N] [--save DIR]\n                   [--speex] [--speex-reference FILE] [--mic-off] [--mic SECONDS:on|off]...\n                   [--identity FILE] [--tone HZ] [--amplitude 0..1] [--pulse]\n                   [--mix] [--level] [--lower] [--watch HZ]...\nListens for voice and whispers and reports who was heard; with --talk it also sends a tone, as a whisper when --whisper is given.\n--mic-off signs in with the microphone reported as switched off; --mic tells the server so that many seconds after connecting. Neither stops --talk from sending.\nIt also reports whose microphone it sees switched off or muted, and when that changes.\n--identity keeps the identity in FILE (made if missing), so the server knows the same person again. --tone, --amplitude and --pulse shape what --talk sends; --pulse lets it come and go like speech.\n--mix plays what is heard through the mixer the app uses and reports its level each second, and that of each --watch tone; --level evens people out, --lower follows priority speakers. Nothing is sent to a sound device.\n--codec writes that codec number on what is sent. --frames sends ready-made packets from a file (each one a two-byte length, low byte first, then the bytes), one every --frame-ms.\n--save writes every packet heard to DIR in the same form, one file per talker and codec.\n--speex decodes the Speex packets it heard at the end and reports on them; --speex-reference compares that with a file of 16-bit samples.\nThe end packet follows one frame after the last sound, as in the app; --abrupt-end sends it right behind the last sound,\nwhich a server may deliver the other way round."
         );
         std::process::exit(2);
     }
@@ -185,7 +205,23 @@ fn main() {
     let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let sink_heard = heard.clone();
     let sink_lines = lines.clone();
+    let mix_wanted = args.iter().any(|a| a == "--mix");
+    let lower_wanted = args.iter().any(|a| a == "--lower");
+    let watched: Vec<f32> = arg_values(&args, "--watch").iter().filter_map(|hz| hz.parse().ok()).collect();
+    let tone_hz: f32 = arg_value(&args, "--tone").and_then(|p| p.parse().ok()).unwrap_or(TONE_HZ);
+    let amplitude: f32 = arg_value(&args, "--amplitude").and_then(|p| p.parse().ok()).unwrap_or(AMPLITUDE).clamp(0.0, 1.0);
+    let pulse = args.iter().any(|a| a == "--pulse");
+    let mixer: Arc<Mutex<Playback>> = Arc::new(Mutex::new(Playback::new()));
+    if let Ok(mut mixer) = mixer.lock() {
+        mixer.set_leveling(args.iter().any(|a| a == "--level"));
+    }
+    let sink_mixer = mixer.clone();
     let sink: VoiceSink = Box::new(move |packet| {
+        if mix_wanted {
+            if let Ok(mut mixer) = sink_mixer.lock() {
+                mixer.push_from(0, packet.client_id, packet.voice_id, packet.codec, packet.data, packet.whisper);
+            }
+        }
         let (Ok(mut map), Ok(mut out)) = (sink_heard.lock(), sink_lines.lock()) else {
             return;
         };
@@ -269,7 +305,27 @@ fn main() {
     mic_steps.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut seen_mics: BTreeMap<u16, (bool, bool)> = BTreeMap::new();
 
-    let mut options = ConnectOptions::new(&host, port, Identity::generate(&nick, &nick));
+    let identity = match arg_value(&args, "--identity").map(PathBuf::from) {
+        Some(file) if file.exists() => Identity::load(&file).unwrap_or_else(|e| {
+            eprintln!("cannot read the identity in {}: {e}", file.display());
+            std::process::exit(2);
+        }),
+        Some(file) => {
+            let made = Identity::generate(&nick, &nick);
+            if let Err(e) = made.save(&file) {
+                eprintln!("cannot keep the new identity in {}: {e}", file.display());
+                std::process::exit(2);
+            }
+            made
+        }
+        None => Identity::generate(&nick, &nick),
+    };
+    let mut priority_seen: BTreeMap<u16, bool> = BTreeMap::new();
+    let mut names: BTreeMap<u16, String> = BTreeMap::new();
+    let mut next_mix = Instant::now();
+    let mut mix_block = vec![0f32; BLOCK];
+    let mut second: Vec<f32> = Vec::with_capacity(SAMPLE_RATE as usize);
+    let mut options = ConnectOptions::new(&host, port, identity);
     options.nickname = nick.clone();
     options.input_hardware = !args.iter().any(|a| a == "--mic-off");
     let (tx, rx) = mpsc::channel();
@@ -322,6 +378,31 @@ fn main() {
                             if now.1 { " and muted" } else { "" }
                         );
                     }
+                    if client.id != view.own_id {
+                        names.insert(client.id, client.nickname.clone());
+                    }
+                    let before = priority_seen.insert(client.id, client.is_priority_speaker);
+                    if client.id != view.own_id && before != Some(client.is_priority_speaker) {
+                        if client.is_priority_speaker || before == Some(true) {
+                            println!(
+                                "{} {nick} sees client {} ({}) {} a priority speaker",
+                                clock(),
+                                client.id,
+                                client.nickname,
+                                if client.is_priority_speaker { "as" } else { "no longer as" }
+                            );
+                        }
+                        if let Ok(mut mixer) = mixer.lock() {
+                            mixer.set_priority(0, client.id, client.is_priority_speaker);
+                        }
+                    }
+                }
+                if mix_wanted {
+                    let one_myself = view.client(view.own_id).is_some_and(|own| own.is_priority_speaker);
+                    let db = view.server.priority_dim_db;
+                    if let Ok(mut mixer) = mixer.lock() {
+                        mixer.set_priority_dim(0, (lower_wanted && !one_myself && db < 0.0).then_some(db));
+                    }
                 }
             }
             Ok(Event::Disconnected { reason }) => {
@@ -358,11 +439,10 @@ fn main() {
             if !talk_done && since >= talk_after {
                 let due = *next_frame.get_or_insert_with(Instant::now);
                 if Instant::now() >= due {
+                    let loud = !pulse || (phase / FRAME_SAMPLES) % 30 < 20;
+                    let scale = if loud { amplitude } else { amplitude * 0.02 };
                     let pcm: Vec<f32> = (0..FRAME_SAMPLES)
-                        .map(|i| {
-                            AMPLITUDE
-                                * (2.0 * std::f32::consts::PI * TONE_HZ * (phase + i) as f32 / SAMPLE_RATE as f32).sin()
-                        })
+                        .map(|i| scale * (2.0 * std::f32::consts::PI * tone_hz * (phase + i) as f32 / SAMPLE_RATE as f32).sin())
                         .collect();
                     phase += FRAME_SAMPLES;
                     let send = |data: &[u8]| match &whisper {
@@ -399,6 +479,33 @@ fn main() {
             if !leaving && since >= seconds {
                 leaving = true;
                 handle.disconnect("channel test finished");
+            }
+        }
+
+        while mix_wanted && Instant::now() >= next_mix {
+            next_mix += FRAME;
+            if let Ok(mut mixer) = mixer.lock() {
+                mixer.mix(&mut mix_block);
+            }
+            second.extend(mix_block.chunks(2).map(|frame| frame[0]));
+            if second.len() >= SAMPLE_RATE as usize {
+                let mut parts = vec![format!("all {:.1} dB", level_db(&second))];
+                for hz in &watched {
+                    parts.push(format!("{hz:.0} Hz {:.1} dB", strength_db(&second, *hz)));
+                }
+                if let Ok(mixer) = mixer.lock() {
+                    for (client, name) in &names {
+                        let heard = mixer.adjustment(0, *client);
+                        if heard.leveled_db.abs() >= 0.5 || heard.lowered_db <= -0.5 {
+                            parts.push(format!(
+                                "{name} levelled {:+.1} dB, lowered {:.1} dB",
+                                heard.leveled_db, heard.lowered_db
+                            ));
+                        }
+                    }
+                }
+                println!("{} {nick} mixed: {}", clock(), parts.join("; "));
+                second.clear();
             }
         }
 

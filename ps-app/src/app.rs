@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -306,6 +305,7 @@ pub struct App {
     shown_echo: String,
     shown_wide: bool,
     shown_devices: (String, String),
+    shown_person_heard: String,
     trace: bool,
 }
 
@@ -406,6 +406,7 @@ impl App {
             shown_echo: String::new(),
             shown_wide: false,
             shown_devices: (String::new(), String::new()),
+            shown_person_heard: String::new(),
             trace: std::env::var_os("PHISHSPEAK_TRACE").is_some(),
         }
     }
@@ -436,6 +437,8 @@ impl App {
         w.settings.set_echo_cancel(self.settings.echo_cancel);
         w.settings.set_noise_suppression(self.settings.noise_suppression);
         w.settings.set_auto_gain(self.settings.auto_gain);
+        w.settings.set_even_voices(self.settings.even_voices);
+        w.settings.set_priority_dim(self.settings.priority_dim);
         w.settings.set_cue_volume(self.settings.cue_volume);
         let problems = self.load_identities();
         if self.identities.is_empty() {
@@ -760,6 +763,9 @@ impl App {
         shared.set_noise_suppression(denoise);
         shared.set_auto_gain(even);
         shared.set_cue_volume(cues / 100.0);
+        let even_voices = w.settings.get_even_voices();
+        let priority_dim = w.settings.get_priority_dim();
+        self.engine.set_leveling(even_voices);
         self.engine.set_loopback(w.settings.get_mic_test());
         w.main.set_threshold_position(if tx_mode == 0 { level_position(threshold) } else { -1.0 });
         self.settings.tx_mode = tx_mode;
@@ -770,7 +776,16 @@ impl App {
         self.settings.noise_suppression = denoise;
         self.settings.auto_gain = even;
         self.settings.cue_volume = cues;
+        self.settings.even_voices = even_voices;
+        let dim_changed = self.settings.priority_dim != priority_dim;
+        self.settings.priority_dim = priority_dim;
         self.mark_settings_dirty();
+        if dim_changed {
+            let ids: Vec<u16> = self.sessions.iter().map(|s| s.id).collect();
+            for id in ids {
+                self.apply_voices(id);
+            }
+        }
     }
 
     pub fn open_settings(&mut self, w: &Windows, tab: i32) {
@@ -1222,7 +1237,7 @@ impl App {
                 return;
             }
             if let Ok(mut playback) = shared.playback.lock() {
-                playback.push(id, packet.client_id, packet.voice_id, packet.codec, packet.data);
+                playback.push_from(id, packet.client_id, packet.voice_id, packet.codec, packet.data, packet.whisper);
             }
         });
         let client = ClientHandle::connect(options, events_tx, Some(sink));
@@ -1725,32 +1740,32 @@ impl App {
     }
 
     fn apply_voices(&mut self, id: u16) {
-        let Some(session) = self.session(id) else {
+        let (voices, lower) = (&self.settings.voices, self.settings.priority_dim);
+        let Some(plan) = self.sessions.iter_mut().find(|s| s.id == id).map(|session| session.plan_voices(voices, lower)) else {
             return;
         };
-        let Some(view) = &session.view else {
-            return;
-        };
-        let mut wanted: HashMap<u16, (String, f32)> = HashMap::new();
-        let mut silenced: HashSet<u16> = HashSet::new();
-        for person in view.channels.iter().flat_map(|node| node.clients.iter()).filter(|c| c.id != view.own_id) {
-            let voice = self.settings.voices.get(&person.uid).copied().unwrap_or(Voice::plain());
-            if voice.muted {
-                silenced.insert(person.id);
-            }
-            wanted.insert(person.id, (person.uid.clone(), voice.gain()));
-        }
-        let changed: Vec<(u16, f32)> = wanted
-            .iter()
-            .filter(|(client, entry)| session.voices_applied.get(*client) != Some(*entry))
-            .map(|(client, entry)| (*client, entry.1))
-            .collect();
-        for (client, gain) in changed {
+        for (client, gain) in plan.volumes {
             self.engine.set_volume(id, client, gain);
         }
-        if let Some(session) = self.session_mut(id) {
-            session.voices_applied = wanted;
-            session.silenced = silenced;
+        for (client, on) in plan.priority {
+            self.engine.set_priority(id, client, on);
+        }
+        if let Some(dim) = plan.dim {
+            self.engine.set_priority_dim(id, dim);
+        }
+    }
+
+    fn publish_person_heard(&mut self, w: &Windows) {
+        let text = match self.person {
+            Some((session, client)) if w.main.get_person_open() && !w.main.get_person_me() => {
+                let heard = self.engine.adjustment(session, client);
+                session::adjustment_text(heard.leveled_db, heard.lowered_db)
+            }
+            _ => String::new(),
+        };
+        if text != self.shown_person_heard {
+            w.main.set_person_heard(text.as_str().into());
+            self.shown_person_heard = text;
         }
     }
 
@@ -1956,6 +1971,7 @@ impl App {
         }
         if outcome.forget_all {
             self.engine.clear_session(id);
+            self.apply_voices(id);
             if let Some(uid) = self.session(id).map(|s| s.server_uid.clone()) {
                 self.icons.forget_pending(&uid);
             }
@@ -2430,6 +2446,7 @@ impl App {
             self.toggle_sound(w);
         }
         self.watch_whispers();
+        self.publish_person_heard(w);
 
         let level = self.engine.shared().input_level();
         let position = level_position(level);

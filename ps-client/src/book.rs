@@ -212,6 +212,7 @@ pub struct ServerInfo {
     pub icon: u32,
     pub host_message: String,
     pub host_message_mode: u8,
+    pub priority_dim_db: f32,
 }
 
 impl ServerInfo {
@@ -245,6 +246,9 @@ impl ServerInfo {
         }
         if let Some(v) = cmd.num("virtualserver_hostmessage_mode") {
             self.host_message_mode = v;
+        }
+        if let Some(v) = cmd.num::<f32>("virtualserver_priority_speaker_dimm_modificator").filter(|v| v.is_finite()) {
+            self.priority_dim_db = v;
         }
     }
 }
@@ -841,5 +845,19 @@ mod tests {
         assert_eq!(s.virtual_server_id, 1);
         s.apply(&Command::parse("notifyserveredited virtualserver_hostmessage=Mind\\sthe\\scoral virtualserver_hostmessage_mode=2"));
         assert_eq!((s.host_message.as_str(), s.host_message_mode), ("Mind the coral", 2));
+    }
+
+    #[test]
+    fn the_server_says_how_far_to_lower_others_for_a_priority_speaker() {
+        let mut s = ServerInfo::default();
+        assert_eq!(s.priority_dim_db, 0.0, "a server that says nothing lowers nobody");
+        s.apply(&Command::parse("initserver virtualserver_name=Reef virtualserver_priority_speaker_dimm_modificator=-18.0000 aclid=2"));
+        assert_eq!(s.priority_dim_db, -18.0);
+        s.apply(&Command::parse("notifyserveredited virtualserver_name=Reef\\sRunners"));
+        assert_eq!(s.priority_dim_db, -18.0, "an edit of something else leaves it");
+        s.apply(&Command::parse("notifyserveredited virtualserver_priority_speaker_dimm_modificator=-40"));
+        assert_eq!(s.priority_dim_db, -40.0);
+        s.apply(&Command::parse("notifyserveredited virtualserver_priority_speaker_dimm_modificator=loud"));
+        assert_eq!(s.priority_dim_db, -40.0);
     }
 }

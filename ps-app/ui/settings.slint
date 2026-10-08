@@ -63,6 +63,8 @@ export component SettingsWindow inherits Window {
     in-out property <bool> echo-cancel;
     in-out property <bool> noise-suppression;
     in-out property <bool> auto-gain;
+    in-out property <bool> even-voices;
+    in-out property <bool> priority-dim: true;
     in-out property <float> cue-volume: 50;
     in property <string> echo-status;
 
@@ -489,6 +491,42 @@ export component SettingsWindow inherits Window {
 
                         Reading {
                             text: root.cue-volume < 1 ? "off" : "\{round(root.cue-volume)}%";
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 16px;
+
+                        Caption {
+                            text: "People";
+                        }
+
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            Check {
+                                text: "Even out how loud people are";
+                                checked <=> root.even-voices;
+                                toggled => {
+                                    root.audio-changed();
+                                }
+                            }
+
+                            Hint {
+                                text: "Someone who comes in loud is turned down at once, someone quiet is brought up over a few seconds, each on their own. The volume you set for a person still counts on top.";
+                            }
+
+                            Check {
+                                text: "Lower everyone else while a priority speaker talks";
+                                checked <=> root.priority-dim;
+                                toggled => {
+                                    root.audio-changed();
+                                }
+                            }
+
+                            Hint {
+                                text: "The server decides who is a priority speaker and by how much the others are lowered. Whispers are left alone, and nothing is lowered for you while you are a priority speaker yourself.";
+                            }
                         }
                     }
                 }

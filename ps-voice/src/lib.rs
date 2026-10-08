@@ -5,6 +5,7 @@ pub mod cues;
 pub mod denoise;
 mod device;
 pub mod echo;
+pub mod level;
 pub mod playback;
 pub mod resample;
 pub mod state;
@@ -17,6 +18,7 @@ use std::time::Duration;
 
 pub use cues::{cue_samples, Cue};
 pub use device::{list_input_devices, list_output_devices, DeviceInfo};
+pub use playback::Adjustment;
 pub use state::{DeviceStatus, FrameSink, Shared, TxMode, LANES, LOOPBACK_CLIENT_ID, LOOPBACK_SESSION};
 
 use capture::Transmitter;
@@ -148,6 +150,28 @@ impl AudioEngine {
         if let Ok(mut playback) = self.shared.playback.lock() {
             playback.set_volume(session, client_id, volume);
         }
+    }
+
+    pub fn set_priority(&self, session: u16, client_id: u16, on: bool) {
+        if let Ok(mut playback) = self.shared.playback.lock() {
+            playback.set_priority(session, client_id, on);
+        }
+    }
+
+    pub fn set_priority_dim(&self, session: u16, db: Option<f32>) {
+        if let Ok(mut playback) = self.shared.playback.lock() {
+            playback.set_priority_dim(session, db);
+        }
+    }
+
+    pub fn set_leveling(&self, on: bool) {
+        if let Ok(mut playback) = self.shared.playback.lock() {
+            playback.set_leveling(on);
+        }
+    }
+
+    pub fn adjustment(&self, session: u16, client_id: u16) -> Adjustment {
+        self.shared.playback.lock().map(|playback| playback.adjustment(session, client_id)).unwrap_or_default()
     }
 
     pub fn remove_talker(&self, session: u16, client_id: u16) {

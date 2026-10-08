@@ -212,6 +212,7 @@ export component PhishSpeakApp inherits Window {
     in property <string> person-line;
     in property <string> person-about;
     in property <string> person-status;
+    in property <string> person-heard;
     in property <bool> person-me;
     in-out property <float> person-volume: 100;
     in-out property <bool> person-muted;
@@ -1216,6 +1217,11 @@ export component PhishSpeakApp inherits Window {
                             text: "\{round(root.person-volume)}%";
                             horizontal-alignment: right;
                         }
+                    }
+
+                    if !root.person-me && root.person-heard != "": Dim {
+                        text: root.person-heard;
+                        wrap: word-wrap;
                     }
 
                     if !root.person-me: Check {

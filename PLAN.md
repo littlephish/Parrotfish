@@ -7,7 +7,7 @@ joins a server, shows the channel tree, chats, and does voice (Opus) both ways.
 
 Working end to end against a real TeamSpeak 3.13.8 server: login, channel tree, channel
 switching (incl. password channels), text chat, microphone capture → Opus → server, and
-server → Opus → speakers, with and without voice encryption. 331 unit tests green.
+server → Opus → speakers, with and without voice encryption. 374 unit tests green.
 
 The window is the compact tree layout in the Twilight reef palette (design:
 `docs/superpowers/specs/2026-10-06-compact-window-design.md`): spacer channels are drawn as
@@ -88,6 +88,18 @@ Added on 2026-10-07:
   marks which one has the microphone.
 - Versions 0.1.0, 0.2.0, 0.3.0 and 0.3.1 were built and published by the release workflow.
 
+Added on 2026-10-08:
+
+- A switch that evens out how loud people are (Settings, Sound, off by default). Someone who
+  comes in loud is turned down at once, someone quiet is brought up over a few seconds, each on
+  their own; the volume you set for a person still counts on top.
+- While a priority speaker talks, everyone else in the channel is lowered by as much as the
+  server says (18 dB unless the server was changed), as the TeamSpeak client does. A switch
+  beside the other one turns that off.
+- The panel for a person says what is being done to their volume at that moment.
+- Fixed: the volume or mute you had set for a person was forgotten whenever you changed channel
+  or the connection was made again.
+
 Planned, not built: reading keys through Windows' Raw Input as a switch in settings
 (`docs/superpowers/plans/2026-10-07-raw-input-keys.md`).
 
@@ -97,6 +109,14 @@ on one server while looking at another,
 the old CELT codec (see below), pre-3.1 servers (`initivexpand`),
 hotkeys other than talk, whisper and mute keys, game controller buttons, and an overlay inside
 games that run in exclusive full screen (the speaking window is an ordinary window on top).
+Also missing next to the TeamSpeak client, listed on 2026-10-08 and not planned yet: changing
+your nickname while connected; contacts (friends and blocked people); links you can click,
+formatting, unread marks and a history kept between sessions in chat; offline messages; a tray
+icon and starting with Windows; search in the channel tree; moving, kicking and banning people,
+granting talk power, groups, complaints, ban list, server log and making privilege keys;
+recording; typing attenuation, 3D sound, sound packs and device profiles; banner, host button,
+country flags and badges; myTeamSpeak sign-in and sync, bookmark folders and importing the
+TeamSpeak client's bookmarks; plugins, themes and translations.
 
 Not yet verified by anyone: a conversation or a whisper with the **official** TS3 client
 (everything so far is PhishSpeak ↔ real server ↔ PhishSpeak), and voice on a real
@@ -133,10 +153,10 @@ order against the test server, not by ear and not with an official client talkin
 | `ps-identity` | INI parse, identity (de)obfuscation, DER, P-256, UID, hashcash level, sign/verify, generate/save | done, 14 tests |
 | `ps-crypto` | EAX-AES128 (8-byte MAC), dummy key, per-packet key/nonce, license chain, Ed25519 shared secret, RSA puzzle | done, 16 tests |
 | `ps-protocol` | Packet headers, command escape/parse/build, QuickLZ + fragmentation, receive windows/generations, Init1 payloads, voice and whisper payloads | done, 34 tests |
-| `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client/group book, voice and whispers in/out, events; `spacer` recognises spacer channels, `filetransfer` fetches icons over the server's file port, `resolve` finds a server through SRV, TSDNS or its plain name | done, 33 tests + live tests |
+| `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client/group book, voice and whispers in/out, events; `spacer` recognises spacer channels, `filetransfer` fetches icons over the server's file port, `resolve` finds a server through SRV, TSDNS or its plain name | done, 34 tests + live tests |
 | `ps-oldcodecs` | Speex decoder (8, 16 and 32 kHz) in safe Rust, no dependencies | done, 27 tests + 3 run by hand |
-| `ps-voice` | Opus codec, Speex playback at 48 kHz, resampler, jitter buffer + mixer (talkers keyed by connection and client, a volume per talker), VAD/PTT gate, lanes (which key is held decides where a frame goes), echo canceller (`echo.rs`), noise suppression (`denoise.rs`), automatic gain (`agc.rs`), event sounds (`cues.rs`), cpal device I/O (WASAPI) | done, 85 tests + live tests |
-| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `mic.rs` what each server is told about the microphone and when, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` keeping a window's size across displays, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 122 tests + live tests |
+| `ps-voice` | Opus codec, Speex playback at 48 kHz, resampler, jitter buffer + mixer (talkers keyed by connection and client, a volume per talker, lowering for priority speakers), evening out how loud talkers are (`level.rs`), VAD/PTT gate, lanes (which key is held decides where a frame goes), echo canceller (`echo.rs`), noise suppression (`denoise.rs`), automatic gain (`agc.rs`), event sounds (`cues.rs`), cpal device I/O (WASAPI) | done, 123 tests + live tests |
+| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `mic.rs` what each server is told about the microphone and when, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` keeping a window's size across displays, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 126 tests + live tests |
 | `ps-serverquery` | Text protocol over TCP 10011 | not started |
 
 Threads: UI thread (Slint, 33 ms timer drains client events) · `ps-client` actor + UDP reader ·
@@ -218,6 +238,22 @@ ConnectOk", "level 213"). What is actually on the wire:
   29th was refused, after 56 s. A refused command is charged as well (one sent 1.6 s after a
   refusal was told 7394 ms). A command sent once the named time has passed was accepted, both
   times it was tried. The refusal carries the `return_code` of the command it refuses.
+
+### Priority speakers
+
+- `client_is_priority_speaker` is set by the server for a client that holds the permission
+  `b_client_is_priority_speaker` in its channel. Live: granted through ServerQuery
+  (`channelclientaddperm cid=1 cldbid=N permsid=b_client_is_priority_speaker permvalue=1`); the
+  others then saw the flag in that client's `notifycliententerview`.
+- How far the others are lowered: `virtualserver_priority_speaker_dimm_modificator`, in dB, sent
+  in `initserver` (`-18.0000` on a new server) and shown by `serverinfo`. The setting takes
+  negative values only; with 0 nothing is lowered (TeamSpeak's forum on "Edit Virtual Server,
+  Misc").
+- Who hears it, in TeamSpeak's own words: "the user who is a priority speaker will always hear
+  all users with the same volume, but only users without priority speaker do hear other users
+  without priority speaker with less volume when a priority speaker starts to talk". Several
+  people can be priority speakers at once.
+- Nothing published says what happens to whispers.
 
 ### Voice
 - C→S `[voice id u16][codec u8][opus]`, S→C `[voice id u16][client id u16][codec u8][opus]`;
@@ -337,6 +373,24 @@ ConnectOk", "level 213"). What is actually on the wire:
   bookmark; a bookmark surviving a restart and connecting with one click; a failed connect
   reopening the dialog with the reason under the address; the identity being strengthened
   automatically (level 10 → 23) and the connection retried; the window size being remembered.
+- Priority speakers and evening out, live through the test server with `channeltest`. A third
+  identity was made a priority speaker through ServerQuery. A listener running the app's mixer
+  (`--mix --lower`) heard another talker's tone at -17.0 dB, at -35.0 dB for the six seconds the
+  priority speaker talked (whose own tone came through at -17.0 dB), at -23.3 dB in the second
+  in which it stopped and at -17.0 dB after that. Two listeners side by side, one evening out
+  (`--level`) and one not, heard a loud talker at -4.0 dB plain and at -15.8 dB in its first
+  second, -18.2 in the next and -20.0 after that; a talker at -20.1 dB the same in both; and a
+  quiet one that came and went like speech at -40 dB plain and at -28 dB after seven seconds,
+  raised by about 2 dB a second.
+  In the app itself, with those talkers in its channel and evening out on: the panel for the
+  loud one read "Turned down 16 dB to match the others" and, while the priority speaker
+  talked, "…, and 18 dB lower while a priority speaker talks"; the panel for the other read
+  "Lowered 18 dB while a priority speaker talks" during that time and nothing before or after.
+  The tests were checked against 39 deliberate mistakes in the code (18 in the mixer, 11 in the
+  leveller, 10 in what the app tells the mixer). The ones not caught at first led to more
+  tests, and two pieces of code that no test needed were taken out.
+  Not done: by ear; with voices instead of tones; side by side with what the TeamSpeak client
+  plays in the same situation.
 - One microphone with several servers, live: one PhishSpeak with two connections to the test
   server at its default flood settings, a `channeltest` listener in the channel, and ServerQuery
   reading what the server holds. The connection not viewed was reported off about 2 s after it
@@ -490,7 +544,8 @@ Dev tools (examples): `cargo run -p ps-client --example probe -- <host> [--ident
 devicetest -- [--input NAME] [--tone]`, `cargo run -p ps-voice --example channeltest -- <host>
 [--nick NAME] [--join CID] [--seconds N] [--talk SECONDS] [--whisper client:ID|channel:ID|commanders|everyone]
 [--commander] [--codec N] [--frames FILE] [--frame-ms N] [--save DIR] [--speex]
-[--speex-reference FILE] [--mic-off] [--mic SECONDS:on|off]` (sits in one channel and reports
+[--speex-reference FILE] [--mic-off] [--mic SECONDS:on|off] [--identity FILE] [--tone HZ]
+[--amplitude 0..1] [--pulse] [--mix] [--level] [--lower] [--watch HZ]` (sits in one channel and reports
 every voice, whisper and end packet it hears, their sizes and spacing, the sound formats, and
 whose microphone is reported off or muted; with `--talk` it also sends a tone,
 as a whisper with `--whisper`; `--codec` writes another codec number on what it sends and
@@ -498,7 +553,12 @@ as a whisper with `--whisper`; `--codec` writes another codec number on what it 
 the way to study a voice format nobody has described; `--speex` decodes the Speex it heard
 and `--speex-reference` compares that with a file of samples; `--mic-off` signs in with the
 microphone reported off and `--mic` reports it on or off later, neither of which stops
-`--talk`, which is how to see what a server does with such a client),
+`--talk`, which is how to see what a server does with such a client; `--identity` keeps the
+identity in a file so that the server knows the same person again, which a permission such as
+priority speaker needs; `--tone`, `--amplitude` and `--pulse` shape what `--talk` sends;
+`--mix` runs what is heard through the app's mixer, without a sound device, and reports its
+level and that of each `--watch` tone every second, with `--level` evening people out and
+`--lower` following priority speakers),
 `cargo run -p ps-voice --example echotest -- [--output NAME] [--input NAME | --loopback]
 [--seconds N] [--level DB]` (plays a speech-like test sound and reports how loudly the input
 hears it with echo cancelling off and on, when the sound came back and the clock difference;
@@ -579,6 +639,39 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   one you came from is told off after the 2 s and on again when you return or the attempt fails.
 - The mark in the list of connected servers says where the microphone is, muted or not; mute
   has its own button. With one server connected there are no marks.
+- Priority speakers (`playback.rs`): while a talker marked as a priority speaker is being
+  played on a connection, every other talker of that connection who is not one is multiplied
+  by the server's value. The mixer decides when, from what it plays in that block, so the
+  lowering lines up with the sound and not with the network. It comes in over 60 ms, stays
+  for 0.4 s after the priority speaker stops, so that the others do not swell up between two
+  sentences, and goes over 300 ms. Every talker fades to and from the lowered level on their
+  own, so someone who becomes or stops being a priority speaker in mid-sentence, or whose
+  whisper turns into talk, brings no click. A listener who is a priority speaker hears no
+  lowering and priority speakers are
+  never lowered (TeamSpeak's rule); 0 dB or more lowers nobody and anything below -60 dB counts
+  as -60. Whispers neither set it off nor are lowered: they are meant for you, and nothing
+  published says what the TeamSpeak client does with them. The app tells the mixer who is a
+  priority speaker and how far to lower on every new view of the server.
+- Evening out (`level.rs`, one `Leveler` per talker, in the mixer before the person's own
+  volume). Each 20 ms block is measured. An estimate of how loud the talker speaks follows
+  louder blocks quickly (0.3 s) and quieter ones slowly (1.5 s), and the gain moves so that
+  this estimate lands at -20 dB: down at 12 dB a second, up at 3, between -40 and +12 dB. On
+  top a limiter without delay keeps every block at or below -14 dB and every sample below
+  0.9, so a loud person is never heard at full strength, not even in their first block; it
+  lets go at 40 dB a second, and altogether whenever the person is quiet, so one shout does
+  not leave a voice turned down. Turning down is always a ramp of 2 ms, never a step. The gain only
+  goes up on blocks that are speech: louder than -45 dB and 8 dB above the quietest the talker
+  has been lately, which keeps breathing, keyboards and hiss from being brought up, and a
+  talker's first sound decides nothing upward. Steady sound louder than the estimate is turned
+  down like speech. What was learned stays for as long as the mixer knows the person, also
+  after a minute of quiet when the stream itself is dropped, and is forgotten when they leave
+  or you change channel. The microphone test is not evened out. Limits: a quiet person is
+  brought up by 12 dB at most, and steady noise between -45 and -20 dB that follows complete
+  silence can be taken for speech and brought up.
+- The panel for a person shows what the mixer is doing to them right now, read from the mixer.
+- The mixer forgets a connection's people when you change channel or the connection drops.
+  The connection then forgets what it had told the mixer and tells it again at once. Before
+  0.4.0 it did not, so a volume or mute set for a person was lost at every channel change.
 - Not built: keeping the microphone on one server while looking at another (the TeamSpeak
   client's "Activate microphone automatically" switched off). Known gap: a mute or unmute that
   the server refuses for flooding is not sent again; the tree then shows the server's state.
@@ -758,7 +851,9 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
 15. ✅ The speaking window; windows keep their size across displays with different scales.
 16. ✅ `ts3server://` links as a setting, one PhishSpeak per profile; Speex from old channels.
 17. ✅ With several servers, the ones without the microphone are told it is off.
-18. Next: test against the official client and a public server; try echo cancelling, noise
+18. ✅ Everyone else is lowered while a priority speaker talks; a switch that evens out how
+    loud people are; a person's volume is no longer forgotten at a channel change.
+19. Next: test against the official client and a public server; try echo cancelling, noise
     suppression and the event sounds by ear; reading keys through Raw Input (planned);
     avatars.
 

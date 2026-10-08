@@ -57,6 +57,8 @@ pub struct Settings {
     pub echo_cancel: bool,
     pub noise_suppression: bool,
     pub auto_gain: bool,
+    pub even_voices: bool,
+    pub priority_dim: bool,
     pub cue_volume: f32,
     pub talk_keys: Vec<Chord>,
     pub talk_release_ms: u32,
@@ -97,6 +99,8 @@ impl Default for Settings {
             echo_cancel: false,
             noise_suppression: false,
             auto_gain: false,
+            even_voices: false,
+            priority_dim: true,
             cue_volume: 50.0,
             talk_keys: Vec::new(),
             talk_release_ms: 0,
@@ -214,6 +218,8 @@ impl Settings {
                 "echo_cancel" => s.echo_cancel = value == "1",
                 "noise_suppression" => s.noise_suppression = value == "1",
                 "auto_gain" => s.auto_gain = value == "1",
+                "even_voices" => s.even_voices = value == "1",
+                "priority_dim" => s.priority_dim = value != "0",
                 "cue_volume" => s.cue_volume = number(value, 50.0, 0.0, 100.0),
                 "ptt_key" => legacy = value.parse::<usize>().ok(),
                 "talk_key" => {
@@ -291,6 +297,8 @@ impl Settings {
         put("echo_cancel", u8::from(self.echo_cancel).to_string());
         put("noise_suppression", u8::from(self.noise_suppression).to_string());
         put("auto_gain", u8::from(self.auto_gain).to_string());
+        put("even_voices", u8::from(self.even_voices).to_string());
+        put("priority_dim", u8::from(self.priority_dim).to_string());
         put("cue_volume", format!("{:.0}", self.cue_volume));
         for chord in &self.talk_keys {
             put("talk_key", chord.to_text());
@@ -409,6 +417,19 @@ mod tests {
         assert_eq!(back.cue_volume, 0.0);
         assert_eq!(Settings::parse("cue_volume=900\n").cue_volume, 100.0);
         assert_eq!(Settings::parse("cue_volume=loud\nauto_gain=yes\n"), Settings::default());
+    }
+
+    #[test]
+    fn the_two_switches_for_other_peoples_voices_are_kept() {
+        let plain = Settings::default();
+        assert!(!plain.even_voices && plain.priority_dim);
+        let mut s = Settings::default();
+        s.even_voices = true;
+        s.priority_dim = false;
+        let back = Settings::parse(&s.serialize());
+        assert!(back.even_voices && !back.priority_dim);
+        let odd = Settings::parse("even_voices=maybe\npriority_dim=maybe\n");
+        assert!(!odd.even_voices && odd.priority_dim);
     }
 
     #[test]
