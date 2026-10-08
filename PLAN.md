@@ -109,6 +109,7 @@ Added on 2026-10-08:
   who was not given it either.
 - From 0.4.1 a priority speaker's whisper lowers the others too, and a priority speaker you
   have muted lowers nobody.
+- Version 0.4.1 was built and published by the release workflow.
 
 Planned, not built: reading keys through Windows' Raw Input as a switch in settings
 (`docs/superpowers/plans/2026-10-07-raw-input-keys.md`).
@@ -553,6 +554,11 @@ ConnectOk", "level 213"). What is actually on the wire:
   `priority_channels.<server uid>=2` at the right moments. The tests for this round were
   checked against 36 deliberate mistakes; the ones not caught at first led to more tests.
   Not done: by ear, in a fleet, and with two connections to one server.
+- The published 0.4.1 program, taken from the zip and run against the test server the same
+  way: both published files match their checksums; ticking "Do not even them out" for the
+  loud talker took the line about being turned down away; and with another channel ticked,
+  the panel for the usual talker read "Lowered 18 dB while a priority speaker talks" while a
+  third talker in that channel whispered to the app's channel.
 - Speex. The decoder's output is the same, sample for sample, as that of the reference library
   (libspeex 1.2.1 built without SSE) on 60 streams, 6.7 million samples: every quality from 0 to
   10 in all three kinds, changing bit rate, silence, several frames in a packet, and lost
