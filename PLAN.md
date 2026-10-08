@@ -99,6 +99,7 @@ Added on 2026-10-08:
 - The panel for a person says what is being done to their volume at that moment.
 - Fixed: the volume or mute you had set for a person was forgotten whenever you changed channel
   or the connection was made again.
+- Version 0.4.0 was built and published by the release workflow.
 
 Planned, not built: reading keys through Windows' Raw Input as a switch in settings
 (`docs/superpowers/plans/2026-10-07-raw-input-keys.md`).
@@ -524,6 +525,11 @@ ConnectOk", "level 213"). What is actually on the wire:
   published files match their checksums; the connection not viewed was reported off 2.0 s after
   it connected, and on switching the other was reported on in the same millisecond as the
   end-of-talk packet and the one left behind off 2.0 s later.
+- The published 0.4.0 program, taken from the zip and run against the test server with a loud
+  talker, a usual one and a priority speaker in its channel and evening out switched on: both
+  published files match their checksums; the panel for the loud one read "Turned down 16 dB
+  to match the others", and the panel for the usual one "Lowered 18 dB while a priority
+  speaker talks" while that one talked.
 - Speex. The decoder's output is the same, sample for sample, as that of the reference library
   (libspeex 1.2.1 built without SSE) on 60 streams, 6.7 million samples: every quality from 0 to
   10 in all three kinds, changing bit rate, silence, several frames in a packet, and lost
