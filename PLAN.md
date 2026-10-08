@@ -7,7 +7,7 @@ joins a server, shows the channel tree, chats, and does voice (Opus) both ways.
 
 Working end to end against a real TeamSpeak 3.13.8 server: login, channel tree, channel
 switching (incl. password channels), text chat, microphone capture → Opus → server, and
-server → Opus → speakers, with and without voice encryption. 374 unit tests green.
+server → Opus → speakers, with and without voice encryption. 381 unit tests green.
 
 The window is the compact tree layout in the Twilight reef palette (design:
 `docs/superpowers/specs/2026-10-06-compact-window-design.md`): spacer channels are drawn as
@@ -100,6 +100,15 @@ Added on 2026-10-08:
 - Fixed: the volume or mute you had set for a person was forgotten whenever you changed channel
   or the connection was made again.
 - Version 0.4.0 was built and published by the release workflow.
+- In a person's panel, 0.4.1: "Do not even them out" leaves that one person out of evening
+  out.
+- Priority speakers of your own, 0.4.1, in PhishSpeak only (the server is told nothing):
+  "Treat them as a priority speaker" in a person's panel and "Treat everyone in here as a
+  priority speaker" in a channel's. Made for command channels whose people reach a fleet by
+  whisper and were never given the server's mark, and for a commander in your own channel
+  who was not given it either.
+- From 0.4.1 a priority speaker's whisper lowers the others too, and a priority speaker you
+  have muted lowers nobody.
 
 Planned, not built: reading keys through Windows' Raw Input as a switch in settings
 (`docs/superpowers/plans/2026-10-07-raw-input-keys.md`).
@@ -156,8 +165,8 @@ order against the test server, not by ear and not with an official client talkin
 | `ps-protocol` | Packet headers, command escape/parse/build, QuickLZ + fragmentation, receive windows/generations, Init1 payloads, voice and whisper payloads | done, 34 tests |
 | `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client/group book, voice and whispers in/out, events; `spacer` recognises spacer channels, `filetransfer` fetches icons over the server's file port, `resolve` finds a server through SRV, TSDNS or its plain name | done, 34 tests + live tests |
 | `ps-oldcodecs` | Speex decoder (8, 16 and 32 kHz) in safe Rust, no dependencies | done, 27 tests + 3 run by hand |
-| `ps-voice` | Opus codec, Speex playback at 48 kHz, resampler, jitter buffer + mixer (talkers keyed by connection and client, a volume per talker, lowering for priority speakers), evening out how loud talkers are (`level.rs`), VAD/PTT gate, lanes (which key is held decides where a frame goes), echo canceller (`echo.rs`), noise suppression (`denoise.rs`), automatic gain (`agc.rs`), event sounds (`cues.rs`), cpal device I/O (WASAPI) | done, 123 tests + live tests |
-| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `mic.rs` what each server is told about the microphone and when, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` keeping a window's size across displays, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 126 tests + live tests |
+| `ps-voice` | Opus codec, Speex playback at 48 kHz, resampler, jitter buffer + mixer (talkers keyed by connection and client, a volume per talker, lowering for priority speakers), evening out how loud talkers are (`level.rs`), VAD/PTT gate, lanes (which key is held decides where a frame goes), echo canceller (`echo.rs`), noise suppression (`denoise.rs`), automatic gain (`agc.rs`), event sounds (`cues.rs`), cpal device I/O (WASAPI) | done, 127 tests + live tests |
+| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `mic.rs` what each server is told about the microphone and when, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` keeping a window's size across displays, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 129 tests + live tests |
 | `ps-serverquery` | Text protocol over TCP 10011 | not started |
 
 Threads: UI thread (Slint, 33 ms timer drains client events) · `ps-client` actor + UDP reader ·
@@ -530,6 +539,20 @@ ConnectOk", "level 213"). What is actually on the wire:
   published files match their checksums; the panel for the loud one read "Turned down 16 dB
   to match the others", and the panel for the usual one "Lowered 18 dB while a priority
   speaker talks" while that one talked.
+- The marks of 0.4.1, live in the app against the test server with a loud and a usual talker
+  in its channel and evening out on. For the loud one, ticking "Do not even them out" took
+  the line "Turned down 16 dB to match the others" away and unticking brought it back.
+  Ticking "Treat them as a priority speaker" for the loud one, who has no mark from the
+  server, put "Priority speaker for you" in their panel, and the panel of the other read
+  "Lowered 30 dB while a priority speaker talks" with the server set to 30 dB and "Lowered
+  18 dB …" with the server set to lower by nothing. With another channel ticked instead and
+  the server at its usual 18 dB, a third talker who joined that channel and whispered to the
+  app's channel had the same effect, and the panel of the app's own channel said that
+  nothing is lowered for you while you are in it. The settings file held
+  `voice.<uid>=100,unleveled`, `voice.<uid>=100,priority` and
+  `priority_channels.<server uid>=2` at the right moments. The tests for this round were
+  checked against 36 deliberate mistakes; the ones not caught at first led to more tests.
+  Not done: by ear, in a fleet, and with two connections to one server.
 - Speex. The decoder's output is the same, sample for sample, as that of the reference library
   (libspeex 1.2.1 built without SSE) on 60 streams, 6.7 million samples: every quality from 0 to
   10 in all three kinds, changing bit rate, silence, several frames in a packet, and lost
@@ -655,9 +678,28 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   whisper turns into talk, brings no click. A listener who is a priority speaker hears no
   lowering and priority speakers are
   never lowered (TeamSpeak's rule); 0 dB or more lowers nobody and anything below -60 dB counts
-  as -60. Whispers neither set it off nor are lowered: they are meant for you, and nothing
-  published says what the TeamSpeak client does with them. The app tells the mixer who is a
-  priority speaker and how far to lower on every new view of the server.
+  as -60. A priority speaker lowers the others however their voice arrives, in the channel or
+  as a whisper (the whisper counts since 0.4.1: people in a command channel reach a fleet by
+  whisper); a whisper to you is never lowered, and a priority speaker you have muted or set
+  to 0 % lowers nobody. Nothing published says what the TeamSpeak client does with whispers.
+  The app tells the mixer who is a priority speaker and how far to lower on every new view of
+  the server.
+- Priority speakers of your own (`session::priority_speakers`, `priority_dim`). The server is
+  told nothing. A person you mark (`voice.<uid>=…,priority`) counts wherever you meet them.
+  A channel you mark (`priority_channels.<server uid>=<channel ids>`) makes everyone in it
+  count, on every connection to that server. They count exactly like people the server
+  marks. If you are in a marked channel yourself you count as one too, so nothing is lowered
+  for you. The others are lowered by the server's value; if the server names none (0 or
+  more), by 18 dB, and then only your own marks count, neither the server's priority speakers
+  nor its mark on you, because the server asked for nobody to be lowered. A channel is known
+  by its number on that server. 64 channels are kept for each of 64 servers: whenever a mark
+  on a server is changed, its marks for channels that are gone are dropped; a 65th channel is
+  refused and the box comes off again; a 65th server takes the place of one that is not
+  connected, and is refused if all of them are. The boxes are offered only while the switch
+  for lowering is on.
+- Left out of evening out (`voice.<uid>=…,unleveled`): that person's leveller rests and they
+  are played as they come in, with your own volume for them still applied; taking them back
+  goes on from what had been learned. The box is offered only while evening out is on.
 - Evening out (`level.rs`, one `Leveler` per talker, in the mixer before the person's own
   volume). Each 20 ms block is measured. An estimate of how loud the talker speaks follows
   louder blocks quickly (0.3 s) and quieter ones slowly (1.5 s), and the gain moves so that
@@ -707,9 +749,9 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   Transparency is for the whole window (20 to 100 %). The window is marked so that clicking it
   never makes it the active window, and showing it hands the focus back to the window that had
   it. Place and size are kept in `settings.ini`. It has a taskbar button of its own.
-- Per-person volume and mute are kept by the person's UID (`voice.<uid>=<percent>[,muted]`, 256
-  people at most) and applied whenever that person is seen. The slider is squared before use,
-  so half way is a quarter of the power.
+- What you set for a person is kept by their UID (`voice.<uid>=<percent>` followed by any of
+  `,muted`, `,unleveled` and `,priority`; 256 people at most) and applied whenever that person
+  is seen. The slider is squared before use, so half way is a quarter of the power.
 - Reconnecting: only a connection that had been up is retried, after 2, 4, 8, 15 and then every
   30 seconds. The password in use and the channel you were in are kept for the retry; a refusal
   that trying again cannot cure (a ban, a wrong password) stops it.
@@ -859,7 +901,9 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
 17. ✅ With several servers, the ones without the microphone are told it is off.
 18. ✅ Everyone else is lowered while a priority speaker talks; a switch that evens out how
     loud people are; a person's volume is no longer forgotten at a channel change.
-19. Next: test against the official client and a public server; try echo cancelling, noise
+19. ✅ One person can be left out of evening out; priority speakers of your own, by person
+    and by channel.
+20. Next: test against the official client and a public server; try echo cancelling, noise
     suppression and the event sounds by ear; reading keys through Raw Input (planned);
     avatars.
 

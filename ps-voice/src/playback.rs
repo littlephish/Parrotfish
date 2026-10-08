@@ -162,6 +162,7 @@ pub struct Talker {
     heard: bool,
     whisper: bool,
     priority: bool,
+    unleveled: bool,
     lowered: f32,
     pub volume: f32,
     pub stats: TalkerStats,
@@ -203,6 +204,7 @@ impl Talker {
             heard: false,
             whisper: false,
             priority: false,
+            unleveled: false,
             lowered: 1.0,
             volume: 1.0,
             stats: TalkerStats::default(),
@@ -635,6 +637,7 @@ pub struct Playback {
     talkers: HashMap<u32, Talker>,
     volumes: HashMap<u32, f32>,
     priority: HashSet<u32>,
+    unleveled: HashSet<u32>,
     levelers: HashMap<u32, Leveler>,
     dims: HashMap<u16, Dim>,
     leveling: bool,
@@ -674,6 +677,7 @@ impl Playback {
                 Ok(mut talker) => {
                     talker.volume = self.volumes.get(&key).copied().unwrap_or(1.0);
                     talker.priority = self.priority.contains(&key);
+                    talker.unleveled = self.unleveled.contains(&key);
                     self.talkers.insert(key, talker);
                     if session != LOOPBACK_SESSION {
                         self.levelers.entry(key).or_default();
@@ -687,6 +691,18 @@ impl Playback {
                 talker.whisper = whisper;
             }
             talker.push_coded(voice_id, codec, data);
+        }
+    }
+
+    pub fn set_leveled(&mut self, session: u16, client_id: u16, on: bool) {
+        let key = Self::key(session, client_id);
+        if on {
+            self.unleveled.remove(&key);
+        } else {
+            self.unleveled.insert(key);
+        }
+        if let Some(talker) = self.talkers.get_mut(&key) {
+            talker.unleveled = !on;
         }
     }
 
@@ -723,7 +739,8 @@ impl Playback {
 
     pub fn adjustment(&self, session: u16, client_id: u16) -> Adjustment {
         let key = Self::key(session, client_id);
-        let leveled_db = if self.leveling { self.levelers.get(&key).map_or(0.0, Leveler::gain_db) } else { 0.0 };
+        let evened = self.leveling && !self.unleveled.contains(&key);
+        let leveled_db = if evened { self.levelers.get(&key).map_or(0.0, Leveler::gain_db) } else { 0.0 };
         let lowered = match (self.talkers.get(&key), self.dims.get(&session)) {
             (Some(talker), _) => talker.lowered,
             (None, Some(dim)) if !self.priority.contains(&key) => dim.now,
@@ -755,6 +772,7 @@ impl Playback {
         self.talkers.retain(|key, _| Self::session_of(*key) != session);
         self.volumes.retain(|key, _| Self::session_of(*key) != session);
         self.priority.retain(|key| Self::session_of(*key) != session);
+        self.unleveled.retain(|key| Self::session_of(*key) != session);
         self.levelers.retain(|key, _| Self::session_of(*key) != session);
         self.dims.remove(&session);
     }
@@ -791,10 +809,11 @@ impl Playback {
             if talker.heard {
                 active += 1;
                 let session = Self::session_of(*key);
-                if let Some(leveler) = self.levelers.get_mut(key).filter(|leveler| leveling || !leveler.is_idle()) {
-                    leveler.process(&mut heard, MIX_CHANNELS, leveling);
+                let evened = leveling && !talker.unleveled;
+                if let Some(leveler) = self.levelers.get_mut(key).filter(|leveler| evened || !leveler.is_idle()) {
+                    leveler.process(&mut heard, MIX_CHANNELS, evened);
                 }
-                if talker.priority && !talker.whisper {
+                if talker.priority && talker.volume > 0.0 {
                     if let Some(dim) = self.dims.get_mut(&session) {
                         dim.busy = true;
                     }
@@ -816,7 +835,7 @@ impl Playback {
                     talker.whisper = false;
                 }
                 if let Some(leveler) = self.levelers.get_mut(key) {
-                    leveler.rest(leveling);
+                    leveler.rest(leveling && !talker.unleveled);
                 }
                 continue;
             }
@@ -1718,7 +1737,7 @@ mod tests {
     }
 
     #[test]
-    fn whispers_lower_nobody_and_are_not_lowered() {
+    fn a_priority_speakers_whisper_lowers_the_channel_and_a_whisper_to_me_is_never_lowered() {
         let normal = tone_at(90, 440.0, 0.2);
         let chief = tone_at(90, 1000.0, 0.2);
         let third = tone_at(90, 1500.0, 0.2);
@@ -1730,7 +1749,8 @@ mod tests {
         p.set_priority_dim(1, Some(-18.0));
         let whispering_chief = Part { session: 1, client: 10, packets: &chief, from: 0, whisper: true };
         let left = play(&mut p, &[says(1, 20, &normal, 0), whispering_chief], 90);
-        assert!(db(strength(span(&left, 30, 80), 440.0) / lone).abs() < 0.5, "a whispering priority speaker lowered the channel");
+        let under = db(strength(span(&left, 30, 80), 440.0) / lone);
+        assert!((under + 18.0).abs() < 1.0, "while a priority speaker whispered to me the channel stood at {under:.1} dB");
 
         let mut p = Playback::new();
         p.set_priority(1, 10, true);
@@ -1740,6 +1760,56 @@ mod tests {
         assert!((db(strength(span(&left, 30, 80), 440.0) / lone) + 18.0).abs() < 1.0);
         assert!(db(strength(span(&left, 30, 80), 1500.0) / lone_third).abs() < 0.5, "a whisper to me was lowered");
         assert_eq!(p.adjustment(1, 30).lowered_db, 0.0);
+
+        let mut p = Playback::new();
+        p.set_priority(1, 10, true);
+        p.set_priority_dim(1, Some(-18.0));
+        let whisperer = Part { session: 1, client: 30, packets: &third, from: 0, whisper: true };
+        let left = play(&mut p, &[says(1, 20, &normal, 0), whisperer], 90);
+        let under = db(strength(span(&left, 30, 80), 440.0) / lone);
+        assert!(under.abs() < 0.5, "someone who is no priority speaker whispered and the channel stood at {under:.1} dB");
+    }
+
+    #[test]
+    fn a_priority_speaker_i_cannot_hear_lowers_nobody() {
+        let normal = tone_at(90, 440.0, 0.2);
+        let chief = tone_at(90, 1000.0, 0.2);
+        let lone = strength(span(&play(&mut Playback::new(), &[says(1, 20, &normal, 0)], 90), 30, 80), 440.0);
+        let mut p = Playback::new();
+        p.set_priority(1, 10, true);
+        p.set_priority_dim(1, Some(-18.0));
+        p.set_volume(1, 10, 0.0);
+        let left = play(&mut p, &[says(1, 20, &normal, 0), says(1, 10, &chief, 0)], 90);
+        let under = db(strength(span(&left, 30, 80), 440.0) / lone);
+        assert!(under.abs() < 0.5, "a muted priority speaker lowered the channel by {under:.1} dB");
+        assert!(strength(span(&left, 30, 80), 1000.0) < 0.001, "and was heard");
+        p.set_volume(1, 10, 0.5);
+        let more = tone_at(90, 1000.0, 0.2);
+        let again = play(&mut p, &[says(1, 20, &normal, 0), says(1, 10, &more, 0)], 90);
+        let lowered = db(strength(span(&again, 30, 80), 440.0) / lone);
+        assert!((lowered + 18.0).abs() < 1.0, "turned down but not muted, they do lower the others: {lowered:.1} dB");
+    }
+
+    #[test]
+    fn someone_left_out_starts_each_phrase_at_their_own_level() {
+        let loud = tone_at(100, 440.0, 0.6);
+        let plain = play(&mut Playback::new(), &[says(0, 1, &loud, 0)], 110);
+        let mut p = Playback::new();
+        p.set_leveling(true);
+        play(&mut p, &[says(0, 1, &loud, 0)], 110);
+        assert!(p.adjustment(0, 1).leveled_db < -8.0);
+        p.set_leveled(0, 1, false);
+        let mut out = vec![0f32; BLOCK];
+        for _ in 0..50 {
+            p.mix(&mut out);
+        }
+        let again = play(&mut p, &[says(0, 1, &loud, 0)], 110);
+        let opening = |left: &[f32]| {
+            let first = (0..40).find(|block| rms(span(left, *block, block + 1)) > 0.02).unwrap();
+            rms(span(left, first, first + 1))
+        };
+        let off = db(opening(&again) / opening(&plain));
+        assert!(off.abs() < 1.0, "the first words after a pause stood {off:.1} dB from the plain sound");
     }
 
     #[test]
@@ -1768,6 +1838,63 @@ mod tests {
         assert!(p.talker(1, 30).is_some(), "the person who whispered is still known to the mixer");
         let shown = p.adjustment(1, 30).lowered_db;
         assert!((shown + 18.0).abs() < 0.1, "shown as lowered by {shown:.1} dB while the priority speaker talks");
+    }
+
+    #[test]
+    fn a_person_left_out_of_levelling_is_played_as_they_come_in() {
+        let loud = tone_at(160, 440.0, 0.6);
+        let other = tone_at(160, 1000.0, 0.6);
+        let plain = strength(span(&play(&mut Playback::new(), &[says(0, 1, &loud, 0)], 160), 110, 150), 440.0);
+        let mut p = Playback::new();
+        p.set_leveling(true);
+        p.set_leveled(0, 1, false);
+        let left = play(&mut p, &[says(0, 1, &loud, 0), says(0, 2, &other, 0)], 160);
+        let (kept, evened) = (strength(span(&left, 110, 150), 440.0), strength(span(&left, 110, 150), 1000.0));
+        assert!(db(kept / plain).abs() < 1.0, "the person left out moved by {:.1} dB", db(kept / plain));
+        assert!(db(evened / plain) < -8.0, "the other one was turned down by only {:.1} dB", db(evened / plain));
+        assert_eq!(p.adjustment(0, 1).leveled_db, 0.0);
+        assert!(p.adjustment(0, 2).leveled_db < -8.0);
+        p.clear_session(0);
+        let again = play(&mut p, &[says(0, 1, &loud, 0)], 160);
+        let back = strength(span(&again, 110, 150), 440.0);
+        assert!(db(back / plain) < -8.0, "a new connection does not inherit who was left out: {:.1} dB", db(back / plain));
+        p.set_leveled(0, 3, false);
+        p.set_leveled(0, 3, true);
+        let third = play(&mut p, &[says(0, 3, &loud, 0)], 160);
+        let taken_back = strength(span(&third, 110, 150), 440.0);
+        assert!(db(taken_back / plain) < -8.0, "left out and taken back before speaking: {:.1} dB", db(taken_back / plain));
+    }
+
+    #[test]
+    fn leaving_someone_out_and_taking_them_back_brings_no_step() {
+        let loud = tone_at(260, 440.0, 0.6);
+        let raw = play(&mut Playback::new(), &[says(0, 1, &loud, 0)], 260);
+        let mut p = Playback::new();
+        p.set_leveling(true);
+        let mut out = vec![0f32; BLOCK];
+        let mut left = Vec::new();
+        for block in 0..260 {
+            if block == 100 {
+                p.set_leveled(0, 1, false);
+            }
+            if block == 150 {
+                assert_eq!(p.adjustment(0, 1).leveled_db, 0.0, "left out, nothing is shown as being done");
+            }
+            if block == 160 {
+                p.set_leveled(0, 1, true);
+            }
+            p.push(0, 1, block as u16, CODEC_OPUS_VOICE, &loud[block]);
+            p.mix(&mut out);
+            left.extend(out.chunks(MIX_CHANNELS).map(|frame| frame[0]));
+        }
+        let plain = strength(span(&raw, 110, 150), 440.0);
+        let evened = strength(span(&left, 60, 95), 440.0);
+        let out_of_it = strength(span(&left, 115, 155), 440.0);
+        let back_in = strength(span(&left, 215, 255), 440.0);
+        assert!(db(evened / plain) < -8.0);
+        assert!(db(out_of_it / plain).abs() < 0.5, "left out, they stood {:.1} dB from the plain sound", db(out_of_it / plain));
+        assert!(db(back_in / evened).abs() < 1.5, "taken back, they stood {:.1} dB from where they were", db(back_in / evened));
+        assert!(largest_step(&left) <= largest_step(&raw) * 1.05 + 1e-4, "a step of {}", largest_step(&left));
     }
 
     #[test]

@@ -152,6 +152,12 @@ impl AudioEngine {
         }
     }
 
+    pub fn set_leveled(&self, session: u16, client_id: u16, on: bool) {
+        if let Ok(mut playback) = self.shared.playback.lock() {
+            playback.set_leveled(session, client_id, on);
+        }
+    }
+
     pub fn set_priority(&self, session: u16, client_id: u16, on: bool) {
         if let Ok(mut playback) = self.shared.playback.lock() {
             playback.set_priority(session, client_id, on);

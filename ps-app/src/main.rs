@@ -100,6 +100,8 @@ fn main() -> Result<(), slint::PlatformError> {
     let a = app.clone();
     ui.on_channel_join(move || with_app(&a, |s, w| s.channel_join(w)));
     let a = app.clone();
+    ui.on_channel_priority_changed(move || with_app(&a, |s, w| s.channel_priority_changed(w)));
+    let a = app.clone();
     ui.on_join_with_password(move || with_app(&a, |s, w| s.join_with_password(w)));
     let a = app.clone();
     ui.on_send_chat(move || with_app(&a, |s, w| s.send_chat(w)));

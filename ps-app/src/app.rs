@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -766,6 +767,8 @@ impl App {
         let even_voices = w.settings.get_even_voices();
         let priority_dim = w.settings.get_priority_dim();
         self.engine.set_leveling(even_voices);
+        w.main.set_person_evened(even_voices);
+        w.main.set_priority_offered(priority_dim);
         self.engine.set_loopback(w.settings.get_mic_test());
         w.main.set_threshold_position(if tx_mode == 0 { level_position(threshold) } else { -1.0 });
         self.settings.tx_mode = tx_mode;
@@ -1516,6 +1519,7 @@ impl App {
         let Some((session_id, channel_id)) = self.channel_sheet else {
             return;
         };
+        let session_uid = self.session(session_id).map(|s| s.server_uid.clone()).unwrap_or_default();
         let shown = self
             .session(session_id)
             .filter(|s| self.viewed == Some(s.id) && s.is_connected())
@@ -1549,6 +1553,31 @@ impl App {
         w.main.set_channel_facts(facts.join("  \u{b7}  ").into());
         w.main.set_channel_text(session::plain_text(&channel.description).into());
         w.main.set_channel_current(channel.id == view.own_channel);
+        let marked = self.settings.priority_channels.get(&session_uid).is_some_and(|chosen| chosen.contains(&channel_id));
+        w.main.set_channel_priority(marked);
+        w.main.set_priority_offered(self.settings.priority_dim);
+    }
+
+    pub fn channel_priority_changed(&mut self, w: &Windows) {
+        let Some((session_id, channel_id)) = self.channel_sheet else {
+            return;
+        };
+        let found = self.session(session_id).map(|session| {
+            let existing: BTreeSet<u64> =
+                session.view.as_ref().map(|view| view.channels.iter().map(|node| node.channel.id).collect()).unwrap_or_default();
+            (session.server_uid.clone(), existing)
+        });
+        if let Some((uid, existing)) = found {
+            let in_use: Vec<String> = self.sessions.iter().map(|s| s.server_uid.clone()).collect();
+            self.settings.mark_priority_channel(&uid, channel_id, w.main.get_channel_priority(), &existing, &in_use);
+            self.mark_settings_dirty();
+        }
+        let ids: Vec<u16> = self.sessions.iter().map(|s| s.id).collect();
+        for id in ids {
+            self.apply_voices(id);
+        }
+        self.publish_channel(w);
+        self.dirty.tree = true;
     }
 
     pub fn channel_join(&mut self, w: &Windows) {
@@ -1634,6 +1663,10 @@ impl App {
         let voice = self.settings.voices.get(&person.uid).copied().unwrap_or(Voice::plain());
         w.main.set_person_volume(f32::from(voice.percent));
         w.main.set_person_muted(voice.muted);
+        w.main.set_person_as_is(voice.unleveled);
+        w.main.set_person_evened(self.settings.even_voices);
+        w.main.set_person_priority(voice.priority);
+        w.main.set_priority_offered(self.settings.priority_dim);
         w.main.set_person_poke("".into());
         w.main.set_person_away(person.away);
         w.main.set_person_asking(person.talk_request);
@@ -1699,8 +1732,12 @@ impl App {
         if person.is_channel_commander {
             status.push("Channel commander".to_string());
         }
+        let nowhere = BTreeSet::new();
+        let channels = self.settings.priority_channels.get(&session.server_uid).unwrap_or(&nowhere);
         if person.is_priority_speaker {
             status.push("Priority speaker".to_string());
+        } else if session::marked_by_me(view, client_id, &self.settings.voices, channels) {
+            status.push("Priority speaker for you".to_string());
         }
         w.main.set_person_name(person.nickname.as_str().into());
         w.main.set_person_me(client_id == view.own_id);
@@ -1725,11 +1762,20 @@ impl App {
         let voice = Voice {
             percent: w.main.get_person_volume().round().clamp(0.0, 200.0) as u16,
             muted: w.main.get_person_muted(),
+            unleveled: w.main.get_person_as_is(),
+            priority: w.main.get_person_priority(),
         };
         if voice.is_plain() {
             self.settings.voices.remove(&uid);
         } else if self.settings.voices.len() < MAX_REMEMBERED_VOICES || self.settings.voices.contains_key(&uid) {
-            self.settings.voices.insert(uid, voice);
+            self.settings.voices.insert(uid.clone(), voice);
+        }
+        let stored = self.settings.voices.get(&uid).copied().unwrap_or(Voice::plain());
+        if stored != voice {
+            w.main.set_person_volume(f32::from(stored.percent));
+            w.main.set_person_muted(stored.muted);
+            w.main.set_person_as_is(stored.unleveled);
+            w.main.set_person_priority(stored.priority);
         }
         self.mark_settings_dirty();
         let ids: Vec<u16> = self.sessions.iter().map(|s| s.id).collect();
@@ -1741,11 +1787,17 @@ impl App {
 
     fn apply_voices(&mut self, id: u16) {
         let (voices, lower) = (&self.settings.voices, self.settings.priority_dim);
-        let Some(plan) = self.sessions.iter_mut().find(|s| s.id == id).map(|session| session.plan_voices(voices, lower)) else {
+        let (marks, nowhere) = (&self.settings.priority_channels, BTreeSet::new());
+        let planned = self.sessions.iter_mut().find(|s| s.id == id).map(|session| {
+            let channels = marks.get(&session.server_uid).unwrap_or(&nowhere);
+            session.plan_voices(voices, channels, lower)
+        });
+        let Some(plan) = planned else {
             return;
         };
-        for (client, gain) in plan.volumes {
+        for (client, gain, leveled) in plan.volumes {
             self.engine.set_volume(id, client, gain);
+            self.engine.set_leveled(id, client, leveled);
         }
         for (client, on) in plan.priority {
             self.engine.set_priority(id, client, on);

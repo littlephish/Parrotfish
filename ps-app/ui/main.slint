@@ -216,6 +216,11 @@ export component PhishSpeakApp inherits Window {
     in property <bool> person-me;
     in-out property <float> person-volume: 100;
     in-out property <bool> person-muted;
+    in-out property <bool> person-as-is;
+    in property <bool> person-evened;
+    in-out property <bool> person-priority;
+    in-out property <bool> channel-priority;
+    in property <bool> priority-offered;
     in-out property <string> person-poke;
     in-out property <bool> person-away;
     in-out property <string> person-away-message;
@@ -256,6 +261,7 @@ export component PhishSpeakApp inherits Window {
     callback speakers-toggle();
     callback speakers-lock();
     callback channel-join();
+    callback channel-priority-changed();
 
     forward-focus: keys;
     init => {
@@ -1116,6 +1122,19 @@ export component PhishSpeakApp inherits Window {
                         }
                     }
 
+                    if root.priority-offered: Check {
+                        text: "Treat everyone in here as a priority speaker";
+                        checked <=> root.channel-priority;
+                        toggled => {
+                            root.channel-priority-changed();
+                        }
+                    }
+
+                    if root.priority-offered: Dim {
+                        text: root.channel-current ? "Only for you. While you are in here yourself, nothing is lowered for you." : "Only for you. While one of them talks or whispers to you, everyone else is lowered.";
+                        wrap: word-wrap;
+                    }
+
                     if !root.channel-current: HorizontalLayout {
                         alignment: end;
                         padding-top: 10px;
@@ -1222,6 +1241,22 @@ export component PhishSpeakApp inherits Window {
                     if !root.person-me && root.person-heard != "": Dim {
                         text: root.person-heard;
                         wrap: word-wrap;
+                    }
+
+                    if !root.person-me && root.person-evened: Check {
+                        text: "Do not even them out";
+                        checked <=> root.person-as-is;
+                        toggled => {
+                            root.person-voice-changed();
+                        }
+                    }
+
+                    if !root.person-me && root.priority-offered: Check {
+                        text: "Treat them as a priority speaker";
+                        checked <=> root.person-priority;
+                        toggled => {
+                            root.person-voice-changed();
+                        }
                     }
 
                     if !root.person-me: Check {

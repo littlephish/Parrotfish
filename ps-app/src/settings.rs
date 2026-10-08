@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 
@@ -16,17 +16,20 @@ pub const MIN_WINDOW_HEIGHT: f32 = 520.0;
 const MAX_WINDOW_SIDE: f32 = 8000.0;
 pub const MAX_REMEMBERED_FOLDS: usize = 512;
 pub const MAX_REMEMBERED_SERVERS: usize = 64;
+pub const MAX_PRIORITY_CHANNELS: usize = 64;
 pub const MAX_REMEMBERED_VOICES: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Voice {
     pub percent: u16,
     pub muted: bool,
+    pub unleveled: bool,
+    pub priority: bool,
 }
 
 impl Voice {
     pub fn plain() -> Self {
-        Self { percent: 100, muted: false }
+        Self { percent: 100, muted: false, unleveled: false, priority: false }
     }
 
     pub fn is_plain(self) -> bool {
@@ -77,6 +80,7 @@ pub struct Settings {
     pub speakers_place: Option<(i32, i32)>,
     pub speakers_size: (f32, f32),
     pub folds: BTreeMap<String, BTreeMap<u64, bool>>,
+    pub priority_channels: BTreeMap<String, BTreeSet<u64>>,
     pub voices: BTreeMap<String, Voice>,
     pub window_width: f32,
     pub window_height: f32,
@@ -119,6 +123,7 @@ impl Default for Settings {
             speakers_place: None,
             speakers_size: (220.0, 160.0),
             folds: BTreeMap::new(),
+            priority_channels: BTreeMap::new(),
             voices: BTreeMap::new(),
             window_width: DEFAULT_WINDOW_WIDTH,
             window_height: DEFAULT_WINDOW_HEIGHT,
@@ -168,12 +173,24 @@ impl Settings {
                 if let Some((uid, value)) = rest.rsplit_once('=') {
                     let mut parts = value.split(',');
                     let percent = parts.next().and_then(|part| part.trim().parse::<u16>().ok());
-                    let muted = parts.next().is_some_and(|flag| flag.trim() == "muted");
+                    let flags: Vec<&str> = parts.map(str::trim).collect();
+                    let (muted, unleveled, priority) =
+                        (flags.contains(&"muted"), flags.contains(&"unleveled"), flags.contains(&"priority"));
                     if let (Some(percent), false) = (percent, uid.is_empty()) {
-                        let voice = Voice { percent: percent.min(200), muted };
+                        let voice = Voice { percent: percent.min(200), muted, unleveled, priority };
                         if !voice.is_plain() && s.voices.len() < MAX_REMEMBERED_VOICES {
                             s.voices.insert(uid.to_string(), voice);
                         }
+                    }
+                }
+                continue;
+            }
+            if let Some(rest) = line.trim().strip_prefix("priority_channels.") {
+                if let Some((uid, list)) = rest.rsplit_once('=') {
+                    let chosen: BTreeSet<u64> =
+                        list.split(',').filter_map(|id| id.trim().parse().ok()).take(MAX_PRIORITY_CHANNELS).collect();
+                    if !uid.is_empty() && !chosen.is_empty() && s.priority_channels.len() < MAX_REMEMBERED_SERVERS {
+                        s.priority_channels.insert(uid.to_string(), chosen);
                     }
                 }
                 continue;
@@ -333,7 +350,15 @@ impl Settings {
         }
         for (uid, voice) in &self.voices {
             if !voice.is_plain() {
-                put(&format!("voice.{uid}"), format!("{}{}", voice.percent, if voice.muted { ",muted" } else { "" }));
+                let (muted, unleveled) = (if voice.muted { ",muted" } else { "" }, if voice.unleveled { ",unleveled" } else { "" });
+                let priority = if voice.priority { ",priority" } else { "" };
+                put(&format!("voice.{uid}"), format!("{}{muted}{unleveled}{priority}", voice.percent));
+            }
+        }
+        for (uid, chosen) in &self.priority_channels {
+            if !chosen.is_empty() {
+                let list: Vec<String> = chosen.iter().map(u64::to_string).collect();
+                put(&format!("priority_channels.{uid}"), list.join(","));
             }
         }
         for (uid, chosen) in &self.folds {
@@ -344,6 +369,34 @@ impl Settings {
             }
         }
         out
+    }
+
+    pub fn mark_priority_channel(&mut self, server: &str, channel: u64, on: bool, existing: &BTreeSet<u64>, in_use: &[String]) -> bool {
+        if server.is_empty() {
+            return false;
+        }
+        let mut chosen = self.priority_channels.remove(server).unwrap_or_default();
+        if !existing.is_empty() {
+            chosen.retain(|known| existing.contains(known));
+        }
+        if !on {
+            chosen.remove(&channel);
+        } else if chosen.len() < MAX_PRIORITY_CHANNELS {
+            chosen.insert(channel);
+        }
+        if chosen.is_empty() {
+            return !on;
+        }
+        if self.priority_channels.len() >= MAX_REMEMBERED_SERVERS {
+            let spare = self.priority_channels.keys().find(|known| !in_use.contains(known)).cloned();
+            match spare {
+                Some(spare) => self.priority_channels.remove(&spare),
+                None => return false,
+            };
+        }
+        let kept = chosen.contains(&channel) == on;
+        self.priority_channels.insert(server.to_string(), chosen);
+        kept
     }
 
     pub fn load() -> Self {
@@ -433,29 +486,108 @@ mod tests {
     }
 
     #[test]
+    fn the_channels_i_treat_as_priority_are_kept_for_each_server() {
+        let mut s = Settings::default();
+        s.priority_channels.insert("lks7QL5OVMKo4pZ79cEOI5r5oEA=".into(), BTreeSet::from([4, 17]));
+        s.priority_channels.insert("nothing".into(), BTreeSet::new());
+        let text = s.serialize();
+        assert!(text.contains("priority_channels.lks7QL5OVMKo4pZ79cEOI5r5oEA==4,17\n"));
+        assert!(!text.contains("priority_channels.nothing"));
+        let back = Settings::parse(&text);
+        assert_eq!(back.priority_channels.len(), 1);
+        assert_eq!(back.priority_channels["lks7QL5OVMKo4pZ79cEOI5r5oEA="], BTreeSet::from([4, 17]));
+        let damaged = Settings::parse("priority_channels.=1\npriority_channels.one=\npriority_channels.two=abc, 7 ,,9x,10\npriority_channels.three\n");
+        assert_eq!(damaged.priority_channels.len(), 1);
+        assert_eq!(damaged.priority_channels["two"], BTreeSet::from([7, 10]));
+        let many: Vec<String> = (1..=500).map(|n| n.to_string()).collect();
+        let big = Settings::parse(&format!("priority_channels.big={}\n", many.join(",")));
+        assert_eq!(big.priority_channels["big"].len(), MAX_PRIORITY_CHANNELS);
+        let crowd: String = (0..200).map(|n| format!("priority_channels.server{n}=1\n")).collect();
+        assert_eq!(Settings::parse(&crowd).priority_channels.len(), MAX_REMEMBERED_SERVERS);
+    }
+
+    #[test]
+    fn marking_a_channel_keeps_within_its_limits_and_says_whether_it_took() {
+        let mut s = Settings::default();
+        let (all, nobody) = (BTreeSet::new(), Vec::new());
+        assert!(!s.mark_priority_channel("", 4, true, &all, &nobody), "a server that has not said who it is");
+        assert!(s.priority_channels.is_empty());
+        assert!(s.mark_priority_channel("reef=", 4, true, &all, &nobody));
+        assert!(s.mark_priority_channel("reef=", 9, true, &all, &nobody));
+        assert!(s.mark_priority_channel("reef=", 4, true, &all, &nobody), "ticking twice changes nothing");
+        assert_eq!(s.priority_channels["reef="], BTreeSet::from([4, 9]));
+        assert!(s.mark_priority_channel("reef=", 4, false, &all, &nobody));
+        assert_eq!(s.priority_channels["reef="], BTreeSet::from([9]));
+        assert!(s.mark_priority_channel("reef=", 9, false, &all, &nobody));
+        assert!(s.priority_channels.is_empty(), "a server with nothing marked is not kept");
+        assert!(s.mark_priority_channel("reef=", 77, false, &all, &nobody), "unticking what was never ticked");
+
+        s.priority_channels.insert("reef=".into(), BTreeSet::from([4, 9, 30]));
+        let existing = BTreeSet::from([1, 4, 12]);
+        assert!(s.mark_priority_channel("reef=", 12, true, &existing, &nobody));
+        assert_eq!(s.priority_channels["reef="], BTreeSet::from([4, 12]), "channels that are gone are dropped");
+
+        let full: BTreeSet<u64> = (1..=MAX_PRIORITY_CHANNELS as u64).collect();
+        s.priority_channels.insert("big=".into(), full.clone());
+        assert!(!s.mark_priority_channel("big=", 900, true, &all, &nobody), "one more than fits is refused");
+        assert_eq!(s.priority_channels["big="], full);
+
+        let mut crowded = Settings::default();
+        for n in 0..MAX_REMEMBERED_SERVERS {
+            crowded.priority_channels.insert(format!("server{n:03}"), BTreeSet::from([1]));
+        }
+        let busy: Vec<String> = (0..MAX_REMEMBERED_SERVERS).map(|n| format!("server{n:03}")).collect();
+        assert!(!crowded.mark_priority_channel("new=", 5, true, &all, &busy), "every remembered server is connected");
+        assert!(!crowded.priority_channels.contains_key("new="));
+        assert_eq!(crowded.priority_channels.len(), MAX_REMEMBERED_SERVERS);
+        assert!(crowded.mark_priority_channel("new=", 5, true, &all, &busy[1..]), "a server that is not connected gives way");
+        assert!(crowded.priority_channels.contains_key("new=") && !crowded.priority_channels.contains_key("server000"));
+        assert_eq!(crowded.priority_channels.len(), MAX_REMEMBERED_SERVERS);
+        assert!(crowded.mark_priority_channel("server005", 8, true, &all, &busy), "a server already remembered needs no room");
+        assert_eq!(crowded.priority_channels["server005"], BTreeSet::from([1, 8]));
+    }
+
+    #[test]
     fn how_loud_each_person_is_for_me_is_kept() {
         let mut s = Settings::default();
-        s.voices.insert("test/9PZ9vww/Bpf5vJxtJhpz80=".into(), Voice { percent: 150, muted: false });
-        s.voices.insert("lks7QL5OVMKo4pZ79cEOI5r5oEA=".into(), Voice { percent: 100, muted: true });
+        s.voices.insert("test/9PZ9vww/Bpf5vJxtJhpz80=".into(), Voice { percent: 150, ..Voice::plain() });
+        s.voices.insert("lks7QL5OVMKo4pZ79cEOI5r5oEA=".into(), Voice { muted: true, ..Voice::plain() });
+        s.voices.insert("asis".into(), Voice { unleveled: true, ..Voice::plain() });
+        s.voices.insert("all".into(), Voice { percent: 40, muted: true, unleveled: true, priority: true });
+        s.voices.insert("chief".into(), Voice { priority: true, ..Voice::plain() });
         s.voices.insert("plain".into(), Voice::plain());
         let text = s.serialize();
         assert!(text.contains("voice.test/9PZ9vww/Bpf5vJxtJhpz80==150\n"));
         assert!(text.contains("voice.lks7QL5OVMKo4pZ79cEOI5r5oEA==100,muted\n"));
         assert!(!text.contains("voice.plain"));
+        assert!(text.contains("voice.asis=100,unleveled\n"));
+        assert!(text.contains("voice.all=40,muted,unleveled,priority\n"));
+        assert!(text.contains("voice.chief=100,priority\n"));
         let back = Settings::parse(&text);
-        assert_eq!(back.voices.len(), 2);
-        assert_eq!(back.voices["test/9PZ9vww/Bpf5vJxtJhpz80="], Voice { percent: 150, muted: false });
+        assert_eq!(back.voices.len(), 5);
+        assert_eq!(back.voices["chief"], Voice { priority: true, ..Voice::plain() });
+        assert_eq!(back.voices["test/9PZ9vww/Bpf5vJxtJhpz80="], Voice { percent: 150, ..Voice::plain() });
+        assert_eq!(back.voices["asis"], Voice { unleveled: true, ..Voice::plain() });
+        assert_eq!(back.voices["all"], Voice { percent: 40, muted: true, unleveled: true, priority: true });
         assert!(back.voices["lks7QL5OVMKo4pZ79cEOI5r5oEA="].muted);
-        let odd = Settings::parse("voice.a=900\nvoice.b=x\nvoice.=50\nvoice.c=100\nvoice.d=0, muted \nvoice.e\n");
-        assert_eq!(odd.voices.len(), 2);
+        let odd = Settings::parse(
+            "voice.a=900\nvoice.b=x\nvoice.=50\nvoice.c=100\nvoice.d=0, muted \nvoice.e\nvoice.f=100, unleveled , muted\nvoice.g=100,loud\n",
+        );
+        assert_eq!(odd.voices.len(), 3);
         assert_eq!(odd.voices["a"].percent, 200);
-        assert_eq!(odd.voices["d"], Voice { percent: 0, muted: true });
+        assert_eq!(odd.voices["d"], Voice { percent: 0, muted: true, ..Voice::plain() });
+        assert_eq!(
+            odd.voices["f"],
+            Voice { muted: true, unleveled: true, ..Voice::plain() },
+            "the order of the words does not matter"
+        );
         let crowd: String = (0..400).map(|n| format!("voice.person{n}=50\n")).collect();
         assert_eq!(Settings::parse(&crowd).voices.len(), MAX_REMEMBERED_VOICES);
         assert_eq!(Voice::plain().gain(), 1.0);
-        assert_eq!(Voice { percent: 50, muted: false }.gain(), 0.25);
-        assert_eq!(Voice { percent: 200, muted: false }.gain(), 4.0);
-        assert_eq!(Voice { percent: 200, muted: true }.gain(), 0.0);
+        assert_eq!(Voice { percent: 50, ..Voice::plain() }.gain(), 0.25);
+        assert_eq!(Voice { percent: 200, ..Voice::plain() }.gain(), 4.0);
+        assert_eq!(Voice { percent: 200, muted: true, ..Voice::plain() }.gain(), 0.0);
+        assert_eq!(Voice { percent: 50, unleveled: true, ..Voice::plain() }.gain(), 0.25);
     }
 
     #[test]

@@ -20,8 +20,10 @@ still use; CELT, the other old format, is not played.
 - Click a person for private messages, a poke, their details, and a volume and mute that apply
   to that person only and are remembered. Right-click a channel for its topic and description.
 - A switch that evens out how loud people are: someone who comes in loud is turned down at
-  once, someone quiet is brought up. While a priority speaker talks, everyone else is lowered
-  by as much as the server says, as in the TeamSpeak client.
+  once, someone quiet is brought up, and you can leave single people out of it. While a
+  priority speaker talks, everyone else is lowered by as much as the server says, as in the
+  TeamSpeak client. You can also make a person, or everyone in a channel, a priority speaker
+  for yourself alone: right-click them.
 - A small "who is speaking" window you can put anywhere: it lists who is talking and, for a few
   seconds, who just did. Lock it and it lets clicks through and hides while nobody speaks. It can
   stay above other windows and be made see-through. It is an ordinary window, so it shows over
