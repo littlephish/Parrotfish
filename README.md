@@ -78,8 +78,8 @@ Pushing a tag builds a release; nothing else does. Set the version in `Cargo.tom
 (`[workspace.package]`), commit, then:
 
 ```
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.3.1
+git push origin v0.3.1
 ```
 
 The `Release` workflow checks that the tag is `v` plus that version, runs the tests, builds the

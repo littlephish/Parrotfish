@@ -86,7 +86,7 @@ Added on 2026-10-07:
   switched off, as the TeamSpeak client does for its other server tabs. People there see that on
   your name, and the server itself passes on none of your voice. The list of connected servers
   marks which one has the microphone.
-- Versions 0.1.0, 0.2.0 and 0.3.0 were built and published by the release workflow.
+- Versions 0.1.0, 0.2.0, 0.3.0 and 0.3.1 were built and published by the release workflow.
 
 Planned, not built: reading keys through Windows' Raw Input as a switch in settings
 (`docs/superpowers/plans/2026-10-07-raw-input-keys.md`).
@@ -466,6 +466,10 @@ ConnectOk", "level 213"). What is actually on the wire:
 - The published 0.3.0 installer, in a scratch folder: it installed, and uninstalling it removed
   a stand-in links entry that pointed at the installed program and set the switch off in the
   settings file, so the uninstaller does give links back.
+- The published 0.3.1 program, taken from the zip and run against the test server: both
+  published files match their checksums; the connection not viewed was reported off 2.0 s after
+  it connected, and on switching the other was reported on in the same millisecond as the
+  end-of-talk packet and the one left behind off 2.0 s later.
 - Speex. The decoder's output is the same, sample for sample, as that of the reference library
   (libspeex 1.2.1 built without SSE) on 60 streams, 6.7 million samples: every quality from 0 to
   10 in all three kinds, changing bit rate, silence, several frames in a packet, and lost
