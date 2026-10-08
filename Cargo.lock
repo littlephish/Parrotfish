@@ -3984,7 +3984,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "ps-app"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "gif",
  "ps-client",
@@ -3997,7 +3997,7 @@ dependencies = [
 
 [[package]]
 name = "ps-client"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "base64 0.22.1",
  "ps-crypto",
@@ -4009,7 +4009,7 @@ dependencies = [
 
 [[package]]
 name = "ps-crypto"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "aes",
  "base64 0.22.1",
@@ -4025,7 +4025,7 @@ dependencies = [
 
 [[package]]
 name = "ps-identity"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "base64 0.22.1",
  "p256",
@@ -4035,18 +4035,18 @@ dependencies = [
 
 [[package]]
 name = "ps-oldcodecs"
-version = "0.4.0"
+version = "0.4.1"
 
 [[package]]
 name = "ps-protocol"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "quicklz",
 ]
 
 [[package]]
 name = "ps-voice"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "cpal",
  "ps-client",
