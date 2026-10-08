@@ -34,6 +34,7 @@ component ServerRow inherits Pressable {
     in property <bool> talking;
     in property <image> picture;
     in property <bool> has-picture;
+    in property <int> mic;
 
     height: 46px;
     border-radius: 8px;
@@ -90,6 +91,17 @@ component ServerRow inherits Pressable {
             text: root.detail;
             color: root.viewed || root.hovered ? Theme.drift-bright : Theme.drift;
             font-size: 11.5px;
+        }
+
+        if root.mic != 0: VerticalLayout {
+            alignment: center;
+
+            Icon {
+                source: root.mic == 1 ? Icons.mic : Icons.mic-off;
+                tint: root.mic == 1 ? Theme.foam : Theme.drift;
+                width: 14px;
+                height: 14px;
+            }
         }
     }
 }
@@ -149,6 +161,7 @@ export component PhishSpeakApp inherits Window {
 
     in property <[ServerTile]> sessions;
     in property <[ServerTile]> others;
+    in property <string> sessions-note: "Connected";
     in property <[BookmarkRow]> menu-bookmarks;
     in property <[BookmarkRow]> bookmarks;
     in property <[TreeRow]> tree;
@@ -774,7 +787,8 @@ export component PhishSpeakApp inherits Window {
                     height: 26px;
 
                     Dim {
-                        text: "Connected";
+                        text: root.sessions-note;
+                        overflow: elide;
                     }
                 }
 
@@ -787,6 +801,7 @@ export component PhishSpeakApp inherits Window {
                     talking: session.talking;
                     picture: session.icon;
                     has-picture: session.has-icon;
+                    mic: session.mic;
                     clicked => {
                         root.menu-open = false;
                         root.view-server(session.id);

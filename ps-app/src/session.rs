@@ -6,9 +6,10 @@ use ps_voice::Cue;
 
 use ps_client::spacer::{parse_spacer, Spacer, SpacerAlign, SpacerLine};
 use ps_client::{
-    ChannelNode, ClientHandle, ConnectionState, Event, Group, ERROR_NO_WHISPER_TARGETS, ServerView, TextTarget, CODEC_OPUS_MUSIC, CODEC_OPUS_VOICE,
+    ChannelNode, ClientHandle, ConnectionState, Event, Group, ERROR_FLOODING, ERROR_NO_WHISPER_TARGETS, ServerView, TextTarget, CODEC_OPUS_MUSIC, CODEC_OPUS_VOICE,
 };
 
+use crate::mic::{self, Report};
 use crate::platform;
 use crate::settings::MAX_REMEMBERED_FOLDS;
 
@@ -493,6 +494,7 @@ pub struct ConnectRequest {
     pub token: String,
     pub save_bookmark: bool,
     pub quiet: bool,
+    pub background: bool,
 }
 
 pub fn plain_text(text: &str) -> String {
@@ -637,6 +639,8 @@ pub struct Session {
     pub peer: Option<Peer>,
     pub voices_applied: HashMap<u16, (String, f32)>,
     pub silenced: HashSet<u16>,
+    pub mic: Report,
+    pub mic_seems_on: bool,
 }
 
 impl Session {
@@ -675,6 +679,8 @@ impl Session {
             peer: None,
             voices_applied: HashMap::new(),
             silenced: HashSet::new(),
+            mic: Report::new(true),
+            mic_seems_on: true,
         }
     }
 
@@ -982,6 +988,9 @@ impl Session {
                 }
             }
             Event::ServerError { id, message, extra } => {
+                if id == ERROR_FLOODING {
+                    self.mic.refused(Instant::now() + mic::refusal_wait(&extra));
+                }
                 if id == ERROR_NO_WHISPER_TARGETS {
                     out.whisper_unheard = true;
                 } else {
@@ -1821,6 +1830,22 @@ mod tests {
         let long = "x".repeat(MAX_LINE_CHARS + 50);
         s.push_line(ChatKind::Message, "Marlin", &long);
         assert_eq!(s.chat.back().unwrap().text.chars().count(), MAX_LINE_CHARS + 1);
+    }
+
+    #[test]
+    fn a_flooding_answer_holds_back_the_microphone_report() {
+        let mut s = session();
+        s.mic = Report::new(false);
+        let before = Instant::now();
+        s.apply(Event::ServerError { id: 0x020c, message: "client is flooding".into(), extra: "retry in 5999ms".into() });
+        assert_eq!(s.chat.back().unwrap().kind, ChatKind::Error);
+        assert_eq!(s.mic.step(true, Some(false), before + Duration::from_millis(6_000)), None);
+        assert_eq!(s.mic.step(true, Some(false), Instant::now() + Duration::from_millis(6_300)), Some(true));
+
+        let mut other = session();
+        other.mic = Report::new(false);
+        other.apply(Event::ServerError { id: 0x030d, message: "invalid channel password".into(), extra: String::new() });
+        assert_eq!(other.mic.step(true, Some(false), Instant::now()), Some(true));
     }
 
     #[test]

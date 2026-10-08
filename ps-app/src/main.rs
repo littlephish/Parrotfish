@@ -7,6 +7,7 @@ mod icons;
 mod instance;
 mod keywatch;
 mod links;
+mod mic;
 mod platform;
 mod scale;
 mod session;

@@ -24,6 +24,7 @@ pub const CLIENT_VERSION_SIGN: &str =
     "DX5NIYLvfJEUjuIbCidnoeozxIDRRkpq3I9vVMBmE9L2qnekOoBzSenkzsg2lC9CMv8K5hkEzhr2TYUYSwUXCg==";
 
 pub const ERROR_IDENTITY_LEVEL: u32 = 0x0207;
+pub const ERROR_FLOODING: u32 = 0x020c;
 
 #[derive(Debug, Clone)]
 pub struct ConnectOptions {
@@ -36,6 +37,7 @@ pub struct ConnectOptions {
     pub default_channel_password: String,
     pub input_muted: bool,
     pub output_muted: bool,
+    pub input_hardware: bool,
     pub log_commands: bool,
     pub simulated_loss: f32,
     pub filetransfer_port: Option<u16>,
@@ -58,6 +60,7 @@ impl ConnectOptions {
             default_channel_password: String::new(),
             input_muted: false,
             output_muted: false,
+            input_hardware: true,
             log_commands: false,
             simulated_loss: 0.0,
             filetransfer_port: None,
@@ -201,6 +204,10 @@ pub struct VoicePacket<'a> {
 
 pub type VoiceSink = Box<dyn FnMut(VoicePacket<'_>) + Send>;
 
+pub fn input_hardware_update(on: bool) -> Command {
+    Command::new("clientupdate").arg("client_input_hardware", u8::from(on))
+}
+
 pub(crate) struct Shared {
     pub connected: AtomicBool,
     pub closed: AtomicBool,
@@ -301,6 +308,10 @@ impl ClientHandle {
         );
     }
 
+    pub fn set_input_hardware(&self, on: bool) {
+        self.send_command(input_hardware_update(on));
+    }
+
     pub fn set_away(&self, away: bool, message: &str) {
         self.send_command(
             Command::new("clientupdate")
@@ -345,6 +356,12 @@ impl ClientHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_microphone_report_changes_nothing_else() {
+        assert_eq!(input_hardware_update(false).build(), "clientupdate client_input_hardware=0");
+        assert_eq!(input_hardware_update(true).build(), "clientupdate client_input_hardware=1");
+    }
 
     #[test]
     fn whisper_targets_encode_for_the_wire() {

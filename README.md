@@ -14,7 +14,9 @@ still use; CELT, the other old format, is not played.
   password, stored encrypted for your Windows account.
 - The icons a server sets up: on channels, on people (their groups and their own) and for the
   server itself. PNG, JPEG, and GIF as a still picture.
-- Several servers at once. You hear all of them; your microphone goes to the one you are viewing.
+- Several servers at once. You hear all of them; your microphone goes to the one you are
+  viewing, and on the others people see it switched off, as with the server tabs of the
+  TeamSpeak client.
 - Click a person for private messages, a poke, their details, and a volume and mute that apply
   to that person only and are remembered. Right-click a channel for its topic and description.
 - A small "who is speaking" window you can put anywhere: it lists who is talking and, for a few

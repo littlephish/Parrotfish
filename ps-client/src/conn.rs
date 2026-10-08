@@ -30,7 +30,7 @@ use crate::resolve::{resolve, Found};
 use crate::stats::Stats;
 use crate::{
     ConnectOptions, ConnectionState, Event, LinkStats, Shared, TextTarget, VoicePacket, VoiceSink,
-    CLIENT_PLATFORM, CLIENT_VERSION, CLIENT_VERSION_SIGN, ERROR_IDENTITY_LEVEL,
+    CLIENT_PLATFORM, CLIENT_VERSION, CLIENT_VERSION_SIGN, ERROR_FLOODING, ERROR_IDENTITY_LEVEL,
 };
 
 const TICK: Duration = Duration::from_millis(20);
@@ -53,7 +53,6 @@ const ICON_FLOOD_PAUSE: Duration = Duration::from_secs(15);
 const ICON_QUEUE_LIMIT: usize = 600;
 const ICON_MISS_LIMIT: u32 = 3;
 const ICON_GIVE_UP_FOR: Duration = Duration::from_secs(600);
-const ERROR_FLOODING: u32 = 0x020c;
 
 pub(crate) enum Request {
     Datagram(Vec<u8>),
@@ -889,7 +888,7 @@ impl Conn {
             .arg("client_nickname", &self.opts.nickname)
             .arg("client_version", CLIENT_VERSION)
             .arg("client_platform", CLIENT_PLATFORM)
-            .arg("client_input_hardware", 1)
+            .arg("client_input_hardware", u8::from(self.opts.input_hardware))
             .arg("client_output_hardware", 1)
             .arg("client_default_channel", &self.opts.default_channel)
             .arg("client_default_channel_password", hash_password(&self.opts.default_channel_password))

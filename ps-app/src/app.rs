@@ -23,6 +23,7 @@ use crate::keywatch::KeyWatcher;
 use crate::platform;
 use crate::instance::{self, Wish};
 use crate::links::{self, Link};
+use crate::mic;
 use crate::scale::{ScaleWatch, Step};
 use crate::speakers::{self, Member, Room, Roster};
 use crate::session::{
@@ -452,9 +453,10 @@ impl App {
         self.save_at = None;
         self.dirty = Dirty::everything();
         let wanted: Vec<Bookmark> = self.bookmarks.items.iter().filter(|b| b.auto_connect).cloned().collect();
-        for bookmark in wanted.iter().rev() {
+        for (position, bookmark) in wanted.iter().enumerate().rev() {
             let mut request = self.bookmark_request(bookmark);
             request.quiet = true;
+            request.background = position != 0;
             self.begin(w, request);
         }
         for wish in wishes {
@@ -1179,7 +1181,7 @@ impl App {
         session.allow_whispers = self.settings.allow_whispers;
         session.push_line(ChatKind::System, "", &format!("Connecting to {}", request.address));
         self.sessions.push(session);
-        match self.launch(id) {
+        match self.launch(id, !request.background) {
             Ok(()) => self.view_server(w, id),
             Err(error) => {
                 self.sessions.retain(|s| s.id != id);
@@ -1189,7 +1191,7 @@ impl App {
         self.dirty = Dirty::everything();
     }
 
-    fn launch(&mut self, id: u16) -> Result<(), (DialogField, String)> {
+    fn launch(&mut self, id: u16, fresh: bool) -> Result<(), (DialogField, String)> {
         let Some(position) = self.sessions.iter().position(|s| s.id == id) else {
             return Ok(());
         };
@@ -1209,7 +1211,9 @@ impl App {
         options.default_channel_password = request.channel_password.clone();
         options.input_muted = self.mic_muted;
         options.output_muted = self.sound_muted;
+        options.input_hardware = fresh || self.viewed == Some(id);
         options.log_commands = self.trace;
+        let mic_claimed = options.input_hardware;
         let (events_tx, events_rx) = mpsc::channel();
         let shared = self.engine.shared().clone();
         let allow_whispers = self.allow_whispers.clone();
@@ -1223,6 +1227,8 @@ impl App {
         });
         let client = ClientHandle::connect(options, events_tx, Some(sink));
         self.sessions[position].attach(client, events_rx);
+        self.sessions[position].mic = mic::Report::new(mic_claimed);
+        self.sessions[position].mic_seems_on = mic_claimed;
         Ok(())
     }
 
@@ -1290,6 +1296,8 @@ impl App {
                 }
                 self.mic_target = send_to;
             }
+            self.tell_mics(Instant::now());
+            self.dirty.sessions = true;
             self.rebuild_lanes(true);
             let lanes = &self.lanes;
             *slot = self.mic_target.and_then(|id| self.session(id)).and_then(|s| s.client.clone()).map(|client| {
@@ -1310,6 +1318,26 @@ impl App {
             let (codec, quality) = target.own_codec();
             self.engine.set_codec(codec, quality);
         }
+    }
+
+    fn tell_mics(&mut self, now: Instant) {
+        let (holder, viewed) = (self.mic_target, self.viewed);
+        let mut redraw = false;
+        for session in self.sessions.iter_mut().filter(|s| s.is_connected()) {
+            let says = session.view.as_ref().and_then(|view| view.client(view.own_id)).map(|own| own.input_hardware);
+            if let Some(on) = session.mic.step(holder == Some(session.id), says, now) {
+                if let Some(client) = &session.client {
+                    client.set_input_hardware(on);
+                }
+            }
+            let seems = session.mic.seems_on(says);
+            if seems != session.mic_seems_on {
+                session.mic_seems_on = seems;
+                redraw |= viewed == Some(session.id);
+            }
+        }
+        self.dirty.tree |= redraw;
+        self.dirty.sessions |= redraw;
     }
 
     fn apply_mute(&mut self, w: &Windows) {
@@ -1870,7 +1898,7 @@ impl App {
                     session.waiting_level = None;
                     session.push_line(ChatKind::System, "", "Your identity is strong enough now. Connecting again.");
                 }
-                self.launch(id).is_ok()
+                self.launch(id, false).is_ok()
             };
             if relaunched {
                 self.dirty = Dirty::everything();
@@ -2338,7 +2366,7 @@ impl App {
             }
         }
         for id in due {
-            if let Err((_, problem)) = self.launch(id) {
+            if let Err((_, problem)) = self.launch(id, false) {
                 self.finish_session(w, id, &problem, false);
             }
         }
@@ -2357,6 +2385,9 @@ impl App {
         }
         if self.mic_muted {
             return "Microphone muted".to_string();
+        }
+        if !session.mic_seems_on {
+            return "Microphone not on here yet".to_string();
         }
         if self.cannot_talk() {
             return "No permission to talk here yet".to_string();
@@ -2388,6 +2419,7 @@ impl App {
         self.follow_scale(w);
         self.watch_speakers(w);
         self.retry_lost_connections(w);
+        self.tell_mics(Instant::now());
         self.poll_level_jobs(w);
         self.poll_capture(w);
         let fired = self.watcher.state().take_fired();
@@ -2402,7 +2434,8 @@ impl App {
         let level = self.engine.shared().input_level();
         let position = level_position(level);
         let transmitting = self.engine.is_transmitting();
-        let on_air = transmitting && self.mic_target.is_some() && !self.whisper_goes_nowhere();
+        let heard = self.mic_target.and_then(|id| self.session(id)).is_some_and(|s| s.mic_seems_on);
+        let on_air = transmitting && heard && !self.whisper_goes_nowhere();
         if on_air != self.own_talking {
             self.own_talking = on_air;
             self.dirty.tree = true;
@@ -2542,6 +2575,10 @@ impl App {
             self.viewed.and_then(|viewed| ids.iter().position(|id| *id == viewed)).and_then(|at| pictures[at].clone());
         w.main.set_has_server_icon(viewed_picture.is_some());
         w.main.set_server_icon(viewed_picture.unwrap_or_default());
+        let connected_servers = self.sessions.iter().filter(|s| s.is_connected()).count();
+        w.main.set_sessions_note(
+            if connected_servers > 1 { "Connected · microphone on the one you view" } else { "Connected" }.into(),
+        );
         let tiles: Vec<ServerTile> = self
             .sessions
             .iter()
@@ -2564,6 +2601,11 @@ impl App {
                 talking: s.talkers > 0,
                 has_icon: picture.is_some(),
                 icon: picture.unwrap_or_default(),
+                mic: mic::mark(
+                    s.is_connected(),
+                    self.mic_target == Some(s.id) && s.mic_seems_on,
+                    connected_servers,
+                ),
             })
             .collect();
         let others: Vec<ServerTile> = tiles.iter().filter(|t| !t.viewed).take(HEADER_TILES).cloned().collect();
@@ -2632,8 +2674,14 @@ impl App {
         };
         let mut rows: Vec<TreeRow> = Vec::with_capacity(data.len());
         let silenced = self.viewed_session().map(|s| s.silenced.clone()).unwrap_or_default();
+        let own_mic_muted = self.viewed_session().map(|s| {
+            !s.mic_seems_on || s.view.as_ref().and_then(|view| view.client(view.own_id)).is_some_and(|own| own.input_muted)
+        });
         for row in &data {
             let mut shown = tree_row(row);
+            if let (true, Some(muted)) = (row.kind == RowKind::Person && row.me, own_mic_muted) {
+                shown.mic_muted = muted;
+            }
             if row.kind == RowKind::Person && row.tag.is_empty() && silenced.contains(&(row.id as u16)) {
                 shown.tag = "muted by you".into();
             }

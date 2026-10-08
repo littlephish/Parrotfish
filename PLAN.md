@@ -7,13 +7,13 @@ joins a server, shows the channel tree, chats, and does voice (Opus) both ways.
 
 Working end to end against a real TeamSpeak 3.13.8 server: login, channel tree, channel
 switching (incl. password channels), text chat, microphone capture → Opus → server, and
-server → Opus → speakers, with and without voice encryption. 308 unit tests green.
+server → Opus → speakers, with and without voice encryption. 331 unit tests green.
 
 The window is the compact tree layout in the Twilight reef palette (design:
 `docs/superpowers/specs/2026-10-06-compact-window-design.md`): spacer channels are drawn as
 dividers, servers can be bookmarked, several servers can be connected at once (you hear all
-of them, the microphone goes to the one you are viewing), and every setting lives in a
-separate tabbed settings window.
+of them, the microphone goes to the one you are viewing and the others are told it is off),
+and every setting lives in a separate tabbed settings window.
 
 Talk keys are chosen by pressing them: any key, mouse button 3 to 5, or a combination of up to
 four keys, several at once if wanted, with an optional delay before the microphone closes.
@@ -82,13 +82,18 @@ Added on 2026-10-07:
   opens them. A link never connects by itself: it opens the connect dialog filled in, with a
   line saying what else the link carries. Starting PhishSpeak while it is already running
   hands the link (or a `--connect`) to the running one.
+- With several servers connected, the ones that do not have your microphone are told it is
+  switched off, as the TeamSpeak client does for its other server tabs. People there see that on
+  your name, and the server itself passes on none of your voice. The list of connected servers
+  marks which one has the microphone.
 - Versions 0.1.0, 0.2.0 and 0.3.0 were built and published by the release workflow.
 
 Planned, not built: reading keys through Windows' Raw Input as a switch in settings
 (`docs/superpowers/plans/2026-10-07-raw-input-keys.md`).
 
 Not done yet: ServerQuery browser (v1.1), tabs for several private chats (one is shown at a
-time), permissions UI, channel create/edit, file browser and avatars,
+time), permissions UI, channel create/edit, file browser and avatars, keeping the microphone
+on one server while looking at another,
 the old CELT codec (see below), pre-3.1 servers (`initivexpand`),
 hotkeys other than talk, whisper and mute keys, game controller buttons, and an overlay inside
 games that run in exclusive full screen (the speaking window is an ordinary window on top).
@@ -128,10 +133,10 @@ order against the test server, not by ear and not with an official client talkin
 | `ps-identity` | INI parse, identity (de)obfuscation, DER, P-256, UID, hashcash level, sign/verify, generate/save | done, 14 tests |
 | `ps-crypto` | EAX-AES128 (8-byte MAC), dummy key, per-packet key/nonce, license chain, Ed25519 shared secret, RSA puzzle | done, 16 tests |
 | `ps-protocol` | Packet headers, command escape/parse/build, QuickLZ + fragmentation, receive windows/generations, Init1 payloads, voice and whisper payloads | done, 34 tests |
-| `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client/group book, voice and whispers in/out, events; `spacer` recognises spacer channels, `filetransfer` fetches icons over the server's file port, `resolve` finds a server through SRV, TSDNS or its plain name | done, 32 tests + live tests |
+| `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client/group book, voice and whispers in/out, events; `spacer` recognises spacer channels, `filetransfer` fetches icons over the server's file port, `resolve` finds a server through SRV, TSDNS or its plain name | done, 33 tests + live tests |
 | `ps-oldcodecs` | Speex decoder (8, 16 and 32 kHz) in safe Rust, no dependencies | done, 27 tests + 3 run by hand |
 | `ps-voice` | Opus codec, Speex playback at 48 kHz, resampler, jitter buffer + mixer (talkers keyed by connection and client, a volume per talker), VAD/PTT gate, lanes (which key is held decides where a frame goes), echo canceller (`echo.rs`), noise suppression (`denoise.rs`), automatic gain (`agc.rs`), event sounds (`cues.rs`), cpal device I/O (WASAPI) | done, 85 tests + live tests |
-| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` keeping a window's size across displays, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 100 tests + live tests |
+| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `mic.rs` what each server is told about the microphone and when, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` keeping a window's size across displays, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 122 tests + live tests |
 | `ps-serverquery` | Text protocol over TCP 10011 | not started |
 
 Threads: UI thread (Slint, 33 ms timer drains client events) · `ps-client` actor + UDP reader ·
@@ -195,6 +200,24 @@ ConnectOk", "level 213"). What is actually on the wire:
 - Server: `initserver … aclid=<client id>`, `channellist…`, `channellistfinished` (→ we send
   `channelsubscribeall`), `notifycliententerview…`. Refusals arrive as `error id=… msg=…`;
   `0x0207` with `extra_msg=<n>` means "identity security level n required".
+
+### One microphone, several servers
+
+- `client_input_hardware` says whether the client has a microphone open for this connection. The
+  TeamSpeak client lets one server tab own the capture device (its changelog: "Activate
+  Microphone" per tab, "Activate microphone automatically" when switching tabs, "the server tab
+  which previously owned the capture device"), and the other tabs carry 0.
+- Measured on 3.13.8: while it is 0 the server passes on none of that client's voice (0 of 200
+  packets in four seconds, the end-of-talk packet included) and everyone in view is told of a
+  change at once (1 ms). The client gets its own change back as `notifyclientupdated`, so its own
+  entry shows what the server holds.
+- Flood protection, measured with the settings a server starts with
+  (`virtualserver_antiflood_points_tick_reduce=5`, `..._points_needed_command_block=150`): a
+  `clientupdate` costs 15 points and 5 drain each second. Of 11 sent at once the 11th was refused
+  (`error id=524 msg=client is flooding extra_msg=retry in 5999ms`); at one every two seconds the
+  29th was refused, after 56 s. A refused command is charged as well (one sent 1.6 s after a
+  refusal was told 7394 ms). A command sent once the named time has passed was accepted, both
+  times it was tried. The refusal carries the `return_code` of the command it refuses.
 
 ### Voice
 - C→S `[voice id u16][codec u8][opus]`, S→C `[voice id u16][client id u16][codec u8][opus]`;
@@ -314,6 +337,25 @@ ConnectOk", "level 213"). What is actually on the wire:
   bookmark; a bookmark surviving a restart and connecting with one click; a failed connect
   reopening the dialog with the reason under the address; the identity being strengthened
   automatically (level 10 → 23) and the connection retried; the window size being remembered.
+- One microphone with several servers, live: one PhishSpeak with two connections to the test
+  server at its default flood settings, a `channeltest` listener in the channel, and ServerQuery
+  reading what the server holds. The connection not viewed was reported off about 2 s after it
+  connected. On switching, the end-of-talk packet reached the channel, the new connection was
+  reported on 1 ms later and its first voice packet came 6 ms after that; the one left behind
+  was reported off 2.0 s later. Six switches 0.7 s apart cost one report during the switching,
+  no packet was lost (50 a second throughout, counted per second), and the report that was then
+  due came 15.0 s after the previous one. Muting showed both as muted on the server while the
+  list kept marking where the microphone is. Leaving the server that had the microphone gave
+  it to the other in the same tenth of a second. After the server was restarted both
+  connections came back by themselves, the viewed one on and the other already off when it was
+  first seen; the same with two bookmarks set to connect at start. With the server set to
+  refuse a second command within two seconds, the "on" report was refused: PhishSpeak showed
+  its own name as muted and "Microphone not on here yet", sent nothing more until the time the
+  server named had passed, then sent it once and was heard 4.8 s after the switch (twice the
+  same). Before that rule existed, a retry every 3 s was refused each time, because the server
+  charges refused commands too, and the connection stayed silent until the limit was raised
+  again 9 s later.
+  Not done: two different servers, and what the TeamSpeak client shows for such a connection.
 - Two connections at once with two identities in different channels, with a headless listener
   in each channel (`channeltest`): voice arrived only in the viewed connection's channel at
   50 packets/s; switching the view delivered an end-of-talk packet to the channel left behind
@@ -444,12 +486,15 @@ Dev tools (examples): `cargo run -p ps-client --example probe -- <host> [--ident
 devicetest -- [--input NAME] [--tone]`, `cargo run -p ps-voice --example channeltest -- <host>
 [--nick NAME] [--join CID] [--seconds N] [--talk SECONDS] [--whisper client:ID|channel:ID|commanders|everyone]
 [--commander] [--codec N] [--frames FILE] [--frame-ms N] [--save DIR] [--speex]
-[--speex-reference FILE]` (sits in one channel and reports every voice, whisper and end packet
-it hears, their sizes and spacing, and the sound formats; with `--talk` it also sends a tone,
+[--speex-reference FILE] [--mic-off] [--mic SECONDS:on|off]` (sits in one channel and reports
+every voice, whisper and end packet it hears, their sizes and spacing, the sound formats, and
+whose microphone is reported off or muted; with `--talk` it also sends a tone,
 as a whisper with `--whisper`; `--codec` writes another codec number on what it sends and
 `--frames` sends ready-made packets from a file; `--save` keeps every packet heard, which is
 the way to study a voice format nobody has described; `--speex` decodes the Speex it heard
-and `--speex-reference` compares that with a file of samples),
+and `--speex-reference` compares that with a file of samples; `--mic-off` signs in with the
+microphone reported off and `--mic` reports it on or off later, neither of which stops
+`--talk`, which is how to see what a server does with such a client),
 `cargo run -p ps-voice --example echotest -- [--output NAME] [--input NAME | --loopback]
 [--seconds N] [--level DB]` (plays a speech-like test sound and reports how loudly the input
 hears it with echo cancelling off and on, when the sound came back and the clock difference;
@@ -508,6 +553,31 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   applies to all. When the view changes mid-sentence the server left behind gets an end-of-talk
   packet, and on mute the end-of-talk packet is sent before the server is told we are muted
   (it drops voice from muted clients, so the other order leaves listeners waiting for a timeout).
+- The servers without the microphone are told so (`mic.rs`, one `Report` per connection, stepped
+  on every change of view and every 33 ms). "On" is sent at once and before the microphone is
+  handed to the connection, because the server drops voice until it has it. "Off" is sent when
+  the microphone has been away for 2 s and at most every 15 s per server: a short look at
+  another server costs nothing, and switching back and forth, however fast or regular, never
+  holds more than 30 of the 150 points a default server allows (a test runs six rhythms for
+  ten minutes against the measured point counts). What was sent is believed for 3 s; after
+  that the server's own record counts and a difference is sent again, at twice the wait each
+  time up to 30 s. When the server answers that we are flooding, that connection's report
+  waits the time the server names plus 250 ms, because trying earlier is refused and charged.
+  A refused "off" still waits out its 15 s: it changes only what others see, and the points
+  are better left for an "on". From a flooding answer until the server's record agrees, the
+  server's record is what is shown: your own name carries the muted mark, you are not shown as
+  talking, the status line says "Microphone not on here yet" and the list does not mark that
+  server as having the microphone. A server that never repeats our own state back is not taken
+  for a refusal. A connection signs in with the microphone on if it is about to be viewed and
+  off if it reconnects in the background or is one of several bookmarks connecting at start
+  that will not be the one shown, so none of them needs a report afterwards.
+- While the server you are looking at is still connecting, no server has the microphone: the
+  one you came from is told off after the 2 s and on again when you return or the attempt fails.
+- The mark in the list of connected servers says where the microphone is, muted or not; mute
+  has its own button. With one server connected there are no marks.
+- Not built: keeping the microphone on one server while looking at another (the TeamSpeak
+  client's "Activate microphone automatically" switched off). Known gap: a mute or unmute that
+  the server refuses for flooding is not sent again; the tree then shows the server's state.
 - Amber (Lure) is reserved: someone is talking, where you are (viewed server, active tab,
   keyboard focus, your own name in chat), and the one main button of a dialog. Error and
   secondary text use lighter tints on raised and highlighted surfaces to keep 4.5:1 contrast.
@@ -683,7 +753,8 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
     workflow (0.1.0).
 15. ✅ The speaking window; windows keep their size across displays with different scales.
 16. ✅ `ts3server://` links as a setting, one PhishSpeak per profile; Speex from old channels.
-17. Next: test against the official client and a public server; try echo cancelling, noise
+17. ✅ With several servers, the ones without the microphone are told it is off.
+18. Next: test against the official client and a public server; try echo cancelling, noise
     suppression and the event sounds by ear; reading keys through Raw Input (planned);
     avatars.
 

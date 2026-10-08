@@ -130,6 +130,14 @@ fn arg_value(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
 }
 
+fn mic_word(word: &str) -> Option<bool> {
+    match word {
+        "on" => Some(true),
+        "off" => Some(false),
+        _ => None,
+    }
+}
+
 fn clock() -> String {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
     let secs = now.as_secs() % 86_400;
@@ -140,7 +148,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "--help") {
         eprintln!(
-            "usage: channeltest <host> [--port N] [--nick NAME] [--join CHANNEL_ID] [--seconds N]\n                   [--talk SECONDS] [--talk-after SECONDS]\n                   [--whisper client:ID|channel:ID|commanders|everyone] [--commander] [--abrupt-end]\n                   [--codec N] [--frames FILE] [--frame-ms N] [--save DIR]\n                   [--speex] [--speex-reference FILE]\nListens for voice and whispers and reports who was heard; with --talk it also sends a tone, as a whisper when --whisper is given.\n--codec writes that codec number on what is sent. --frames sends ready-made packets from a file (each one a two-byte length, low byte first, then the bytes), one every --frame-ms.\n--save writes every packet heard to DIR in the same form, one file per talker and codec.\n--speex decodes the Speex packets it heard at the end and reports on them; --speex-reference compares that with a file of 16-bit samples.\nThe end packet follows one frame after the last sound, as in the app; --abrupt-end sends it right behind the last sound,\nwhich a server may deliver the other way round."
+            "usage: channeltest <host> [--port N] [--nick NAME] [--join CHANNEL_ID] [--seconds N]\n                   [--talk SECONDS] [--talk-after SECONDS]\n                   [--whisper client:ID|channel:ID|commanders|everyone] [--commander] [--abrupt-end]\n                   [--codec N] [--frames FILE] [--frame-ms N] [--save DIR]\n                   [--speex] [--speex-reference FILE] [--mic-off] [--mic SECONDS:on|off]...\nListens for voice and whispers and reports who was heard; with --talk it also sends a tone, as a whisper when --whisper is given.\n--mic-off signs in with the microphone reported as switched off; --mic tells the server so that many seconds after connecting. Neither stops --talk from sending.\nIt also reports whose microphone it sees switched off or muted, and when that changes.\n--codec writes that codec number on what is sent. --frames sends ready-made packets from a file (each one a two-byte length, low byte first, then the bytes), one every --frame-ms.\n--save writes every packet heard to DIR in the same form, one file per talker and codec.\n--speex decodes the Speex packets it heard at the end and reports on them; --speex-reference compares that with a file of 16-bit samples.\nThe end packet follows one frame after the last sound, as in the app; --abrupt-end sends it right behind the last sound,\nwhich a server may deliver the other way round."
         );
         std::process::exit(2);
     }
@@ -245,8 +253,25 @@ fn main() {
         }
     });
 
+    let mut mic_steps: Vec<(f32, bool)> = args
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| *a == "--mic")
+        .filter_map(|(i, _)| args.get(i + 1))
+        .map(|spec| match spec.split_once(':').and_then(|(at, state)| Some((at.parse().ok()?, mic_word(state)?))) {
+            Some(step) => step,
+            None => {
+                eprintln!("--mic takes SECONDS:on or SECONDS:off");
+                std::process::exit(2);
+            }
+        })
+        .collect();
+    mic_steps.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut seen_mics: BTreeMap<u16, (bool, bool)> = BTreeMap::new();
+
     let mut options = ConnectOptions::new(&host, port, Identity::generate(&nick, &nick));
     options.nickname = nick.clone();
+    options.input_hardware = !args.iter().any(|a| a == "--mic-off");
     let (tx, rx) = mpsc::channel();
     let handle = ClientHandle::connect(options, tx, Some(sink));
 
@@ -283,6 +308,22 @@ fn main() {
                 }
             }
             Ok(Event::ServerError { id, message, extra }) => println!("{} server error {id:#06x}: {message} {extra}", clock()),
+            Ok(Event::View(view)) => {
+                for client in view.channels.iter().flat_map(|node| node.clients.iter()).filter(|client| !client.is_query) {
+                    let now = (client.input_hardware, client.input_muted);
+                    let before = seen_mics.insert(client.id, now);
+                    if before.map_or(now != (true, false), |before| before != now) {
+                        println!(
+                            "{} {nick} sees client {} ({}) with the microphone {}{}",
+                            clock(),
+                            client.id,
+                            client.nickname,
+                            if now.0 { "on" } else { "reported off" },
+                            if now.1 { " and muted" } else { "" }
+                        );
+                    }
+                }
+            }
             Ok(Event::Disconnected { reason }) => {
                 println!("{} {nick} disconnected: {reason}", clock());
                 break;
@@ -308,6 +349,11 @@ fn main() {
                 if commander {
                     handle.set_channel_commander(true);
                 }
+            }
+            while let Some((_, on)) = mic_steps.first().copied().filter(|(at, _)| since >= *at) {
+                mic_steps.remove(0);
+                handle.set_input_hardware(on);
+                println!("{} {nick} reports the microphone {}", clock(), if on { "on" } else { "off" });
             }
             if !talk_done && since >= talk_after {
                 let due = *next_frame.get_or_insert_with(Instant::now);
