@@ -8,7 +8,7 @@ import tempfile
 import time
 import winreg
 
-from ci_run import fail, on_github, run_logged
+from ci_run import annotate, fail, note, on_github, run_logged
 from package_release import DIST, ROOT, TARGET, find_iscc, workspace_version
 
 UNINSTALL = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{B21EECED-B833-438E-BA5E-C0C98D9278CD}_is1"
@@ -129,6 +129,8 @@ def show_log(path, only=None):
     if only:
         lines = [line for line in lines if any(word in line for word in only)]
         print(f"--- what {path.name} says about closing programs:")
+        told = " | ".join(line.split("   ", 1)[-1].strip() for line in lines)
+        note(f"Setup, with the earlier program running: {told or 'its log says nothing about closing programs'}")
     else:
         lines = lines[-45:]
         print(f"--- the last lines of {path.name}:")
@@ -384,9 +386,15 @@ def main():
         if code != 0 or not earlier_setup.is_file():
             fail(f"Inno Setup did not make the earlier installer (exit code {code})")
 
-        upgrade_while_running(places, earlier_setup, setup, version, work)
-        upgrade_never_started(places, earlier_setup, setup, version, work)
-        first_install(places, setup, work)
+        counts = []
+        for case in (
+            lambda: upgrade_while_running(places, earlier_setup, setup, version, work),
+            lambda: upgrade_never_started(places, earlier_setup, setup, version, work),
+            lambda: first_install(places, setup, work),
+        ):
+            before = checked
+            case()
+            counts.append(checked - before)
     finally:
         for process in started:
             if process.poll() is None:
@@ -404,8 +412,13 @@ def main():
         shutil.rmtree(work, ignore_errors=True)
 
     if problems:
-        fail(f"{len(problems)} of {checked} checks went wrong; the first: {problems[0]}")
-    print(f"installer test passed: {checked} checks")
+        for problem in problems[:9]:
+            annotate(f"installer test: {problem}")
+        fail(f"{len(problems)} of {checked} installer checks went wrong")
+    note(
+        f"installer test passed: {checked} checks ({counts[0]} for an upgrade while the earlier program runs and the first start, "
+        f"{counts[1]} for an upgrade removed before a first start, {counts[2]} for a first install)"
+    )
 
 
 if __name__ == "__main__":

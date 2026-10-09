@@ -28,6 +28,11 @@ def annotate(message):
     print(f"::error::{text}" if on_github() else f"error: {message.strip()}", flush=True)
 
 
+def note(message):
+    text = message.strip()[:900].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::notice::{text}" if on_github() else f"note: {message.strip()}", flush=True)
+
+
 def fail(message):
     annotate(message)
     sys.exit(1)
