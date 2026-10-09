@@ -62,6 +62,8 @@ pub struct Settings {
     pub auto_gain: bool,
     pub even_voices: bool,
     pub priority_dim: bool,
+    pub check_updates: bool,
+    pub updated_from: String,
     pub cue_volume: f32,
     pub talk_keys: Vec<Chord>,
     pub talk_release_ms: u32,
@@ -105,6 +107,8 @@ impl Default for Settings {
             auto_gain: false,
             even_voices: false,
             priority_dim: true,
+            check_updates: true,
+            updated_from: String::new(),
             cue_volume: 50.0,
             talk_keys: Vec::new(),
             talk_release_ms: 0,
@@ -264,6 +268,8 @@ impl Settings {
                 "auto_gain" => s.auto_gain = value == "1",
                 "even_voices" => s.even_voices = value == "1",
                 "priority_dim" => s.priority_dim = value != "0",
+                "check_updates" => s.check_updates = value != "0",
+                "updated_from" => s.updated_from = value.chars().filter(|c| c.is_ascii_digit() || *c == '.').take(20).collect(),
                 "cue_volume" => s.cue_volume = number(value, 50.0, 0.0, 100.0),
                 "ptt_key" => legacy = value.parse::<usize>().ok(),
                 "talk_key" => {
@@ -343,6 +349,10 @@ impl Settings {
         put("auto_gain", u8::from(self.auto_gain).to_string());
         put("even_voices", u8::from(self.even_voices).to_string());
         put("priority_dim", u8::from(self.priority_dim).to_string());
+        put("check_updates", u8::from(self.check_updates).to_string());
+        if !self.updated_from.is_empty() {
+            put("updated_from", self.updated_from.clone());
+        }
         put("cue_volume", format!("{:.0}", self.cue_volume));
         for chord in &self.talk_keys {
             put("talk_key", chord.to_text());
@@ -589,6 +599,23 @@ mod tests {
         assert_eq!(back.cue_volume, 0.0);
         assert_eq!(Settings::parse("cue_volume=900\n").cue_volume, 100.0);
         assert_eq!(Settings::parse("cue_volume=loud\nauto_gain=yes\n"), Settings::default());
+    }
+
+    #[test]
+    fn looking_for_updates_is_on_until_switched_off_and_an_update_under_way_is_remembered() {
+        let plain = Settings::default();
+        assert!(plain.check_updates && plain.updated_from.is_empty());
+        assert!(plain.serialize().contains("check_updates=1\n") && !plain.serialize().contains("updated_from"));
+        let mut s = Settings::default();
+        s.check_updates = false;
+        s.updated_from = "0.6.0".to_string();
+        let text = s.serialize();
+        assert!(text.contains("check_updates=0\n") && text.contains("updated_from=0.6.0\n"));
+        assert_eq!(Settings::parse(&text), s);
+        assert!(Settings::parse("check_updates=maybe\n").check_updates, "anything but a clear no leaves it on");
+        assert!(Settings::parse("nickname=Minnow\n").check_updates, "a file from before the setting existed");
+        assert_eq!(Settings::parse("updated_from=0.6.0; rm -rf\n").updated_from, "0.6.0");
+        assert_eq!(Settings::parse(&format!("updated_from={}\n", "9".repeat(80))).updated_from.len(), 20);
     }
 
     #[test]

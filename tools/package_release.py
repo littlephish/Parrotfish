@@ -14,6 +14,8 @@ from ci_run import fail, run_logged
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 TARGET = ROOT / "target" / "dist"
 DIST = ROOT / "dist"
+UPDATER = ROOT / "updater"
+UPDATER_TARGET = ROOT / "target" / "updater"
 STATIC_RUNTIME = "-C target-feature=+crt-static"
 TRIPLE = "x86_64-pc-windows-msvc"
 NOTICES = "THIRD-PARTY-NOTICES.txt"
@@ -49,9 +51,9 @@ def sha256(path):
     return digest.hexdigest()
 
 
-def run(command, env=None):
+def run(command, env=None, cwd=ROOT):
     print("+", " ".join(str(part) for part in command), flush=True)
-    code = run_logged(command, cwd=ROOT, env=env)
+    code = run_logged(command, cwd=cwd, env=env)
     if code != 0:
         fail(f"{pathlib.Path(str(command[0])).name} failed with exit code {code}")
 
@@ -68,7 +70,31 @@ PORTED = [
         "Speex 1.2.1, the decoder, rewritten in Rust for Parrotfish (ps-oldcodecs)  https://www.speex.org",
         ROOT / "ps-oldcodecs" / "LICENSE-speex.txt",
     ),
+    (
+        "update.exe, the updater shared with Eve-Strait and Ore Hold Watcher (MIT)  "
+        "https://github.com/littlephish/eve-strait/tree/main/updater",
+        UPDATER / "LICENSE",
+    ),
 ]
+
+
+def needs_runtime(path):
+    data = path.read_bytes().upper()
+    return b"VCRUNTIME140" in data or b"API-MS-WIN-CRT" in data
+
+
+def build_updater(skip):
+    built = UPDATER_TARGET / "release" / "update.exe"
+    if not skip:
+        env = dict(os.environ)
+        env["CARGO_TARGET_DIR"] = str(UPDATER_TARGET)
+        env["RUSTFLAGS"] = STATIC_RUNTIME
+        run(["cargo", "build", "--release", "--locked"], env, cwd=UPDATER)
+    if not built.is_file():
+        fail(f"{built} does not exist; run without --skip-build first")
+    if needs_runtime(built):
+        fail("update.exe would need the Visual C++ runtime, which a PC may not have; it has to be linked in")
+    return built
 
 
 def shipped_packages():
@@ -176,6 +202,9 @@ def main():
     built = TARGET / "release" / "ps-app.exe"
     if not built.is_file():
         fail(f"{built} does not exist; run without --skip-build first")
+    if needs_runtime(built):
+        fail("the program would need the Visual C++ runtime, which a PC may not have; it has to be linked in")
+    updater = build_updater(args.skip_build)
 
     if DIST.exists():
         shutil.rmtree(DIST)
@@ -189,6 +218,7 @@ def main():
     archive = DIST / f"Parrotfish-{version}-windows-x64.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
         bundle.write(built, "Parrotfish.exe")
+        bundle.write(updater, "update.exe")
         bundle.write(ROOT / "README.md", "README.md")
         bundle.write(notices, NOTICES)
     produced.append(archive)
@@ -199,6 +229,7 @@ def main():
                 iscc,
                 f"/DAppVersion={version}",
                 f"/DSourceExe={built}",
+                f"/DUpdaterExe={updater}",
                 f"/DNoticesFile={notices}",
                 f"/DReadmeFile={ROOT / 'README.md'}",
                 f"/DOutputDir={DIST}",

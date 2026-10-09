@@ -7,8 +7,11 @@ edition.workspace = true
 ps-identity = { path = "../ps-identity" }
 ps-client = { path = "../ps-client" }
 ps-voice = { path = "../ps-voice" }
+crc32fast = { workspace = true }
 gif = { workspace = true }
+miniz_oxide = { workspace = true }
 rand = { workspace = true }
+sha2 = { workspace = true }
 slint = { workspace = true }
 
 [build-dependencies]

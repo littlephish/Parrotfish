@@ -176,6 +176,8 @@ export component ParrotfishApp inherits Window {
     in property <bool> has-server-icon;
     in property <string> channel-name;
     in-out property <string> notice;
+    in property <string> update-text;
+    in property <int> update-offer;
     in property <string> nickname;
     in property <string> initials;
     in property <string> status-text: "Not connected";
@@ -262,6 +264,8 @@ export component ParrotfishApp inherits Window {
     callback speakers-lock();
     callback channel-join();
     callback channel-priority-changed();
+    callback update-acted();
+    callback update-hidden();
 
     forward-focus: keys;
     init => {
@@ -435,6 +439,53 @@ export component ParrotfishApp inherits Window {
                             height: 28px;
                             clicked => {
                                 root.notice = "";
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.update-text != "": Rectangle {
+                vertical-stretch: 0;
+                background: Theme.lure.with-alpha(0.12);
+
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 6px;
+                    padding-top: 6px;
+                    padding-bottom: 6px;
+                    spacing: 8px;
+
+                    Text {
+                        text: root.update-text;
+                        color: Theme.foam;
+                        font-size: Theme.small;
+                        wrap: word-wrap;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    if root.update-offer != 0: VerticalLayout {
+                        alignment: center;
+
+                        Btn {
+                            text: root.update-offer == 1 ? "Update" : "Get it";
+                            primary: root.update-offer == 1;
+                            clicked => {
+                                root.update-acted();
+                            }
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+
+                        IconButton {
+                            icon: Icons.close;
+                            width: 28px;
+                            height: 28px;
+                            clicked => {
+                                root.update-hidden();
                             }
                         }
                     }

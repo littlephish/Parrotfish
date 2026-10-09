@@ -7,7 +7,7 @@ joins a server, shows the channel tree, chats, and does voice (Opus) both ways.
 
 Working end to end against a real TeamSpeak 3.13.8 server: login, channel tree, channel
 switching (incl. password channels), text chat, microphone capture → Opus → server, and
-server → Opus → speakers, with and without voice encryption. 393 unit tests green.
+server → Opus → speakers, with and without voice encryption. 417 unit tests green.
 
 The window is the compact tree layout in the Twilight reef palette (design:
 `docs/superpowers/specs/2026-10-06-compact-window-design.md`): spacer channels are drawn as
@@ -127,6 +127,16 @@ Renamed on 2026-10-08, version 0.5.0: the program is Parrotfish now and its repo
 - Version 0.5.0 was built and published by the release workflow, the first release in the new
   repository. The releases up to 0.4.1 were in the old repository, which is no longer public.
 
+Added on 2026-10-09, version 0.6.0: Parrotfish updates itself.
+
+- At start it asks GitHub for the newest release (Settings, About switches that off and has a
+  button to look at once). A newer one is announced in the window; pressing Update downloads
+  it, checks it, hands over to `update.exe` and restarts. `--update` does it unasked.
+- `update.exe` is the updater from Eve-Strait and Ore Hold Watcher, taken over unchanged
+  (`updater/`), built with the C runtime linked in and shipped beside `Parrotfish.exe` in the
+  zip and by the installer.
+- A copy only replaces itself in a folder that holds nothing but its own files.
+
 Planned, not built: reading keys through Windows' Raw Input as a switch in settings
 (`docs/superpowers/plans/2026-10-07-raw-input-keys.md`).
 
@@ -183,7 +193,7 @@ order against the test server, not by ear and not with an official client talkin
 | `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client/group book, voice and whispers in/out, events; `spacer` recognises spacer channels, `filetransfer` fetches icons over the server's file port, `resolve` finds a server through SRV, TSDNS or its plain name | done, 35 tests + live tests |
 | `ps-oldcodecs` | Speex decoder (8, 16 and 32 kHz) in safe Rust, no dependencies | done, 27 tests + 3 run by hand |
 | `ps-voice` | Opus codec, Speex playback at 48 kHz, resampler, jitter buffer + mixer (talkers keyed by connection and client, a volume per talker, lowering for priority speakers), evening out how loud talkers are (`level.rs`), VAD/PTT gate, lanes (which key is held decides where a frame goes), echo canceller (`echo.rs`), noise suppression (`denoise.rs`), automatic gain (`agc.rs`), event sounds (`cues.rs`), cpal device I/O (WASAPI) | done, 127 tests + live tests |
-| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `mic.rs` what each server is told about the microphone and when, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` keeping a window's size across displays, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 140 tests + live tests |
+| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `mic.rs` what each server is told about the microphone and when, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` keeping a window's size across displays, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 164 tests + live tests |
 | `ps-serverquery` | Text protocol over TCP 10011 | not started |
 
 Threads: UI thread (Slint, 33 ms timer drains client events) · `ps-client` actor + UDP reader ·
@@ -654,6 +664,10 @@ who-hears-what table and fails if a server behaves differently).
 `PARROTFISH_TRACE=1` makes the GUI show every command in the chat drawer.
 `PARROTFISH_LINK_SCHEME=<name>` makes the links switch and the link reader use another scheme
 than `ts3server`, so that links can be tried without touching the PC's real entry.
+`PARROTFISH_UPDATE_FROM=<folder>` makes the program look for releases in a folder instead of on
+GitHub: `latest.txt` there names the newest version (`v1.2.3`), and beside it lie
+`Parrotfish-1.2.3-windows-x64.zip` and `SHA256SUMS.txt`. Everything after the fetching is the
+same, so an update can be tried from start to finish without a release.
 `probe` also takes `--icon ID` (repeatable), `--all-icons`, `--save DIR`, `--ft-port N`,
 `--voice` (how each talker's stream ends: packet sizes and timing, no sound), `--token KEY`
 (use a privilege key), `--send COMMAND` (repeatable), `--nick NAME` and `--seconds N`.
@@ -958,6 +972,49 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   there, otherwise 8 ms of the last sound are mirrored and faded. Without an end packet the
   filler fades within 60 ms instead of 120. A voice packet older than the end packet belongs
   to that speech; one that arrives after the speech has ended is dropped.
+- Updating itself (`update.rs`; the fetching in `platform.rs`). No new library: Windows' own
+  WinHTTP does the HTTPS, and `miniz_oxide`, `crc32fast` and `sha2`, which the program already
+  contained through Slint and the protocol crates, unpack and check the download.
+  - Which release is newest is read from where `github.com/littlephish/Parrotfish/releases/latest`
+    redirects to, not from GitHub's API, which allows an address only 60 questions an hour.
+    The redirect has to name a tag `v<a>.<b>.<c>` of this repository, or it counts as no answer.
+  - Redirects are followed by hand, five at most, and only to `github.com` and
+    `*.githubusercontent.com` over HTTPS; cookies and signing in are switched off.
+  - The download is the release's zip. It is only used if its SHA-256 is the one in the
+    release's `SHA256SUMS.txt`, its length is the one the server announced, and every file in
+    it passes its CRC. That guards against a broken or swapped download, not against a release
+    that was published by someone who took over the repository: both files come from the same
+    place, and the files are not signed.
+  - The zip must be flat. A name with a folder, a drive, a leading dot, a device name or
+    anything but letters, digits, dot, dash, underscore and space refuses the whole archive,
+    and so do two names that are one file on Windows, an encrypted entry and a missing
+    `Parrotfish.exe`.
+  - `update.exe` makes the program's folder equal to the new release: it copies the new files
+    in and removes every other file, in subfolders too, sparing only `unins000.exe`,
+    `unins000.dat`, its log, a folder named `update` and files it parked as `.old`. In a folder
+    of its own that is what an update should do; anywhere else it would clear out somebody's
+    files. So the program hands over only when it is called `Parrotfish.exe` and its folder
+    holds nothing but what it knows as its own (`OWN_FILES`, their parked copies, and a folder
+    `update` holding at most `unpacked`), and it looks again after the download. Otherwise it
+    says which name is in the way and offers the download page. What the helper would remove
+    but must stay (`unins000.msg`, if the installer wrote one) is copied in beside the new
+    files first.
+  - The new files are unpacked into `update\unpacked` beside the program, the helper is copied
+    to `%TEMP%\Parrotfish-updater` and started from there, detached, with the new folder, the
+    program's folder and `Parrotfish.exe`; then the program closes. The helper that came with
+    the new release is used if there is one, the installed one otherwise. The settings file
+    notes the version the update started from; after the restart the program compares and
+    says either that it was updated or that the update did not go through.
+  - Other running copies are not closed. The helper replaces a file that is in use by
+    renaming it, after waiting up to a minute for the program file to come free.
+  - `updater/` is kept byte for byte equal to the folder in Eve-Strait; it is its own cargo
+    project (`exclude` in the workspace) and is built from inside its folder, because only
+    then does its `.cargo/config.toml` link the C runtime in. Built from the repository root
+    with `--manifest-path`, as Eve-Strait's release workflow does, `update.exe` needs
+    `VCRUNTIME140.dll`, which the temporary folder it runs from does not have; the packaging
+    script refuses to ship a program that names that DLL.
+  - After the program has updated itself, Windows' list of installed programs still shows the
+    version the installer put there.
 - Release builds: the workflow `Release` runs only for a pushed tag `v<version>`, checks that
   the tag matches the version in `Cargo.toml`, runs the tests, builds with the C runtime linked
   in (`-C target-feature=+crt-static`, so no Visual C++ runtime has to be installed), and
@@ -1013,7 +1070,8 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
 19. ✅ One person can be left out of evening out; priority speakers of your own, by person
     and by channel.
 20. ✅ Renamed to Parrotfish; the settings folder and an installed PhishSpeak are taken over.
-21. Next: test against the official client and a public server; try echo cancelling, noise
+21. ✅ The program updates itself from GitHub releases, with the updater shared with Eve-Strait.
+22. Next: test against the official client and a public server; try echo cancelling, noise
     suppression and the event sounds by ear; reading keys through Raw Input (planned);
     avatars.
 

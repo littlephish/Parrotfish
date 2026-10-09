@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -31,6 +31,7 @@ use crate::session::{
     DialogField, FoldMode, MicMove, Outcome, Peer, RowData, RowKind, Session,
 };
 use crate::settings::{self, Settings, Voice, MAX_REMEMBERED_VOICES};
+use crate::update::{self, Offer, Place};
 use crate::whisper::{route, Route, WhisperKeys};
 use crate::{
     BookmarkRow, ChatRow, Icons, IdentityRow, ParrotfishApp, PickRow, ServerTile, SettingsWindow, SpeakerRow,
@@ -307,6 +308,11 @@ pub struct App {
     shown_wide: bool,
     shown_devices: (String, String),
     shown_person_heard: String,
+    update: update::Step,
+    update_reports: Option<Receiver<update::Report>>,
+    update_source: update::Source,
+    update_hidden: bool,
+    pub install_updates: bool,
     trace: bool,
 }
 
@@ -408,6 +414,11 @@ impl App {
             shown_wide: false,
             shown_devices: (String::new(), String::new()),
             shown_person_heard: String::new(),
+            update: update::Step::Unknown,
+            update_reports: None,
+            update_source: update::Source::chosen(std::env::var_os("PARROTFISH_UPDATE_FROM")),
+            update_hidden: false,
+            install_updates: false,
             trace: std::env::var_os("PARROTFISH_TRACE").is_some(),
         }
     }
@@ -442,6 +453,7 @@ impl App {
         w.settings.set_even_voices(self.settings.even_voices);
         w.settings.set_priority_dim(self.settings.priority_dim);
         w.settings.set_cue_volume(self.settings.cue_volume);
+        w.settings.set_check_updates(self.settings.check_updates);
         let problems = self.load_identities();
         if self.identities.is_empty() {
             if let Err(problem) = self.create_identity() {
@@ -455,6 +467,9 @@ impl App {
         self.refresh_links(w);
         self.push_bindings();
         self.rebuild_lanes(true);
+        if let Some(news) = update::after_restart(&std::mem::take(&mut self.settings.updated_from)) {
+            w.main.set_notice(news.into());
+        }
         self.save_at = None;
         if self.settings.serialize() != stored {
             self.mark_settings_dirty();
@@ -470,10 +485,156 @@ impl App {
         for wish in wishes {
             self.grant(w, wish.clone());
         }
+        if self.settings.check_updates || self.install_updates {
+            self.look_for_update(w);
+        }
     }
 
     pub fn attach_instance(&mut self, listener: instance::Listener) {
         self.instance = Some(listener);
+    }
+
+    pub fn look_for_update(&mut self, w: &Windows) {
+        if matches!(self.update, update::Step::Looking | update::Step::Bringing(..) | update::Step::Restarting) {
+            return;
+        }
+        self.update = update::Step::Looking;
+        self.update_reports = Some(update::look(self.update_source.clone()));
+        self.publish_update(w);
+    }
+
+    pub fn updates_setting_changed(&mut self, w: &Windows) {
+        self.settings.check_updates = w.settings.get_check_updates();
+        self.mark_settings_dirty();
+    }
+
+    pub fn update_acted(&mut self, w: &Windows) {
+        let program = own_program().map(PathBuf::from);
+        match (self.update.clone(), program) {
+            (update::Step::Found(version), Some(program)) if update::place(&program) == Place::Ready => {
+                self.bring_update(w, version, &program);
+            }
+            (update::Step::Found(_) | update::Step::Failed(_), _) => {
+                platform::open_link(update::PAGE);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn update_hidden(&mut self, w: &Windows) {
+        self.update_hidden = true;
+        self.publish_update(w);
+    }
+
+    fn bring_update(&mut self, w: &Windows, version: update::Version, program: &Path) {
+        let Some(folder) = program.parent() else {
+            return;
+        };
+        self.update = update::Step::Bringing(version, 0);
+        self.update_hidden = false;
+        self.update_reports = Some(update::bring(self.update_source.clone(), version, folder.to_path_buf()));
+        self.publish_update(w);
+    }
+
+    fn poll_update(&mut self, w: &Windows) {
+        let Some(reports) = self.update_reports.take() else {
+            return;
+        };
+        let mut arrived = Vec::new();
+        let mut over = false;
+        loop {
+            match reports.try_recv() {
+                Ok(report) => arrived.push(report),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    over = true;
+                    break;
+                }
+            }
+        }
+        if !over {
+            self.update_reports = Some(reports);
+            if arrived.is_empty() {
+                return;
+            }
+        }
+        for report in arrived {
+            self.take_update_report(w, report);
+        }
+        if over && self.update_reports.is_none() {
+            let silence = "it ended without an answer".to_string();
+            match self.update {
+                update::Step::Looking => self.update = update::Step::Unreachable(silence),
+                update::Step::Bringing(..) => self.update = update::Step::Failed(silence),
+                _ => {}
+            }
+        }
+        self.publish_update(w);
+    }
+
+    fn take_update_report(&mut self, w: &Windows, report: update::Report) {
+        match (report, self.update.clone()) {
+            (update::Report::Newest(version), update::Step::Looking) => {
+                if version > update::Version::current() {
+                    self.update = update::Step::Found(version);
+                    self.update_hidden = false;
+                    let program = own_program().map(PathBuf::from).filter(|program| update::place(program) == Place::Ready);
+                    if let (true, Some(program)) = (self.install_updates, program) {
+                        self.bring_update(w, version, &program);
+                    }
+                } else {
+                    self.update = update::Step::Newest;
+                }
+            }
+            (update::Report::Failed(problem), update::Step::Looking) => self.update = update::Step::Unreachable(problem),
+            (update::Report::Failed(problem), update::Step::Bringing(..)) => {
+                self.update = update::Step::Failed(problem);
+                self.update_hidden = false;
+            }
+            (update::Report::Fetched(percent), update::Step::Bringing(version, _)) => {
+                self.update = update::Step::Bringing(version, percent);
+            }
+            (update::Report::Staged(unpacked), update::Step::Bringing(..)) => self.finish_update(&unpacked),
+            _ => {}
+        }
+    }
+
+    fn finish_update(&mut self, unpacked: &Path) {
+        let program = own_program().map(PathBuf::from).filter(|program| update::place(program) == Place::Ready);
+        let handed = match program.as_deref().and_then(Path::parent) {
+            Some(folder) => update::hand_over(folder, unpacked),
+            None => Err("the program's folder changed while the update was fetched".to_string()),
+        };
+        match handed {
+            Ok(()) => {
+                self.settings.updated_from = update::Version::current().to_string();
+                let _ = self.settings.save();
+                self.update = update::Step::Restarting;
+                let _ = slint::quit_event_loop();
+            }
+            Err(problem) => {
+                self.update = update::Step::Failed(problem);
+                self.update_hidden = false;
+            }
+        }
+    }
+
+    fn publish_update(&mut self, w: &Windows) {
+        let place = match (&self.update, own_program()) {
+            (update::Step::Found(_), Some(program)) => update::place(Path::new(&program)),
+            _ => Place::Ready,
+        };
+        let shown = update::wording(&self.update, &place);
+        let offer = match shown.offer {
+            Offer::Nothing => 0,
+            Offer::Install => 1,
+            Offer::Page => 2,
+        };
+        let closed = self.update_hidden && matches!(self.update, update::Step::Found(_) | update::Step::Failed(_));
+        w.main.set_update_text(if closed { "".into() } else { shown.banner.as_str().into() });
+        w.main.set_update_offer(offer);
+        w.settings.set_update_status(shown.about.as_str().into());
+        w.settings.set_update_offer(offer);
     }
 
     fn refresh_links(&mut self, w: &Windows) {
@@ -2495,6 +2656,7 @@ impl App {
         self.tell_mics(Instant::now());
         self.poll_level_jobs(w);
         self.poll_capture(w);
+        self.poll_update(w);
         let fired = self.watcher.state().take_fired();
         if fired & 1 != 0 {
             self.toggle_mic(w);

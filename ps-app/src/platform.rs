@@ -356,9 +356,283 @@ mod imp {
         (t.hour as u32, t.minute as u32, t.second as u32)
     }
 
+    #[link(name = "winhttp")]
+    extern "system" {
+        fn WinHttpOpen(agent: *const u16, access: u32, proxy: *const u16, bypass: *const u16, flags: u32) -> isize;
+        fn WinHttpConnect(session: isize, host: *const u16, port: u16, reserved: u32) -> isize;
+        fn WinHttpOpenRequest(
+            connection: isize,
+            verb: *const u16,
+            path: *const u16,
+            version: *const u16,
+            referrer: *const u16,
+            accept: *const *const u16,
+            flags: u32,
+        ) -> isize;
+        fn WinHttpSetOption(handle: isize, option: u32, value: *const core::ffi::c_void, size: u32) -> i32;
+        fn WinHttpSetTimeouts(handle: isize, resolve: i32, connect: i32, send: i32, receive: i32) -> i32;
+        fn WinHttpSendRequest(
+            request: isize,
+            headers: *const u16,
+            headers_size: u32,
+            body: *const core::ffi::c_void,
+            body_size: u32,
+            total_size: u32,
+            context: usize,
+        ) -> i32;
+        fn WinHttpReceiveResponse(request: isize, reserved: *mut core::ffi::c_void) -> i32;
+        fn WinHttpQueryHeaders(
+            request: isize,
+            what: u32,
+            name: *const u16,
+            value: *mut core::ffi::c_void,
+            size: *mut u32,
+            index: *mut u32,
+        ) -> i32;
+        fn WinHttpReadData(request: isize, into: *mut core::ffi::c_void, size: u32, read: *mut u32) -> i32;
+        fn WinHttpCloseHandle(handle: isize) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetLastError() -> u32;
+    }
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn ShellExecuteW(
+            owner: isize,
+            verb: *const u16,
+            file: *const u16,
+            arguments: *const u16,
+            folder: *const u16,
+            show: i32,
+        ) -> isize;
+    }
+
+    const SYSTEM_PROXY: u32 = 4;
+    const USUAL_PROXY: u32 = 0;
+    const ENCRYPTED: u32 = 0x0080_0000;
+    const DISABLE_FEATURE: u32 = 63;
+    const COOKIES_REDIRECTS_AND_SIGNING_IN: u32 = 1 | 2 | 4;
+    const STATUS_AS_NUMBER: u32 = 19 | 0x2000_0000;
+    const LENGTH_AS_NUMBER: u32 = 5 | 0x2000_0000;
+    const LOCATION: u32 = 33;
+    const WEB_WAIT_MS: i32 = 20_000;
+    const WEB_CHUNK: usize = 64 * 1024;
+    const SHOW: i32 = 1;
+
+    struct Web(isize);
+
+    impl Drop for Web {
+        fn drop(&mut self) {
+            if self.0 != 0 {
+                unsafe { WinHttpCloseHandle(self.0) };
+            }
+        }
+    }
+
+    fn web_problem(step: &str) -> String {
+        match unsafe { GetLastError() } {
+            12002 => "the server took too long to answer".to_string(),
+            12007 => "the server's name could not be found".to_string(),
+            12029..=12031 => "the connection could not be made, or was cut".to_string(),
+            12037 | 12038 | 12045 | 12157 | 12169 | 12175 => "the secure connection could not be trusted".to_string(),
+            code => format!("Windows error {code} while {step}"),
+        }
+    }
+
+    fn number_header(request: isize, what: u32) -> Option<u32> {
+        let mut value = 0u32;
+        let mut size = 4u32;
+        let read = unsafe {
+            WinHttpQueryHeaders(request, what, std::ptr::null(), (&mut value as *mut u32).cast(), &mut size, std::ptr::null_mut())
+        };
+        (read != 0).then_some(value)
+    }
+
+    fn text_header(request: isize, what: u32) -> Option<String> {
+        let mut size = 0u32;
+        unsafe { WinHttpQueryHeaders(request, what, std::ptr::null(), std::ptr::null_mut(), &mut size, std::ptr::null_mut()) };
+        if size == 0 || size > 16_384 {
+            return None;
+        }
+        let mut text = vec![0u16; (size as usize).div_ceil(2) + 1];
+        let mut size = ((text.len() - 1) * 2) as u32;
+        let read = unsafe {
+            WinHttpQueryHeaders(request, what, std::ptr::null(), text.as_mut_ptr().cast(), &mut size, std::ptr::null_mut())
+        };
+        if read == 0 {
+            return None;
+        }
+        let end = text.iter().position(|unit| *unit == 0).unwrap_or(text.len());
+        Some(String::from_utf16_lossy(&text[..end]))
+    }
+
+    pub fn web_get(
+        url: &str,
+        agent: &str,
+        limit: usize,
+        progress: &mut dyn FnMut(usize, Option<u64>),
+    ) -> Result<super::WebReply, String> {
+        let address = super::web_address(url).ok_or("that is not an address this program fetches")?;
+        let agent = wide(agent);
+        let mut session = Web(unsafe { WinHttpOpen(agent.as_ptr(), SYSTEM_PROXY, std::ptr::null(), std::ptr::null(), 0) });
+        if session.0 == 0 {
+            session = Web(unsafe { WinHttpOpen(agent.as_ptr(), USUAL_PROXY, std::ptr::null(), std::ptr::null(), 0) });
+        }
+        if session.0 == 0 {
+            return Err(web_problem("starting"));
+        }
+        unsafe { WinHttpSetTimeouts(session.0, WEB_WAIT_MS, WEB_WAIT_MS, WEB_WAIT_MS, WEB_WAIT_MS) };
+        let host = wide(&address.host);
+        let connection = Web(unsafe { WinHttpConnect(session.0, host.as_ptr(), address.port, 0) });
+        if connection.0 == 0 {
+            return Err(web_problem("connecting"));
+        }
+        let (verb, path) = (wide("GET"), wide(&address.path));
+        let flags = if address.secure { ENCRYPTED } else { 0 };
+        let request = Web(unsafe {
+            WinHttpOpenRequest(
+                connection.0,
+                verb.as_ptr(),
+                path.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                flags,
+            )
+        });
+        if request.0 == 0 {
+            return Err(web_problem("asking"));
+        }
+        let off = COOKIES_REDIRECTS_AND_SIGNING_IN;
+        if unsafe { WinHttpSetOption(request.0, DISABLE_FEATURE, (&off as *const u32).cast(), 4) } == 0 {
+            return Err(web_problem("asking"));
+        }
+        let sent = unsafe { WinHttpSendRequest(request.0, std::ptr::null(), 0, std::ptr::null(), 0, 0, 0) } != 0;
+        if !sent || unsafe { WinHttpReceiveResponse(request.0, std::ptr::null_mut()) } == 0 {
+            return Err(web_problem("asking"));
+        }
+        let status = number_header(request.0, STATUS_AS_NUMBER).ok_or("the server's answer could not be read")?;
+        let location = text_header(request.0, LOCATION).unwrap_or_default();
+        let length = number_header(request.0, LENGTH_AS_NUMBER).map(u64::from);
+        let mut body = Vec::new();
+        if status == 200 {
+            if length.is_some_and(|length| length > limit as u64) {
+                return Err("the file is larger than it should be".to_string());
+            }
+            let mut chunk = vec![0u8; WEB_CHUNK];
+            loop {
+                let mut read = 0u32;
+                if unsafe { WinHttpReadData(request.0, chunk.as_mut_ptr().cast(), chunk.len() as u32, &mut read) } == 0 {
+                    return Err(web_problem("downloading"));
+                }
+                if read == 0 {
+                    break;
+                }
+                body.extend_from_slice(&chunk[..read as usize]);
+                if body.len() > limit {
+                    return Err("the file is larger than it should be".to_string());
+                }
+                progress(body.len(), length);
+            }
+            if let Some(length) = length.filter(|length| *length != body.len() as u64) {
+                return Err(format!("the download stopped early: {} of {length} bytes arrived", body.len()));
+            }
+        }
+        Ok(super::WebReply { status, location, length, body })
+    }
+
+    pub fn open_link(url: &str) -> bool {
+        if !url.starts_with("https://") {
+            return false;
+        }
+        let (verb, file) = (wide("open"), wide(url));
+        unsafe { ShellExecuteW(0, verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), SHOW) > 32 }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        fn serve(answer: Vec<u8>) -> String {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            std::thread::spawn(move || {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let mut asked = Vec::new();
+                    let mut piece = [0u8; 1024];
+                    while !asked.windows(4).any(|part| part == b"\r\n\r\n") {
+                        match stream.read(&mut piece) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => asked.extend_from_slice(&piece[..n]),
+                        }
+                    }
+                    let _ = stream.write_all(&answer);
+                }
+            });
+            format!("http://127.0.0.1:{port}/files/thing.zip")
+        }
+
+        fn get(url: &str, limit: usize) -> (Result<crate::platform::WebReply, String>, Vec<(usize, Option<u64>)>) {
+            let mut seen = Vec::new();
+            let reply = web_get(url, "Parrotfish-test", limit, &mut |so_far, of| seen.push((so_far, of)));
+            (reply, seen)
+        }
+
+        #[test]
+        fn a_file_is_fetched_whole_and_its_progress_reported() {
+            let mut answer = b"HTTP/1.1 200 OK\r\nContent-Length: 5000\r\nConnection: close\r\n\r\n".to_vec();
+            answer.extend(std::iter::repeat(b'x').take(5000));
+            let (reply, seen) = get(&serve(answer), 10_000);
+            let reply = reply.expect("a complete answer");
+            assert_eq!((reply.status, reply.length, reply.body.len()), (200, Some(5000), 5000));
+            assert_eq!(seen.last(), Some(&(5000, Some(5000))));
+        }
+
+        #[test]
+        fn a_download_that_stops_early_is_not_taken_for_the_file() {
+            let mut answer = b"HTTP/1.1 200 OK\r\nContent-Length: 5000\r\nConnection: close\r\n\r\n".to_vec();
+            answer.extend(std::iter::repeat(b'x').take(400));
+            let (reply, _) = get(&serve(answer), 10_000);
+            assert!(reply.is_err(), "400 of 5000 bytes were accepted as the whole file");
+        }
+
+        #[test]
+        fn a_file_larger_than_allowed_is_refused() {
+            let mut answer = b"HTTP/1.1 200 OK\r\nContent-Length: 5000\r\nConnection: close\r\n\r\n".to_vec();
+            answer.extend(std::iter::repeat(b'x').take(5000));
+            let (reply, _) = get(&serve(answer), 4_999);
+            assert_eq!(reply, Err("the file is larger than it should be".to_string()));
+            let mut unsized_answer = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_vec();
+            unsized_answer.extend(std::iter::repeat(b'x').take(5000));
+            let (reply, _) = get(&serve(unsized_answer.clone()), 4_999);
+            assert_eq!(reply, Err("the file is larger than it should be".to_string()));
+            let (reply, _) = get(&serve(unsized_answer), 5_000);
+            assert_eq!(reply.map(|reply| (reply.length, reply.body.len())), Ok((None, 5000)));
+        }
+
+        #[test]
+        fn a_redirect_is_reported_and_not_followed() {
+            let answer = b"HTTP/1.1 302 Found\r\nLocation: https://elsewhere.example/next\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec();
+            let (reply, seen) = get(&serve(answer), 10_000);
+            let reply = reply.expect("the redirect itself is an answer");
+            assert_eq!((reply.status, reply.location.as_str(), reply.body.len()), (302, "https://elsewhere.example/next", 0));
+            assert!(seen.is_empty());
+            let missing = b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot here.".to_vec();
+            let (reply, _) = get(&serve(missing), 10_000);
+            assert_eq!(reply.map(|reply| (reply.status, reply.body.len())), Ok((404, 0)));
+        }
+
+        #[test]
+        fn only_secure_addresses_are_opened_in_the_browser() {
+            assert!(!open_link("http://example.org/"));
+            assert!(!open_link("file:///C:/Windows/System32/calc.exe"));
+            assert!(!open_link("calc.exe"));
+        }
 
         #[test]
         fn a_password_sealed_before_the_program_was_renamed_still_opens() {
@@ -424,6 +698,19 @@ mod imp {
         None
     }
 
+    pub fn web_get(
+        _url: &str,
+        _agent: &str,
+        _limit: usize,
+        _progress: &mut dyn FnMut(usize, Option<u64>),
+    ) -> Result<super::WebReply, String> {
+        Err("this build cannot fetch anything".to_string())
+    }
+
+    pub fn open_link(_url: &str) -> bool {
+        false
+    }
+
     pub fn local_hms() -> (u32, u32, u32) {
         let secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -434,9 +721,45 @@ mod imp {
 }
 
 pub use imp::{
-    allow_front, bring_front, clear_link_handler, key_char, key_down, link_handler, local_hms, on_a_screen,
-    overlay_style, own_front_window, protect, set_link_handler, show_own_window, unprotect,
+    allow_front, bring_front, clear_link_handler, key_char, key_down, link_handler, local_hms, on_a_screen, open_link,
+    overlay_style, own_front_window, protect, set_link_handler, show_own_window, unprotect, web_get,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WebReply {
+    pub status: u32,
+    pub location: String,
+    pub length: Option<u64>,
+    pub body: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebAddress {
+    pub secure: bool,
+    pub host: String,
+    pub port: u16,
+    pub path: String,
+}
+
+pub fn web_address(url: &str) -> Option<WebAddress> {
+    let (secure, rest) = match (url.strip_prefix("https://"), url.strip_prefix("http://")) {
+        (Some(rest), _) => (true, rest),
+        (None, Some(rest)) if cfg!(test) => (false, rest),
+        _ => return None,
+    };
+    let (authority, path) = match rest.find('/') {
+        Some(at) => (&rest[..at], &rest[at..]),
+        None => (rest, "/"),
+    };
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => (host, port.parse::<u16>().ok().filter(|port| *port != 0)?),
+        None => (authority, if secure { 443 } else { 80 }),
+    };
+    let named = !host.is_empty() && host.len() <= 253 && host.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+    let plain = !path.chars().any(|c| c.is_control() || c.is_whitespace() || c == '#');
+    let allowed = secure || host == "127.0.0.1";
+    (named && plain && allowed).then(|| WebAddress { secure, host: host.to_ascii_lowercase(), port, path: path.to_string() })
+}
 
 pub fn timestamp() -> String {
     let (h, m, s) = local_hms();
@@ -453,6 +776,35 @@ mod tests {
         assert_eq!(t.len(), 8);
         let parts: Vec<u32> = t.split(':').map(|p| p.parse().unwrap()).collect();
         assert!(parts[0] < 24 && parts[1] < 60 && parts[2] < 61);
+    }
+
+    #[test]
+    fn only_plain_encrypted_addresses_are_fetched() {
+        let page = web_address("https://github.com/littlephish/Parrotfish/releases/latest?x=1").expect("a usual address");
+        assert_eq!((page.secure, page.host.as_str(), page.port), (true, "github.com", 443));
+        assert_eq!(page.path, "/littlephish/Parrotfish/releases/latest?x=1");
+        assert_eq!(web_address("https://GitHub.com").map(|bare| (bare.host, bare.path)), Some(("github.com".to_string(), "/".to_string())));
+        assert_eq!(web_address("https://files.example:8443/a").map(|other| other.port), Some(8443));
+        assert!(web_address("http://127.0.0.1:8080/x").is_some_and(|local| !local.secure), "tests may talk to this PC unencrypted");
+        for refused in [
+            "http://github.com/x",
+            "http://localhost/x",
+            "ftp://github.com/x",
+            "github.com/x",
+            "https://",
+            "https:///x",
+            "https://user@github.com/x",
+            "https://github.com:0/x",
+            "https://github.com:99999/x",
+            "https://github.com:port/x",
+            "https://git hub.com/x",
+            "https://github.com/a b",
+            "https://github.com/a#b",
+            "https://github.com/a\r\nHost: evil.example",
+            "",
+        ] {
+            assert_eq!(web_address(refused), None, "{refused:?}");
+        }
     }
 
     #[test]

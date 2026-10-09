@@ -49,6 +49,8 @@ old copies afterwards: they would start empty, in a folder of their own.
 - `ts3server://` links, if you switch that on under Settings, Bookmarks. A link opens the
   connect window filled in and tells you what it carries; it never connects by itself.
   Switching it off gives the links back to the program that had them.
+- It updates itself: when it starts it asks GitHub whether a newer release exists, tells you,
+  and replaces itself when you say so. Settings, About switches the asking off.
 - One settings window with tabs: microphone, sound, identities, bookmarks, shortcuts, channels,
   about.
 
@@ -82,6 +84,24 @@ is and never changes it. Settings, bookmarks, whisper keys and identities create
 stored in `%APPDATA%\Parrotfish`. A password typed while connecting is never saved; one typed
 into a bookmark is kept encrypted for your Windows account.
 
+## Updates
+
+When it starts, Parrotfish asks GitHub which release is the newest; it sends nothing but its
+name and version. If there is a newer one, a line in the window says so. Nothing is installed
+until you press Update: Parrotfish then downloads the release, checks it against the checksum
+published with it, and hands over to `update.exe`, which swaps the files once Parrotfish has
+closed and starts it again. `Parrotfish.exe --update` does the same without being asked.
+Settings, About has the switch for the asking and a button to look right away.
+
+Parrotfish only replaces itself in a folder of its own. `update.exe` makes the folder match
+the new release, which means it removes every file the release does not have, so a copy that
+shares its folder with anything else (a copy on the desktop, say) only offers the download
+page. Give a portable copy a folder of its own, or use the installer.
+
+`update.exe` is not specific to Parrotfish. The `updater` folder is the same, byte for byte, as
+the one in [Eve-Strait](https://github.com/littlephish/eve-strait/tree/main/updater) and Ore
+Hold Watcher; fix a bug in one and carry it to the others.
+
 ## Releases
 
 Pushing a tag builds a release; nothing else does. Set the version in `Cargo.toml`
@@ -96,7 +116,9 @@ The `Release` workflow checks that the tag is `v` plus that version, runs the te
 program with the C runtime linked in, tries the installer on the build machine
 (`tools/installer_test.py`: over an installed PhishSpeak, and on its own), and publishes an
 installer (`Parrotfish-<version>-setup.exe`, per user, no administrator prompt), a zip of the
-program and `SHA256SUMS.txt` on the repository's Releases page. Both carry
+program with `update.exe`, and `SHA256SUMS.txt` on the repository's Releases page. The zip
+must keep its name and stay flat, and the checksum list must stay, because installed copies
+update themselves from exactly these two files. Both carry
 `THIRD-PARTY-NOTICES.txt`, the licence texts of every library in the program, collected at build
 time. Ordinary pushes and pull requests only run the tests (the `Check` workflow); a push that
 changes the installer also runs the `Installer` workflow, which builds it and tries it the same
@@ -127,6 +149,7 @@ explains how to use them.
 | `ps-oldcodecs` | The Speex decoder, for voice from old channels |
 | `ps-voice` | Opus, resampling, jitter buffer, mixing, microphone and speaker devices |
 | `ps-app` | The window |
+| `updater` | `update.exe`, which swaps the files of a new release in; a project of its own, not part of the workspace |
 
 ## Credits
 

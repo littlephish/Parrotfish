@@ -1,18 +1,21 @@
 [workspace]
 resolver = "2"
 members = ["ps-identity", "ps-crypto", "ps-protocol", "ps-client", "ps-oldcodecs", "ps-voice", "ps-app"]
+exclude = ["updater"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 
 [workspace.dependencies]
 aes = "0.8"
 base64 = "0.22"
 cpal = "0.18"
+crc32fast = "1"
 curve25519-dalek = "4"
 eax = "0.5"
 gif = "0.14"
+miniz_oxide = "0.9"
 num-bigint = "0.4"
 p256 = "0.13"
 quicklz = "0.3"

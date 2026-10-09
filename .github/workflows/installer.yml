@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - "installer/**"
+      - "updater/**"
+      - "ps-app/src/update.rs"
       - "tools/package_release.py"
       - "tools/installer_test.py"
       - ".github/workflows/installer.yml"

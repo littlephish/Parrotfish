@@ -37,6 +37,9 @@ jobs:
       - name: Tests
         run: python tools/ci_run.py cargo test --workspace --locked --release
 
+      - name: Tests of the updater
+        run: python tools/ci_run.py cargo test --locked --manifest-path updater/Cargo.toml
+
       - name: Inno Setup
         run: |
           $known = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"

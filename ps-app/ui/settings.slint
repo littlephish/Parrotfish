@@ -125,6 +125,9 @@ export component SettingsWindow inherits Window {
     in property <string> links-note;
 
     in property <string> version;
+    in-out property <bool> check-updates: true;
+    in property <string> update-status;
+    in property <int> update-offer;
     in property <float> scale-nudge;
 
     property <bool> editing: root.tab == 4 && root.editor-open;
@@ -162,6 +165,9 @@ export component SettingsWindow inherits Window {
     callback view-changed();
     callback speakers-changed();
     callback links-changed();
+    callback check-updates-changed();
+    callback update-check();
+    callback update-acted();
     callback done();
 
     forward-focus: keys;
@@ -1522,6 +1528,42 @@ export component SettingsWindow inherits Window {
 
                     Hint {
                         text: "An unofficial TeamSpeak 3 client. It is not affiliated with or endorsed by TeamSpeak Systems GmbH; TeamSpeak is their trademark.";
+                    }
+
+                    Check {
+                        text: "Look for a newer version when Parrotfish starts";
+                        checked <=> root.check-updates;
+                        toggled => {
+                            root.check-updates-changed();
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: 10px;
+
+                        Btn {
+                            text: "Look now";
+                            clicked => {
+                                root.update-check();
+                            }
+                        }
+
+                        if root.update-offer != 0: Btn {
+                            text: root.update-offer == 1 ? "Update and restart" : "Open the download page";
+                            primary: true;
+                            clicked => {
+                                root.update-acted();
+                            }
+                        }
+                    }
+
+                    if root.update-status != "": Hint {
+                        text: root.update-status;
+                    }
+
+                    Hint {
+                        text: "Looking asks GitHub which release is the newest and tells it only this program's name and version. Nothing is installed until you say so.";
                     }
 
                     Heading {

@@ -4,6 +4,9 @@
 #ifndef SourceExe
   #define SourceExe "..\target\dist\release\ps-app.exe"
 #endif
+#ifndef UpdaterExe
+  #define UpdaterExe "..\target\updater\release\update.exe"
+#endif
 #ifndef NoticesFile
   #define NoticesFile "..\dist\THIRD-PARTY-NOTICES.txt"
 #endif
@@ -48,12 +51,22 @@ Type: files; Name: "{app}\PhishSpeak.exe"
 
 [Files]
 Source: "{#SourceExe}"; DestDir: "{app}"; DestName: "Parrotfish.exe"; Flags: ignoreversion
+Source: "{#UpdaterExe}"; DestDir: "{app}"; DestName: "update.exe"; Flags: ignoreversion
 Source: "{#NoticesFile}"; DestDir: "{app}"; DestName: "THIRD-PARTY-NOTICES.txt"; Flags: ignoreversion
 Source: "{#ReadmeFile}"; DestDir: "{app}"; DestName: "README.md"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\Parrotfish"; Filename: "{app}\Parrotfish.exe"
 Name: "{autodesktop}\Parrotfish"; Filename: "{app}\Parrotfish.exe"; Tasks: desktopicon
+
+[UninstallDelete]
+Type: files; Name: "{app}\update-log.txt"
+Type: files; Name: "{app}\Parrotfish.exe.old*"
+Type: files; Name: "{app}\update.exe.old*"
+Type: files; Name: "{app}\README.md.old*"
+Type: files; Name: "{app}\THIRD-PARTY-NOTICES.txt.old*"
+Type: filesandordirs; Name: "{app}\update\unpacked"
+Type: dirifempty; Name: "{app}\update"
 
 [UninstallRun]
 Filename: "{app}\Parrotfish.exe"; Parameters: "--forget-links"; RunOnceId: "ForgetLinks"; Flags: runhidden skipifdoesntexist

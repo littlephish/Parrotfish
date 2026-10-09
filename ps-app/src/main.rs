@@ -13,6 +13,7 @@ mod scale;
 mod session;
 mod settings;
 mod speakers;
+mod update;
 mod whisper;
 
 use std::cell::RefCell;
@@ -79,6 +80,9 @@ fn main() -> Result<(), slint::PlatformError> {
     let app = Rc::new(RefCell::new(App::new(&ui, &settings_window, &speakers_window, settings)));
     if let (Some(listener), Ok(mut state)) = (listener, app.try_borrow_mut()) {
         state.attach_instance(listener);
+    }
+    if let Ok(mut state) = app.try_borrow_mut() {
+        state.install_updates = arguments.iter().any(|arg| arg == "--update");
     }
     with_app(&app, |state, w| state.start(w, &wishes));
 
@@ -149,6 +153,16 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_person_ask_toggled(move || with_app(&a, |s, w| s.person_ask(w)));
     let a = app.clone();
     ui.on_ask_privilege_key(move || with_app(&a, |s, w| s.ask_privilege_key(w)));
+    let a = app.clone();
+    ui.on_update_acted(move || with_app(&a, |s, w| s.update_acted(w)));
+    let a = app.clone();
+    ui.on_update_hidden(move || with_app(&a, |s, w| s.update_hidden(w)));
+    let a = app.clone();
+    settings_window.on_update_acted(move || with_app(&a, |s, w| s.update_acted(w)));
+    let a = app.clone();
+    settings_window.on_update_check(move || with_app(&a, |s, w| s.look_for_update(w)));
+    let a = app.clone();
+    settings_window.on_check_updates_changed(move || with_app(&a, |s, w| s.updates_setting_changed(w)));
 
     let a = app.clone();
     settings_window.on_audio_changed(move || with_app(&a, |s, w| s.apply_audio(w)));
