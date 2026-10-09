@@ -125,7 +125,7 @@ Renamed on 2026-10-08, version 0.5.0: the program is Parrotfish now and its repo
 - Fixed: when the program corrected its `ts3server://` entry at start, because its file had
   moved or been renamed, the settings file only followed when the program was closed.
 - Version 0.5.0 was built and published by the release workflow, the first release in the new
-  repository. The releases up to 0.4.1 were in the old repository and went with it.
+  repository. The releases up to 0.4.1 were in the old repository, which is no longer public.
 
 Planned, not built: reading keys through Windows' Raw Input as a switch in settings
 (`docs/superpowers/plans/2026-10-07-raw-input-keys.md`).
