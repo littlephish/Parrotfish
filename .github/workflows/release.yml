@@ -24,7 +24,7 @@ jobs:
       RUSTFLAGS: -C target-feature=+crt-static
       TAG: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Tag matches the version
         run: python tools/package_release.py --tag "$env:TAG" --check

@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: check-${{ github.ref }}
+  group: check-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -23,14 +23,14 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Rust toolchain
         run: |
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index
