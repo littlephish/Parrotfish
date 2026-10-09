@@ -332,7 +332,7 @@ pub fn own_file(name: &str) -> bool {
 pub fn stranger(listing: &[(String, bool)]) -> Option<String> {
     listing
         .iter()
-        .find(|(name, folder)| if *folder { false } else { !own_file(name) })
+        .find(|(name, folder)| if *folder { !name.eq_ignore_ascii_case(STAGING) } else { !own_file(name) })
         .map(|(name, _)| name.clone())
 }
 
