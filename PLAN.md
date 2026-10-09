@@ -124,6 +124,8 @@ Renamed on 2026-10-08, version 0.5.0: the program is Parrotfish now and its repo
   old program file and its shortcuts away.
 - Fixed: when the program corrected its `ts3server://` entry at start, because its file had
   moved or been renamed, the settings file only followed when the program was closed.
+- Version 0.5.0 was built and published by the release workflow, the first release in the new
+  repository. The releases up to 0.4.1 were in the old repository and went with it.
 
 Planned, not built: reading keys through Windows' Raw Input as a switch in settings
 (`docs/superpowers/plans/2026-10-07-raw-input-keys.md`).
@@ -601,6 +603,13 @@ ConnectOk", "level 213"). What is actually on the wire:
   Not done: an upgrade through Setup's windows by hand; a PhishSpeak older than 0.3.0
   running during the first start; a taskbar pin of the old program, which has to be made
   again.
+- The published 0.5.0 program, taken from the zip: both published files match their
+  checksums, and the run that published them passed the installer test's 73 checks first.
+  Started on the test profile as PhishSpeak had left it, it moved the folder with every file
+  unchanged, connected through a bookmark from it and read "Parrotfish 0.5.0" under About;
+  against the test server the panels read as they did for 0.4.1 ("Turned down 16 dB to match
+  the others", and "Lowered 18 dB while a priority speaker talks" during a whisper from a
+  ticked channel).
 - Speex. The decoder's output is the same, sample for sample, as that of the reference library
   (libspeex 1.2.1 built without SSE) on 60 streams, 6.7 million samples: every quality from 0 to
   10 in all three kinds, changing bit rate, silence, several frames in a packet, and lost
