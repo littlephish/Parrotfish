@@ -40,6 +40,9 @@ use crate::{
 
 const SPEAKERS_TITLE: &str = "Parrotfish speaking";
 const MAIN_TITLE: &str = "Parrotfish";
+const SETTINGS_TITLE: &str = "Parrotfish settings";
+const ICON_EVERY: u32 = 30;
+const LEAVE_WITHIN: Duration = Duration::from_secs(10);
 
 mod shortcuts;
 
@@ -246,6 +249,7 @@ pub struct App {
     speakers_window: Weak<SpeakersWindow>,
     speaker_rows: Rc<VecModel<SpeakerRow>>,
     speakers_ticks: u32,
+    icon_ticks: u32,
     speakers_empty: bool,
     speakers_look: Option<(u8, bool)>,
     roster: Roster,
@@ -312,7 +316,7 @@ pub struct App {
     update_reports: Option<Receiver<update::Report>>,
     update_source: update::Source,
     update_hidden: bool,
-    pub install_updates: bool,
+    install_updates: bool,
     trace: bool,
 }
 
@@ -352,6 +356,7 @@ impl App {
             speakers_window: speakers_window.as_weak(),
             speaker_rows: Rc::new(VecModel::default()),
             speakers_ticks: 0,
+            icon_ticks: 0,
             speakers_empty: true,
             speakers_look: None,
             roster: Roster::default(),
@@ -485,7 +490,7 @@ impl App {
         for wish in wishes {
             self.grant(w, wish.clone());
         }
-        if self.settings.check_updates || self.install_updates {
+        if self.settings.check_updates {
             self.look_for_update(w);
         }
     }
@@ -495,7 +500,7 @@ impl App {
     }
 
     pub fn look_for_update(&mut self, w: &Windows) {
-        if matches!(self.update, update::Step::Looking | update::Step::Bringing(..) | update::Step::Restarting) {
+        if update::under_way(&self.update) || self.update == update::Step::Restarting {
             return;
         }
         self.update = update::Step::Looking;
@@ -569,6 +574,9 @@ impl App {
                 _ => {}
             }
         }
+        if !update::under_way(&self.update) {
+            self.install_updates = false;
+        }
         self.publish_update(w);
     }
 
@@ -610,9 +618,14 @@ impl App {
                 self.settings.updated_from = update::Version::current().to_string();
                 let _ = self.settings.save();
                 self.update = update::Step::Restarting;
+                let _ = std::thread::Builder::new().name("ps-leave".into()).spawn(|| {
+                    std::thread::sleep(LEAVE_WITHIN);
+                    std::process::exit(0);
+                });
                 let _ = slint::quit_event_loop();
             }
             Err(problem) => {
+                update::unstage(unpacked);
                 self.update = update::Step::Failed(problem);
                 self.update_hidden = false;
             }
@@ -622,9 +635,10 @@ impl App {
     fn publish_update(&mut self, w: &Windows) {
         let place = match (&self.update, own_program()) {
             (update::Step::Found(_), Some(program)) => update::place(Path::new(&program)),
+            (update::Step::Found(_), None) => Place::Shared(String::new()),
             _ => Place::Ready,
         };
-        let shown = update::wording(&self.update, &place);
+        let shown = update::wording(&self.update, &place, self.update_source.folder());
         let offer = match shown.offer {
             Offer::Nothing => 0,
             Offer::Install => 1,
@@ -664,6 +678,10 @@ impl App {
     fn grant(&mut self, w: &Windows, wish: Wish) {
         match wish {
             Wish::Show => {}
+            Wish::Update => {
+                self.install_updates = true;
+                self.look_for_update(w);
+            }
             Wish::Link(text) => self.open_link(w, &text),
             Wish::Connect { target, nickname, channel } => {
                 self.connect_from_start(w, &StartRequest { target, nickname, channel });
@@ -2657,6 +2675,12 @@ impl App {
         self.poll_level_jobs(w);
         self.poll_capture(w);
         self.poll_update(w);
+        if self.icon_ticks % ICON_EVERY == 0 {
+            for title in [MAIN_TITLE, SETTINGS_TITLE, SPEAKERS_TITLE] {
+                platform::adopt_icon(title);
+            }
+        }
+        self.icon_ticks = self.icon_ticks.wrapping_add(1);
         let fired = self.watcher.state().take_fired();
         if fired & 1 != 0 {
             self.toggle_mic(w);

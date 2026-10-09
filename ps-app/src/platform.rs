@@ -420,6 +420,7 @@ mod imp {
     const LOCATION: u32 = 33;
     const WEB_WAIT_MS: i32 = 20_000;
     const WEB_CHUNK: usize = 64 * 1024;
+    const WEB_LONGEST: std::time::Duration = std::time::Duration::from_secs(900);
     const SHOW: i32 = 1;
 
     struct Web(isize);
@@ -475,6 +476,17 @@ mod imp {
         limit: usize,
         progress: &mut dyn FnMut(usize, Option<u64>),
     ) -> Result<super::WebReply, String> {
+        web_get_within(url, agent, limit, WEB_LONGEST, progress)
+    }
+
+    fn web_get_within(
+        url: &str,
+        agent: &str,
+        limit: usize,
+        longest: std::time::Duration,
+        progress: &mut dyn FnMut(usize, Option<u64>),
+    ) -> Result<super::WebReply, String> {
+        let started = std::time::Instant::now();
         let address = super::web_address(url).ok_or("that is not an address this program fetches")?;
         let agent = wide(agent);
         let mut session = Web(unsafe { WinHttpOpen(agent.as_ptr(), SYSTEM_PROXY, std::ptr::null(), std::ptr::null(), 0) });
@@ -531,9 +543,12 @@ mod imp {
                 if read == 0 {
                     break;
                 }
-                body.extend_from_slice(&chunk[..read as usize]);
+                body.extend_from_slice(&chunk[..(read as usize).min(chunk.len())]);
                 if body.len() > limit {
                     return Err("the file is larger than it should be".to_string());
+                }
+                if started.elapsed() > longest {
+                    return Err("the download took too long".to_string());
                 }
                 progress(body.len(), length);
             }
@@ -550,6 +565,51 @@ mod imp {
         }
         let (verb, file) = (wide("open"), wide(url));
         unsafe { ShellExecuteW(0, verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), SHOW) > 32 }
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetModuleHandleW(name: *const u16) -> isize;
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn LoadImageW(module: isize, name: *const u16, kind: u32, width: i32, height: i32, flags: u32) -> isize;
+        fn GetSystemMetrics(which: i32) -> i32;
+        fn SendMessageW(window: isize, message: u32, first: usize, second: isize) -> isize;
+    }
+
+    const OWN_ICON: usize = 1;
+    const AN_ICON: u32 = 1;
+    const SHARED: u32 = 0x8000;
+    const GET_ICON: u32 = 0x007f;
+    const SET_ICON: u32 = 0x0080;
+    const SMALL: usize = 0;
+    const BIG: usize = 1;
+    const SMALL_ACROSS: i32 = 49;
+    const SMALL_DOWN: i32 = 50;
+    const BIG_ACROSS: i32 = 11;
+    const BIG_DOWN: i32 = 12;
+
+    pub fn own_icon(small: bool) -> isize {
+        let (across, down) = if small { (SMALL_ACROSS, SMALL_DOWN) } else { (BIG_ACROSS, BIG_DOWN) };
+        unsafe {
+            let module = GetModuleHandleW(std::ptr::null());
+            LoadImageW(module, OWN_ICON as *const u16, AN_ICON, GetSystemMetrics(across), GetSystemMetrics(down), SHARED)
+        }
+    }
+
+    pub fn adopt_icon(title: &str) -> bool {
+        let Some(window) = own_window(title) else {
+            return false;
+        };
+        for (which, small) in [(SMALL, true), (BIG, false)] {
+            let icon = own_icon(small);
+            if icon != 0 && unsafe { SendMessageW(window, GET_ICON, which, 0) } != icon {
+                unsafe { SendMessageW(window, SET_ICON, which, icon) };
+            }
+        }
+        true
     }
 
     #[cfg(test)]
@@ -575,6 +635,45 @@ mod imp {
                 }
             });
             format!("http://127.0.0.1:{port}/files/thing.zip")
+        }
+
+        fn serve_in_two(first: Vec<u8>, pause: std::time::Duration, second: Vec<u8>) -> String {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            std::thread::spawn(move || {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let mut asked = [0u8; 2048];
+                    let _ = stream.read(&mut asked);
+                    let _ = stream.write_all(&first);
+                    let _ = stream.flush();
+                    std::thread::sleep(pause);
+                    let _ = stream.write_all(&second);
+                }
+            });
+            format!("http://127.0.0.1:{port}/files/slow.zip")
+        }
+
+        #[test]
+        fn a_download_that_drags_on_is_given_up() {
+            let head = b"HTTP/1.1 200 OK\r\nContent-Length: 2000\r\nConnection: close\r\n\r\n".to_vec();
+            let first = [head.clone(), vec![b'x'; 1000]].concat();
+            let pause = std::time::Duration::from_millis(900);
+            let slow = serve_in_two(first.clone(), pause, vec![b'x'; 1000]);
+            let given_up = web_get_within(&slow, "Parrotfish-test", 10_000, std::time::Duration::from_millis(300), &mut |_, _| {});
+            assert_eq!(given_up, Err("the download took too long".to_string()));
+            let patient = serve_in_two(first, pause, vec![b'x'; 1000]);
+            let whole = web_get_within(&patient, "Parrotfish-test", 10_000, std::time::Duration::from_secs(30), &mut |_, _| {});
+            assert_eq!(whole.map(|reply| reply.body.len()), Ok(2000));
+        }
+
+        #[test]
+        fn a_file_larger_than_one_read_arrives_in_order() {
+            let body: Vec<u8> = (0..300_000u32).map(|n| (n % 251) as u8).collect();
+            let mut answer = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
+            answer.extend_from_slice(&body);
+            let (reply, seen) = get(&serve(answer), 400_000);
+            assert_eq!(reply.map(|reply| reply.body), Ok(body));
+            assert!(seen.len() > 1 && seen.windows(2).all(|pair| pair[0].0 < pair[1].0), "progress went backwards or came once");
         }
 
         fn get(url: &str, limit: usize) -> (Result<crate::platform::WebReply, String>, Vec<(usize, Option<u64>)>) {
@@ -625,6 +724,13 @@ mod imp {
             let missing = b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot here.".to_vec();
             let (reply, _) = get(&serve(missing), 10_000);
             assert_eq!(reply.map(|reply| (reply.status, reply.body.len())), Ok((404, 0)));
+        }
+
+        #[test]
+        fn the_program_carries_its_icon_in_the_sizes_windows_asks_for() {
+            assert_ne!(own_icon(true), 0, "no small icon was linked into the program");
+            assert_ne!(own_icon(false), 0, "no big icon was linked into the program");
+            assert!(!adopt_icon("a window this test does not have"));
         }
 
         #[test]
@@ -711,6 +817,10 @@ mod imp {
         false
     }
 
+    pub fn adopt_icon(_title: &str) -> bool {
+        false
+    }
+
     pub fn local_hms() -> (u32, u32, u32) {
         let secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -721,8 +831,8 @@ mod imp {
 }
 
 pub use imp::{
-    allow_front, bring_front, clear_link_handler, key_char, key_down, link_handler, local_hms, on_a_screen, open_link,
-    overlay_style, own_front_window, protect, set_link_handler, show_own_window, unprotect, web_get,
+    adopt_icon, allow_front, bring_front, clear_link_handler, key_char, key_down, link_handler, local_hms, on_a_screen,
+    open_link, overlay_style, own_front_window, protect, set_link_handler, show_own_window, unprotect, web_get,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

@@ -50,9 +50,13 @@ fn start_wishes(arguments: &[String], scheme: &str) -> Vec<Wish> {
                     *channel = name.clone();
                 }
             }
+            "--update" => wishes.push(Wish::Update),
             link if links::is_link(link, scheme) => wishes.push(Wish::Link(link.to_string())),
             _ => {}
         }
+    }
+    if wishes.iter().any(|wish| matches!(wish, Wish::Link(_))) {
+        wishes.retain(|wish| matches!(wish, Wish::Link(_)));
     }
     wishes
 }
@@ -80,9 +84,6 @@ fn main() -> Result<(), slint::PlatformError> {
     let app = Rc::new(RefCell::new(App::new(&ui, &settings_window, &speakers_window, settings)));
     if let (Some(listener), Ok(mut state)) = (listener, app.try_borrow_mut()) {
         state.attach_instance(listener);
-    }
-    if let Ok(mut state) = app.try_borrow_mut() {
-        state.install_updates = arguments.iter().any(|arg| arg == "--update");
     }
     with_app(&app, |state, w| state.start(w, &wishes));
 
@@ -255,4 +256,44 @@ fn main() -> Result<(), slint::PlatformError> {
         state.shutdown();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn asked(arguments: &[&str]) -> Vec<Wish> {
+        let arguments: Vec<String> = arguments.iter().map(|argument| argument.to_string()).collect();
+        start_wishes(&arguments, "ts3server")
+    }
+
+    fn connect(target: &str, nickname: &str, channel: &str) -> Wish {
+        Wish::Connect { target: target.to_string(), nickname: nickname.to_string(), channel: channel.to_string() }
+    }
+
+    #[test]
+    fn the_command_line_is_read_into_what_was_asked_for() {
+        assert_eq!(asked(&[]), Vec::new());
+        assert_eq!(
+            asked(&["--connect", "Reef Runners", "--nickname", "Pike", "--channel", "Deep Rock", "--connect", "other.example.org:9988"]),
+            vec![connect("Reef Runners", "Pike", "Deep Rock"), connect("other.example.org:9988", "", "")]
+        );
+        assert_eq!(asked(&["--update"]), vec![Wish::Update]);
+        assert_eq!(asked(&["--connect", "Reef", "--update"]), vec![connect("Reef", "", ""), Wish::Update]);
+        assert_eq!(asked(&["--nickname", "Pike", "--loud", "--connect"]), Vec::new(), "orders with nothing to apply to");
+        assert_eq!(asked(&["ts3server://example.org?port=9988"]), vec![Wish::Link("ts3server://example.org?port=9988".to_string())]);
+    }
+
+    #[test]
+    fn a_link_cannot_bring_orders_of_its_own() {
+        let link = Wish::Link("ts3server://example.org".to_string());
+        for smuggled in [
+            &["ts3server://example.org", "--connect", "evil.example", "--nickname", "Admin"][..],
+            &["ts3server://example.org", "--update"][..],
+            &["--update", "ts3server://example.org"][..],
+            &["--connect", "evil.example", "ts3server://example.org", "--channel", "Trap"][..],
+        ] {
+            assert_eq!(asked(smuggled), vec![link.clone()], "{smuggled:?}");
+        }
+    }
 }

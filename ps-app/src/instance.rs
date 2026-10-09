@@ -19,6 +19,7 @@ const ACCEPTED: &[u8] = b"taken\n";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Wish {
     Show,
+    Update,
     Link(String),
     Connect { target: String, nickname: String, channel: String },
 }
@@ -32,6 +33,7 @@ pub fn write_wishes(wishes: &[Wish]) -> String {
     for wish in wishes {
         match wish {
             Wish::Show => out.push_str("show"),
+            Wish::Update => out.push_str("update"),
             Wish::Link(link) => {
                 out.push_str("link\t");
                 out.push_str(&clean(link));
@@ -51,6 +53,7 @@ pub fn read_wishes(text: &str) -> Vec<Wish> {
         let mut parts = line.split('\t');
         match (parts.next(), parts.next(), parts.next(), parts.next(), parts.next()) {
             (Some("show"), None, ..) => wishes.push(Wish::Show),
+            (Some("update"), None, ..) => wishes.push(Wish::Update),
             (Some("link"), Some(link), None, ..) if !link.is_empty() => wishes.push(Wish::Link(link.to_string())),
             (Some("connect"), Some(target), Some(nickname), Some(channel), None) if !target.is_empty() => {
                 wishes.push(Wish::Connect {
@@ -303,6 +306,8 @@ mod tests {
     fn wishes_survive_being_written_down() {
         assert_eq!(read_wishes(&write_wishes(&sample())), sample());
         assert_eq!(write_wishes(&[Wish::Show]), "show\n");
+        assert_eq!(read_wishes(&write_wishes(&[Wish::Update, Wish::Show])), vec![Wish::Update, Wish::Show]);
+        assert_eq!(read_wishes("update\tnow\nupdates\n"), Vec::new());
         assert_eq!(read_wishes(""), Vec::new());
         assert_eq!(read_wishes("show\tmore\nlink\t\nconnect\tonly\nnonsense\n\nlink\ta\tb\n"), Vec::new());
         let odd = Wish::Connect { target: "a\tb\nc".to_string(), nickname: "n\r".to_string(), channel: String::new() };

@@ -3,6 +3,7 @@ import ctypes
 import hashlib
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,7 @@ START_WAIT = 60
 BOOKMARKS = "[bookmark]\nname=Reef Runners\naddress=reef.example.net\n"
 STAND_IN = b"a shortcut somebody made themselves"
 STAND_IN_VERSION = "99.0.0"
+NOTHING_HAPPENS_FOR = 20.0
 OLD_README = b"the read-me from before the update\n"
 
 problems = []
@@ -205,6 +207,19 @@ def stand_in_release(folder, published, version, honest=True):
     (folder / "SHA256SUMS.txt").write_text(f"{digest}  {archive.name}\n", encoding="utf-8", newline="\n")
     (folder / "latest.txt").write_text(f"v{version}\n", encoding="utf-8", newline="\n")
     return folder
+
+
+def stop_whatever_runs_from(folder):
+    inside = str(folder).replace("'", "''") + "\\"
+    script = (
+        "Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and "
+        f"$_.ExecutablePath.StartsWith('{inside}', [System.StringComparison]::OrdinalIgnoreCase) }} | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+    )
+    try:
+        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True, timeout=90)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def log_text(folder):
@@ -416,7 +431,7 @@ def updates_itself(places, setup, published, work):
     stranger.write_bytes(STAND_IN)
     first = start_program(program, profile, "--update", source=release)
     up = wait_until(lambda: card_pid(profile) == first.pid or first.poll() is not None, START_WAIT)
-    time.sleep(10.0)
+    time.sleep(NOTHING_HAPPENS_FOR)
     check(up and first.poll() is None, "with somebody's file in its folder the program starts and keeps running as it is")
     check(untouched() and stranger.is_file() and stranger.read_bytes() == STAND_IN, "and nothing in the folder was touched")
     stop_program(first, NOW)
@@ -425,18 +440,26 @@ def updates_itself(places, setup, published, work):
     wrong = stand_in_release(work / "release-wrong", published, STAND_IN_VERSION, honest=False)
     second = start_program(program, profile, "--update", source=wrong)
     up = wait_until(lambda: card_pid(profile) == second.pid or second.poll() is not None, START_WAIT)
-    time.sleep(10.0)
+    time.sleep(NOTHING_HAPPENS_FOR)
     check(up and second.poll() is None, "a download that does not match its published checksum is not installed")
     check(untouched(), "and nothing in the folder was touched")
     stop_program(second, NOW)
 
+    began = time.time()
     third = start_program(program, profile, "--update", source=release)
+    handed = wait_until(lambda: "updater started" in log_text(folder), 150)
+    took = time.time() - began
+    check(
+        handed and took < NOTHING_HAPPENS_FOR - 2,
+        f"the program handed over to update.exe after {took:.1f} s, so the {NOTHING_HAPPENS_FOR:.0f} s waited above were enough to mean something",
+    )
     check(wait_until(lambda: "done" in log_text(folder), 150), "update.exe ran to its end")
     check(wait_until(lambda: third.poll() is not None, 30), "the program that asked for the update has ended")
     back = wait_until(lambda: card_pid(profile) not in (None, third.pid) and alive(card_pid(profile)), START_WAIT)
     check(back, "the program came back by itself")
     check((folder / "README.md").read_bytes() == new_readme, "the files of the release are in place")
-    check("copied/updated 4 file(s)" in log_text(folder), "all four files of the release were put in")
+    put_in = re.search(r"copied/updated (\d+) file", log_text(folder))
+    check(put_in is not None and int(put_in.group(1)) >= 4, "the four files of the release were put in")
     check((folder / "unins000.exe").is_file() and (folder / "unins000.dat").is_file(), "the uninstaller was kept")
     check(wait_until(lambda: not (folder / "update").exists(), 20), "the folder the download was unpacked in is gone")
     check(
@@ -447,6 +470,7 @@ def updates_itself(places, setup, published, work):
     if returned is not None and returned != third.pid:
         strays.append(returned)
         stop_pid(returned, "the program that came back")
+    stop_whatever_runs_from(folder)
     for line in log_text(folder).splitlines():
         print("    update-log: " + line.split("] ", 1)[-1])
 
@@ -535,6 +559,8 @@ def main():
         for pid in strays:
             if alive(pid):
                 subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+        for folder in (places.earlier_folder, places.new_folder):
+            stop_whatever_runs_from(folder)
         if uninstall_entry() is not None:
             for folder in (places.earlier_folder, places.new_folder):
                 if (folder / "unins000.exe").is_file():

@@ -7,7 +7,7 @@ joins a server, shows the channel tree, chats, and does voice (Opus) both ways.
 
 Working end to end against a real TeamSpeak 3.13.8 server: login, channel tree, channel
 switching (incl. password channels), text chat, microphone capture → Opus → server, and
-server → Opus → speakers, with and without voice encryption. 417 unit tests green.
+server → Opus → speakers, with and without voice encryption. 423 unit tests green.
 
 The window is the compact tree layout in the Twilight reef palette (design:
 `docs/superpowers/specs/2026-10-06-compact-window-design.md`): spacer channels are drawn as
@@ -131,11 +131,14 @@ Added on 2026-10-09, version 0.6.0: Parrotfish updates itself.
 
 - At start it asks GitHub for the newest release (Settings, About switches that off and has a
   button to look at once). A newer one is announced in the window; pressing Update downloads
-  it, checks it, hands over to `update.exe` and restarts. `--update` does it unasked.
+  it, checks it, hands over to `update.exe` and restarts. `--update` does it unasked, for
+  the one look it starts.
 - `update.exe` is the updater from Eve-Strait and Ore Hold Watcher, taken over unchanged
   (`updater/`), built with the C runtime linked in and shipped beside `Parrotfish.exe` in the
   zip and by the installer.
 - A copy only replaces itself in a folder that holds nothing but its own files.
+- The program has an icon, a parrotfish on a blue tile: on the program file, in the title bar
+  and the taskbar, on the installer and its shortcuts.
 
 Planned, not built: reading keys through Windows' Raw Input as a switch in settings
 (`docs/superpowers/plans/2026-10-07-raw-input-keys.md`).
@@ -193,7 +196,7 @@ order against the test server, not by ear and not with an official client talkin
 | `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client/group book, voice and whispers in/out, events; `spacer` recognises spacer channels, `filetransfer` fetches icons over the server's file port, `resolve` finds a server through SRV, TSDNS or its plain name | done, 35 tests + live tests |
 | `ps-oldcodecs` | Speex decoder (8, 16 and 32 kHz) in safe Rust, no dependencies | done, 27 tests + 3 run by hand |
 | `ps-voice` | Opus codec, Speex playback at 48 kHz, resampler, jitter buffer + mixer (talkers keyed by connection and client, a volume per talker, lowering for priority speakers), evening out how loud talkers are (`level.rs`), VAD/PTT gate, lanes (which key is held decides where a frame goes), echo canceller (`echo.rs`), noise suppression (`denoise.rs`), automatic gain (`agc.rs`), event sounds (`cues.rs`), cpal device I/O (WASAPI) | done, 127 tests + live tests |
-| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `mic.rs` what each server is told about the microphone and when, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` keeping a window's size across displays, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 164 tests + live tests |
+| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `mic.rs` what each server is told about the microphone and when, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` keeping a window's size across displays, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 170 tests + live tests |
 | `ps-serverquery` | Text protocol over TCP 10011 | not started |
 
 Threads: UI thread (Slint, 33 ms timer drains client events) · `ps-client` actor + UDP reader ·
@@ -682,15 +685,22 @@ deliberately bad icons on the test server (`--count N`, `--upload FILE`, `--assi
 `--clear`); `speex_vectors.py build|signals|streams|pack|full --work DIR` makes the Speex
 reference streams from libspeex 1.2.1 (`build` and `streams` need gcc and make, `signals` and
 `pack` need numpy; `full` puts the whole set where the by-hand test looks for it);
+`make_icon.py <picture>` writes `ps-app/ui/app-icon.ico` and `app-icon.png` from a PNG, or an
+SVG that carries one: it finds the filled square tile in the picture, cuts it out and shrinks
+it to the sizes Windows uses (needs numpy);
 `package_release.py [--tag vX.Y.Z] [--skip-installer]` builds the
 release program with the C runtime linked in and writes the zip, the installer (needs Inno
 Setup 6) and their checksums to `dist/`; `installer_test.py` is for a build machine. It
 installs the program as PhishSpeak with the installer script from before the rename
-(`installer/upgrade-test/`) and then goes through three cases: the new installer over it
+(`installer/upgrade-test/`) and then goes through four cases: the new installer over it
 while the program runs, followed by the first start of the new program (settings folder
 moved, links entry corrected and written to the settings, a second start handed over) and
-its removal; the new installer over it and removal before the program ever ran; and a first
-install beside shortcuts named PhishSpeak that the installer never made. After each step it
+its removal; the new installer over it and removal before the program ever ran; a first
+install beside shortcuts named PhishSpeak that the installer never made; and the installed
+program updating itself from a stand-in release made of the build's own zip (with somebody's
+file in its folder, and then with a checksum that does not match, it must leave everything as
+it is; then the update has to go through, the program has to come back, and the uninstaller
+has to be there still and remove everything). After each step it
 checks files, shortcuts, what Windows lists and a stand-in links entry. It installs and
 removes for the current user, so it refuses to run outside GitHub Actions without
 `--this-pc`, and anywhere the program is already installed.
@@ -896,6 +906,11 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   leaves them alone and the switch goes off. If Parrotfish's own file has moved, the entry is
   pointed at the new place at the next start. `Parrotfish.exe --forget-links` does the same as
   switching off and is what the uninstaller runs.
+- A link on the command line is taken alone (`start_wishes`): `--connect`, `--nickname`,
+  `--channel` and `--update` beside it are dropped. Windows starts the program for a link as
+  `"Parrotfish.exe" "<the link>"`, and a link holding a quotation mark, from something that
+  does not encode it, would otherwise read as further arguments and connect or update
+  unasked.
 - One Parrotfish per profile. A second start hands its link or `--connect` to the first and
   leaves; with nothing to hand over it brings the first one's window to the front. The first one
   listens on a loopback port and writes the port and a random word to
@@ -1008,13 +1023,44 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   - Other running copies are not closed. The helper replaces a file that is in use by
     renaming it, after waiting up to a minute for the program file to come free.
   - `updater/` is kept byte for byte equal to the folder in Eve-Strait; it is its own cargo
-    project (`exclude` in the workspace) and is built from inside its folder, because only
-    then does its `.cargo/config.toml` link the C runtime in. Built from the repository root
-    with `--manifest-path`, as Eve-Strait's release workflow does, `update.exe` needs
-    `VCRUNTIME140.dll`, which the temporary folder it runs from does not have; the packaging
-    script refuses to ship a program that names that DLL.
+    project (`exclude` in the workspace). The packaging script builds it with the C runtime
+    linked in by setting `RUSTFLAGS` itself, which is what decides; it also runs cargo inside
+    the folder, where the folder's own `.cargo/config.toml` asks for the same. That file alone
+    is not enough: cargo reads it only when started inside the folder, so built from the
+    repository root with `--manifest-path`, as Eve-Strait's release workflow does, `update.exe`
+    needs `VCRUNTIME140.dll`, which the temporary folder it runs from does not have. The
+    packaging script refuses to ship a program that names that DLL.
+  - Two copies cannot lay their files out at once: an `update\unpacked` folder that was
+    touched less than three minutes ago belongs to an update under way and stops a second
+    one; an older one is a leftover and is replaced. A hand-over that fails takes the unpacked
+    files away again.
+  - A download is given up after 15 minutes, however slowly it comes.
+  - After handing over, the program leaves within ten seconds even if closing down hangs, so
+    that the helper is not left waiting for a program that is still there.
+  - `--update` is a wish like `--connect`: if Parrotfish is already running, the second start
+    passes it on and the running one updates. It counts for the look it starts and the
+    download that follows (`update::under_way`); once those have ended, with an update or
+    without, looking again only offers. Before, it stayed in force for as long as the program
+    ran, and a later press on "Look now" would have installed and restarted without a word.
+    When the releases come from a folder (`PARROTFISH_UPDATE_FROM`) the announcement names
+    the folder.
+  - Between the last look at the folder and the helper's work lies the time the program needs
+    to close, up to a minute if another copy keeps the program file busy. A file that lands
+    in the program's folder in that time is removed with the rest. The README says not to
+    keep files there.
   - After the program has updated itself, Windows' list of installed programs still shows the
     version the installer put there.
+- The icon (`ps-app/ui/app-icon.ico`). The picture it was made from held a large fish and,
+  beside it, the finished tile; `tools/make_icon.py` takes the tile, the one connected shape
+  that fills a square, makes its inside fully solid (the picture was a shade see-through) and
+  shrinks it to 256, 64, 48, 40, 32, 24, 20 and 16 pixels, averaging in linear light with the
+  transparency multiplied in, so the edge of the tile does not darken. `build.rs` writes the
+  eight pictures as a resource file and gives it to the linker; no resource compiler and no
+  crate is involved. A window gets its small and its big icon from that resource
+  (`platform::adopt_icon`, looked at once a second, because the toolkit makes a window anew
+  when it is shown again); given one picture through the toolkit instead, Windows would have
+  scaled it for both. The packaging script refuses a program that lacks the icon, a test
+  loads it, and the installer carries the same file.
 - Release builds: the workflow `Release` runs only for a pushed tag `v<version>`, checks that
   the tag matches the version in `Cargo.toml`, runs the tests, builds with the C runtime linked
   in (`-C target-feature=+crt-static`, so no Visual C++ runtime has to be installed), and

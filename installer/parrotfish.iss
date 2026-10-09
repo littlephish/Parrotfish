@@ -33,6 +33,7 @@ OutputBaseFilename=Parrotfish-{#AppVersion}-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\ps-app\ui\app-icon.ico
 UninstallDisplayName=Parrotfish
 UninstallDisplayIcon={app}\Parrotfish.exe
 CloseApplications=yes
@@ -62,6 +63,7 @@ Name: "{autodesktop}\Parrotfish"; Filename: "{app}\Parrotfish.exe"; Tasks: deskt
 [UninstallDelete]
 Type: files; Name: "{app}\update-log.txt"
 Type: files; Name: "{app}\Parrotfish.exe.old*"
+Type: files; Name: "{app}\PhishSpeak.exe.old*"
 Type: files; Name: "{app}\update.exe.old*"
 Type: files; Name: "{app}\README.md.old*"
 Type: files; Name: "{app}\THIRD-PARTY-NOTICES.txt.old*"

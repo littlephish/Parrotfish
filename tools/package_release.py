@@ -83,6 +83,26 @@ def needs_runtime(path):
     return b"VCRUNTIME140" in data or b"API-MS-WIN-CRT" in data
 
 
+def carries_icon(path):
+    if os.name != "nt":
+        return True
+    import ctypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.LoadLibraryExW.restype = ctypes.c_void_p
+    kernel.LoadLibraryExW.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p, ctypes.c_uint32]
+    kernel.FindResourceW.restype = ctypes.c_void_p
+    kernel.FindResourceW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    kernel.FreeLibrary.argtypes = [ctypes.c_void_p]
+    module = kernel.LoadLibraryExW(str(path), None, 0x2 | 0x20)
+    if not module:
+        return False
+    try:
+        return bool(kernel.FindResourceW(module, 1, 14))
+    finally:
+        kernel.FreeLibrary(module)
+
+
 def build_updater(skip):
     built = UPDATER_TARGET / "release" / "update.exe"
     if not skip:
@@ -204,6 +224,8 @@ def main():
         fail(f"{built} does not exist; run without --skip-build first")
     if needs_runtime(built):
         fail("the program would need the Visual C++ runtime, which a PC may not have; it has to be linked in")
+    if not carries_icon(built):
+        fail("the program was built without its icon")
     updater = build_updater(args.skip_build)
 
     if DIST.exists():

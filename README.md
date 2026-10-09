@@ -1,5 +1,7 @@
 # Parrotfish
 
+<img src="ps-app/ui/app-icon.png" width="96" align="right" alt="The Parrotfish icon: a parrotfish on a blue tile">
+
 Parrotfish is an unofficial TeamSpeak 3 client written in Rust with a [Slint](https://slint.dev) GUI.
 It signs in with a regular TeamSpeak identity, shows the channel tree, sends and receives text
 chat, and carries voice in both directions with Opus. It also plays Speex, which old servers
@@ -75,8 +77,10 @@ target\release\ps-app.exe --connect host[:port] --nickname YourName --channel "C
 ```
 
 `--connect` can be repeated to open several servers; `--nickname` and `--channel` are optional
-and apply to the `--connect` before them. A `ts3server://` link can be given the same way. If
-Parrotfish is already running, a second start passes these on to it and leaves.
+and apply to the `--connect` before them. A `ts3server://` link can be given the same way; a
+link is always taken alone, and whatever else stands beside it is ignored, so that a link
+cannot carry orders of its own. If Parrotfish is already running, a second start passes these
+on to it and leaves.
 
 On first start Parrotfish creates an identity for you. To use one from the TeamSpeak client,
 export it there and add the file under Settings, Identities; Parrotfish reads the file where it
@@ -90,13 +94,19 @@ When it starts, Parrotfish asks GitHub which release is the newest; it sends not
 name and version. If there is a newer one, a line in the window says so. Nothing is installed
 until you press Update: Parrotfish then downloads the release, checks it against the checksum
 published with it, and hands over to `update.exe`, which swaps the files once Parrotfish has
-closed and starts it again. `Parrotfish.exe --update` does the same without being asked.
-Settings, About has the switch for the asking and a button to look right away.
+closed and starts it again. `Parrotfish.exe --update` looks once and installs what it finds
+without asking, also when Parrotfish is already running. Settings, About has the switch for
+the asking and a button to look right away. The checksum catches a download that is broken or
+mixed up; it is not a signature, and the files are not signed.
+
+Version 0.5.0 and the PhishSpeak versions before it do not look for updates. Install a newer
+release over them once by hand; from then on Parrotfish offers its updates itself.
 
 Parrotfish only replaces itself in a folder of its own. `update.exe` makes the folder match
 the new release, which means it removes every file the release does not have, so a copy that
 shares its folder with anything else (a copy on the desktop, say) only offers the download
-page. Give a portable copy a folder of its own, or use the installer.
+page. Give a portable copy a folder of its own, or use the installer, and do not keep files of
+your own in the program's folder.
 
 `update.exe` is not specific to Parrotfish. The `updater` folder is the same, byte for byte, as
 the one in [Eve-Strait](https://github.com/littlephish/eve-strait/tree/main/updater) and Ore
@@ -114,7 +124,8 @@ git push origin v0.5.0
 
 The `Release` workflow checks that the tag is `v` plus that version, runs the tests, builds the
 program with the C runtime linked in, tries the installer on the build machine
-(`tools/installer_test.py`: over an installed PhishSpeak, and on its own), and publishes an
+(`tools/installer_test.py`: over an installed PhishSpeak, on its own, and the installed
+program updating itself from a stand-in release), and publishes an
 installer (`Parrotfish-<version>-setup.exe`, per user, no administrator prompt), a zip of the
 program with `update.exe`, and `SHA256SUMS.txt` on the repository's Releases page. The zip
 must keep its name and stay flat, and the checksum list must stay, because installed copies

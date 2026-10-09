@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
@@ -22,6 +23,7 @@ const MAX_ARCHIVE: usize = 300 * 1024 * 1024;
 const MAX_UNPACKED: usize = 600 * 1024 * 1024;
 const MAX_ENTRIES: usize = 64;
 const MAX_NAME: usize = 80;
+const ANOTHER_UPDATE_TAKES: Duration = Duration::from_secs(180);
 const OWN_FILES: [&str; 9] = [
     "parrotfish.exe",
     "update.exe",
@@ -154,6 +156,13 @@ impl Source {
         match folder {
             Some(folder) if !folder.is_empty() => Source::Folder(PathBuf::from(folder)),
             _ => Source::GitHub,
+        }
+    }
+
+    pub fn folder(&self) -> Option<&Path> {
+        match self {
+            Source::GitHub => None,
+            Source::Folder(folder) => Some(folder),
         }
     }
 
@@ -361,9 +370,24 @@ pub fn place(program: &Path) -> Place {
 }
 
 pub fn stage(folder: &Path, entries: &[Entry]) -> Result<PathBuf, String> {
+    stage_unless_busy(folder, entries, ANOTHER_UPDATE_TAKES)
+}
+
+pub fn unstage(unpacked: &Path) {
+    let _ = fs::remove_dir_all(unpacked);
+    if let Some(staging) = unpacked.parent() {
+        let _ = fs::remove_dir(staging);
+    }
+}
+
+pub fn stage_unless_busy(folder: &Path, entries: &[Entry], busy_for: Duration) -> Result<PathBuf, String> {
     let unpacked = folder.join(STAGING).join(UNPACKED);
     let cannot = |what: &str, problem: std::io::Error| format!("the program's folder could not be written to ({what}: {problem})");
     if unpacked.exists() {
+        let age = fs::metadata(&unpacked).and_then(|found| found.modified()).ok().and_then(|at| at.elapsed().ok());
+        if age.is_some_and(|age| age < busy_for) {
+            return Err("another copy of Parrotfish seems to be updating this folder right now; try again in a few minutes".to_string());
+        }
         fs::remove_dir_all(&unpacked).map_err(|e| cannot("clearing an earlier download", e))?;
     }
     fs::create_dir_all(&unpacked).map_err(|e| cannot("making room for the download", e))?;
@@ -437,6 +461,10 @@ pub enum Step {
     Failed(String),
 }
 
+pub fn under_way(step: &Step) -> bool {
+    matches!(step, Step::Looking | Step::Bringing(..))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Offer {
     Nothing,
@@ -451,7 +479,7 @@ pub struct Wording {
     pub offer: Offer,
 }
 
-pub fn wording(step: &Step, place: &Place) -> Wording {
+pub fn wording(step: &Step, place: &Place, from: Option<&Path>) -> Wording {
     let quiet = |about: &str| Wording { banner: String::new(), about: about.to_string(), offer: Offer::Nothing };
     let both = |text: String, offer: Offer| Wording { banner: text.clone(), about: text, offer };
     match step {
@@ -459,23 +487,23 @@ pub fn wording(step: &Step, place: &Place) -> Wording {
         Step::Looking => quiet("Looking for a newer version\u{2026}"),
         Step::Unreachable(problem) => quiet(&format!("Could not look for a newer version: {problem}.")),
         Step::Newest => quiet("You have the newest version."),
-        Step::Found(version) => match place {
-            Place::Ready => both(format!("Parrotfish {version} is available. Updating restarts Parrotfish."), Offer::Install),
-            Place::OtherName(name) => both(
-                format!("Parrotfish {version} is available. This copy is called {name}, so it will not replace itself."),
-                Offer::Page,
-            ),
-            Place::Shared(name) if name.is_empty() => both(
-                format!("Parrotfish {version} is available. This copy could not look at its own folder, so it will not replace itself."),
-                Offer::Page,
-            ),
-            Place::Shared(name) => both(
-                format!(
-                    "Parrotfish {version} is available. This copy shares its folder with other things ({name}), so it will not replace itself there."
+        Step::Found(version) => {
+            let found = match from {
+                Some(folder) => format!("Parrotfish {version} is available, not from GitHub but from the folder {}.", folder.display()),
+                None => format!("Parrotfish {version} is available."),
+            };
+            match place {
+                Place::Ready => both(format!("{found} Updating restarts Parrotfish."), Offer::Install),
+                Place::OtherName(name) => both(format!("{found} This copy is called {name}, so it will not replace itself."), Offer::Page),
+                Place::Shared(name) if name.is_empty() => {
+                    both(format!("{found} This copy could not look at its own folder, so it will not replace itself."), Offer::Page)
+                }
+                Place::Shared(name) => both(
+                    format!("{found} This copy shares its folder with other things ({name}), so it will not replace itself there."),
+                    Offer::Page,
                 ),
-                Offer::Page,
-            ),
-        },
+            }
+        }
         Step::Bringing(version, percent) => both(format!("Getting Parrotfish {version}: {percent} %"), Offer::Nothing),
         Step::Restarting => both("Restarting to finish the update.".to_string(), Offer::Nothing),
         Step::Failed(problem) => both(format!("The update did not work: {problem}. Nothing was changed."), Offer::Page),
@@ -688,7 +716,9 @@ mod tests {
         let sums = format!("{}  Parrotfish-0.6.2-windows-x64.zip\n{} *Parrotfish-0.6.2-setup.exe\nshort  other.zip\n", "ab".repeat(32), "CD".repeat(32));
         assert_eq!(sum_for(&sums, "Parrotfish-0.6.2-windows-x64.zip"), Some("ab".repeat(32)));
         assert_eq!(sum_for(&sums, "Parrotfish-0.6.2-setup.exe"), Some("cd".repeat(32)));
-        assert_eq!(sum_for(&sums, "other.zip"), None, "a sum of the wrong length");
+        assert_eq!(sum_for(&sums, "other.zip"), None, "a sum that is not one");
+        let cut = format!("{}  cut.zip\n{}  long.zip\n", "ab".repeat(31), "ab".repeat(33));
+        assert_eq!((sum_for(&cut, "cut.zip"), sum_for(&cut, "long.zip")), (None, None), "sums of the wrong length");
         assert_eq!(sum_for(&sums, "windows-x64.zip"), None, "part of a name is not the name");
         assert_eq!(sum_for("", "x"), None);
         assert_eq!(sum_for(&format!("{}  x\n", "zz".repeat(32)), "x"), None);
@@ -823,8 +853,11 @@ mod tests {
 
         assert_eq!(unpack(&zip_of(&[("README.md", b"only words", false)])), Err("the download does not hold Parrotfish.exe".to_string()));
         assert!(unpack(&zip_of(&[])).is_err());
-        let crowd: Vec<(String, Vec<u8>)> = (0..MAX_ENTRIES + 1).map(|n| (format!("file{n}.txt"), vec![1u8])).collect();
-        let crowd: Vec<(&str, &[u8], bool)> = crowd.iter().map(|(name, data)| (name.as_str(), data.as_slice(), false)).collect();
+        let crowd: Vec<(String, Vec<u8>)> = (0..MAX_ENTRIES).map(|n| (format!("file{n}.txt"), vec![1u8])).collect();
+        let mut crowd: Vec<(&str, &[u8], bool)> = crowd.iter().map(|(name, data)| (name.as_str(), data.as_slice(), false)).collect();
+        crowd[0] = ("Parrotfish.exe", b"program", false);
+        assert_eq!(unpack(&zip_of(&crowd)).map(|entries| entries.len()), Ok(MAX_ENTRIES), "as many entries as are allowed");
+        crowd.push(("one-too-many.txt", b"x", false));
         assert!(unpack(&zip_of(&crowd)).is_err(), "more entries than a release has");
     }
 
@@ -997,7 +1030,7 @@ mod tests {
         fs::create_dir_all(folder.join("update").join("unpacked")).unwrap();
         fs::write(folder.join("update").join("unpacked").join("stale.txt"), "from a try that failed").unwrap();
         let entries = unpack(&release()).unwrap();
-        let unpacked = stage(&folder, &entries).expect("a folder that can be written to");
+        let unpacked = stage_unless_busy(&folder, &entries, Duration::ZERO).expect("a folder that can be written to");
         assert_eq!(unpacked, folder.join("update").join("unpacked"));
         let mut laid_out: Vec<String> = fs::read_dir(&unpacked).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
         laid_out.sort();
@@ -1007,7 +1040,10 @@ mod tests {
         assert_eq!(fs::read_to_string(folder.join("Parrotfish.exe")).unwrap(), "old program", "the program itself is not touched yet");
 
         fs::remove_file(folder.join("unins000.msg")).unwrap();
-        let again = stage(&folder, &entries).unwrap();
+        let busy = stage(&folder, &entries);
+        assert!(busy.is_err_and(|problem| problem.contains("another copy of Parrotfish")), "two copies staged into one folder at once");
+        assert!(unpacked.join("Parrotfish.exe").is_file(), "and the first one's files were pulled from under it");
+        let again = stage_unless_busy(&folder, &entries, Duration::ZERO).unwrap();
         assert!(!again.join("unins000.msg").exists() && !again.join("stale.txt").exists());
 
         assert_eq!(helper_for(&folder, &again), Some(again.join("update.exe")), "the helper that came with the new release is used");
@@ -1018,6 +1054,12 @@ mod tests {
         fs::remove_file(folder.join("update.exe")).unwrap();
         assert_eq!(helper_for(&folder, &again), None);
         assert!(hand_over(&folder, &again).is_err_and(|problem| problem.contains("update.exe is missing")));
+        unstage(&again);
+        assert!(!folder.join("update").exists(), "a failed hand-over leaves nothing staged");
+        fs::create_dir_all(folder.join("update").join("unpacked")).unwrap();
+        fs::write(folder.join("update").join("mine.txt"), "somebody's").unwrap();
+        unstage(&folder.join("update").join("unpacked"));
+        assert!(folder.join("update").join("mine.txt").is_file(), "only what was staged is taken away");
         let blocked = folder.join("blocked");
         fs::write(&blocked, "a file where the folder should be").unwrap();
         assert!(stage(&blocked, &entries).is_err_and(|problem| problem.contains("could not be written to")));
@@ -1025,29 +1067,47 @@ mod tests {
     }
 
     #[test]
+    fn being_asked_to_update_counts_while_that_look_or_download_runs_and_no_longer() {
+        let version = Version(0, 7, 0);
+        assert!(under_way(&Step::Looking) && under_way(&Step::Bringing(version, 40)));
+        for settled in [
+            Step::Unknown,
+            Step::Newest,
+            Step::Found(version),
+            Step::Unreachable("the server took too long to answer".to_string()),
+            Step::Failed("GitHub does not have that file".to_string()),
+            Step::Restarting,
+        ] {
+            assert!(!under_way(&settled), "{settled:?}");
+        }
+    }
+
+    #[test]
     fn what_is_shown_says_what_can_be_done_from_where_the_copy_sits() {
         let version = Version(0, 7, 0);
-        let ready = wording(&Step::Found(version), &Place::Ready);
+        let ready = wording(&Step::Found(version), &Place::Ready, None);
         assert_eq!(ready.banner, "Parrotfish 0.7.0 is available. Updating restarts Parrotfish.");
         assert_eq!((ready.about.as_str(), ready.offer), (ready.banner.as_str(), Offer::Install));
-        let shared = wording(&Step::Found(version), &Place::Shared("holiday.jpg".to_string()));
+        let shared = wording(&Step::Found(version), &Place::Shared("holiday.jpg".to_string()), None);
         assert!(shared.banner.contains("holiday.jpg") && shared.banner.contains("will not replace itself"));
         assert_eq!(shared.offer, Offer::Page, "it is never offered where the helper would clear out somebody's files");
-        assert_eq!(wording(&Step::Found(version), &Place::OtherName("ps-app.exe".to_string())).offer, Offer::Page);
-        assert_eq!(wording(&Step::Found(version), &Place::Shared(String::new())).offer, Offer::Page);
+        assert_eq!(wording(&Step::Found(version), &Place::OtherName("ps-app.exe".to_string()), None).offer, Offer::Page);
+        assert_eq!(wording(&Step::Found(version), &Place::Shared(String::new()), None).offer, Offer::Page);
+        let local = wording(&Step::Found(version), &Place::Ready, Some(Path::new("D:\\release")));
+        assert_eq!(local.banner, "Parrotfish 0.7.0 is available, not from GitHub but from the folder D:\\release. Updating restarts Parrotfish.");
         for silent in [Step::Unknown, Step::Looking, Step::Newest, Step::Unreachable("the server took too long to answer".to_string())] {
-            let shown = wording(&silent, &Place::Ready);
+            let shown = wording(&silent, &Place::Ready, None);
             assert_eq!((shown.banner.as_str(), shown.offer), ("", Offer::Nothing), "{silent:?}");
         }
-        assert_eq!(wording(&Step::Newest, &Place::Ready).about, "You have the newest version.");
+        assert_eq!(wording(&Step::Newest, &Place::Ready, None).about, "You have the newest version.");
         assert_eq!(
-            wording(&Step::Unreachable("the server took too long to answer".to_string()), &Place::Ready).about,
+            wording(&Step::Unreachable("the server took too long to answer".to_string()), &Place::Ready, None).about,
             "Could not look for a newer version: the server took too long to answer."
         );
-        let fetching = wording(&Step::Bringing(version, 42), &Place::Ready);
+        let fetching = wording(&Step::Bringing(version, 42), &Place::Ready, None);
         assert_eq!((fetching.banner.as_str(), fetching.offer), ("Getting Parrotfish 0.7.0: 42 %", Offer::Nothing));
-        assert_eq!(wording(&Step::Restarting, &Place::Ready).offer, Offer::Nothing);
-        let failed = wording(&Step::Failed("GitHub does not have that file".to_string()), &Place::Ready);
+        assert_eq!(wording(&Step::Restarting, &Place::Ready, None).offer, Offer::Nothing);
+        let failed = wording(&Step::Failed("GitHub does not have that file".to_string()), &Place::Ready, None);
         assert_eq!(failed.banner, "The update did not work: GitHub does not have that file. Nothing was changed.");
         assert_eq!(failed.offer, Offer::Page);
     }
