@@ -4,6 +4,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import winreg
@@ -125,7 +126,7 @@ def wait_until(condition, seconds):
 def show_log(path, only=None):
     if not path.is_file():
         return
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
     if only:
         lines = [line for line in lines if any(word in line for word in only)]
         print(f"--- what {path.name} says about closing programs:")
@@ -345,6 +346,7 @@ def main():
     parser.add_argument("--iscc", help="path to Inno Setup's ISCC.exe")
     parser.add_argument("--this-pc", action="store_true", help="run although this is not a GitHub build machine")
     args = parser.parse_args()
+    sys.stdout.reconfigure(errors="replace")
 
     if not on_github() and not args.this_pc:
         fail("this installs and removes the program for the current user; it only runs on a build machine, or with --this-pc")
@@ -395,6 +397,9 @@ def main():
             before = checked
             case()
             counts.append(checked - before)
+    except Exception as error:
+        annotate(f"installer test stopped by {type(error).__name__}: {error}")
+        raise
     finally:
         for process in started:
             if process.poll() is None:
@@ -406,14 +411,14 @@ def main():
                     subprocess.run([str(folder / "unins000.exe"), *REMOVE_QUIET], env=program_env(work / "appdata-left"), timeout=SETUP_WAIT)
             wait_until(lambda: uninstall_entry() is None, 60)
         drop_links()
+        for problem in problems[:9]:
+            annotate(f"installer test: {problem}")
         if problems:
             for log in sorted(work.glob("*.log")):
                 show_log(log)
         shutil.rmtree(work, ignore_errors=True)
 
     if problems:
-        for problem in problems[:9]:
-            annotate(f"installer test: {problem}")
         fail(f"{len(problems)} of {checked} installer checks went wrong")
     note(
         f"installer test passed: {checked} checks ({counts[0]} for an upgrade while the earlier program runs and the first start, "
