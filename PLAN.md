@@ -139,6 +139,8 @@ Added on 2026-10-09, version 0.6.0: Parrotfish updates itself.
 - A copy only replaces itself in a folder that holds nothing but its own files.
 - The program has an icon, a parrotfish on a blue tile: on the program file, in the title bar
   and the taskbar, on the installer and its shortcuts.
+- Version 0.6.0 was built and published by the release workflow. It is the first version that
+  updates itself; 0.5.0 and the versions before it have to be replaced by hand once.
 
 Planned, not built: reading keys through Windows' Raw Input as a switch in settings
 (`docs/superpowers/plans/2026-10-07-raw-input-keys.md`).
@@ -623,6 +625,50 @@ ConnectOk", "level 213"). What is actually on the wire:
   against the test server the panels read as they did for 0.4.1 ("Turned down 16 dB to match
   the others", and "Lowered 18 dB while a priority speaker talks" during a whisper from a
   ticked channel).
+- Updating itself. A copy that called itself 0.4.9 ran in a folder of its own against a
+  folder standing in for the releases (`PARROTFISH_UPDATE_FROM`). It replaced itself after a
+  press on Update, after "Update and restart" under About, when started with `--update`, and
+  when a second start with `--update` reached it while it ran. Each time the helper's log
+  showed the four files put in and the leftover `PhishSpeak.exe` taken away, the program came
+  back and said "Parrotfish was updated from 0.4.9 to 0.6.0", and the `update` folder was
+  gone. With somebody's files beside it (`holiday.jpg`, `notes.old`) it offered the download
+  page and touched nothing. Started with a link, `--update` and `--connect` together, it
+  showed the connect dialog for the link and neither updated nor connected. After `--update`
+  had found nothing newer, a release that appeared later was only offered when "Look now"
+  was pressed; with that rule taken out of a copy of the sources, the same run installed it
+  unasked. It also updated itself from the zip and the checksum list as the packaging script
+  writes them. The tests were checked against 48 deliberate mistakes, made on a copy of the
+  sources; two were not caught at first and led to more tests, and one, the big icon asked
+  for in the small size, is caught by no test and was looked at on the running window
+  instead. A second reader went through the change; `--update` reaching a copy that is
+  already running, a link being taken alone, the time limit on a download, the guard against
+  two copies unpacking at once and leaving within ten seconds came out of that. On GitHub's
+  build machine `tools/installer_test.py` passed its 99 checks, 23 of them for the installed
+  program replacing itself: with somebody's file in its folder, and then with a checksum
+  that did not match, it left everything as it was; then it handed over to `update.exe`,
+  the four files were put in, the uninstaller was kept, the program came back, and removing
+  it afterwards left no folder.
+  Not done: an update while connected and talking; an update while a second copy runs from
+  the same folder, where the helper replaces files by renaming them; a download that breaks
+  off or drags on over a real connection (the tests use a stand-in server on this PC); the
+  button that opens the download page in the browser; the ten-second leave, which nothing
+  made necessary; what antivirus software makes of `update.exe` starting from the temporary
+  folder.
+- The icon. The program file carries icon group 1 with eight pictures, and Windows hands out
+  every size from 16 to 256 pixels from it. A running window had its small and its big icon
+  from there (24 and 48 pixels at 150 %), in the debug and in the release build, and the
+  title bar showed the parrotfish.
+  Not done: looked at in the taskbar, under Alt+Tab, in the Start menu and in Explorer;
+  scale factors other than 150 %.
+- The published 0.6.0, taken from the release page: the installer and the zip match their
+  checksums, the zip holds the four files, neither `Parrotfish.exe` nor `update.exe` needs a
+  runtime library, and Windows draws the parrotfish for the program file and for the
+  installer. The run that published them passed the installer test's 99 checks first. The
+  copy that called itself 0.4.9, started with `--update` and no stand-in folder, asked
+  GitHub, fetched the published zip and came back as the published program, the same file
+  byte for byte as the one in the zip; under About it read "Parrotfish 0.6.0" and "You have
+  the newest version."
+  Not done: the published installer run by hand on a PC.
 - Speex. The decoder's output is the same, sample for sample, as that of the reference library
   (libspeex 1.2.1 built without SSE) on 60 streams, 6.7 million samples: every quality from 0 to
   10 in all three kinds, changing bit rate, silence, several frames in a packet, and lost
