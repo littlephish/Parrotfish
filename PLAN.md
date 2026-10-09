@@ -117,9 +117,9 @@ Renamed on 2026-10-08, version 0.5.0: the program is Parrotfish now and its repo
 
 - The windows, the texts, the program file (`Parrotfish.exe`), the installer and the release
   files carry the new name.
-- Nothing you had is lost. The settings folder `%APPDATA%\PhishSpeak` becomes
+- What you had comes along. The settings folder `%APPDATA%\PhishSpeak` becomes
   `%APPDATA%\Parrotfish` the first time the new program starts, with identities, bookmarks,
-  saved passwords, whisper keys and the icon cache in it.
+  saved passwords, whisper keys and the icon cache in it. Close PhishSpeak first.
 - The installer puts the new program in the place of an installed PhishSpeak and takes the
   old program file and its shortcuts away.
 - Fixed: when the program corrected its `ts3server://` entry at start, because its file had
@@ -573,6 +573,34 @@ ConnectOk", "level 213"). What is actually on the wire:
   loud talker took the line about being turned down away; and with another channel ticked,
   the panel for the usual talker read "Lowered 18 dB while a priority speaker talks" while a
   third talker in that channel whispered to the app's channel.
+- The rename to Parrotfish, 0.5.0, live with the test profile. With the published 0.4.1
+  running, the new program handed over to it and left, and the folder stayed where it was.
+  With nothing running, the new program moved the folder (settings, bookmarks and both
+  identity files arrived byte for byte), connected through a bookmark from it, and showed
+  "Parrotfish" in its window titles and "Parrotfish 0.5.0" under About; the two identities
+  were listed as "Parrotfish 1" and "Parrotfish 2" with their files unchanged. With a
+  stand-in link scheme, an entry and a setting that named a `PhishSpeak.exe` were pointed at
+  the running program, the settings file followed while the program ran, and
+  `--forget-links` removed the entry. A plain start did not rewrite the settings file. The
+  new tests were checked against 17 deliberate mistakes. A second reader went through the
+  change; the installer's rule for shortcuts, the rule for a folder that something still
+  listens for, and most of the installer test came out of that.
+- The installer after the rename. It was not run on the PC used for development, where the
+  program is installed for real. On GitHub's build machine `tools/installer_test.py` passed
+  its 73 checks. With the program installed as PhishSpeak and running, the new Setup found
+  it through the Restart Manager and closed it, put `Parrotfish.exe` in the same folder,
+  took `PhishSpeak.exe` and both PhishSpeak shortcuts away and made Parrotfish ones. The new
+  program then started, moved the settings folder with the bookmarks in it, pointed the
+  links entry at itself and wrote that to the settings while it ran; a second start handed
+  over and left; it closed when asked to; and removal left no file, shortcut or entry and
+  switched the links setting off. An upgrade removed before the new program ever ran cleaned
+  up the same way, through the earlier settings folder. A first install went to a folder
+  named Parrotfish and left alone two shortcuts named PhishSpeak that it had not made. With
+  an installer made wrong on purpose (the old program file not removed, the shortcuts
+  removed without looking) the same test failed on the five checks that should fail.
+  Not done: an upgrade through Setup's windows by hand; a PhishSpeak older than 0.3.0
+  running during the first start; a taskbar pin of the old program, which has to be made
+  again.
 - Speex. The decoder's output is the same, sample for sample, as that of the reference library
   (libspeex 1.2.1 built without SSE) on 60 streams, 6.7 million samples: every quality from 0 to
   10 in all three kinds, changing bit rate, silence, several frames in a packet, and lost
