@@ -64,14 +64,13 @@ fn main() -> Result<(), slint::PlatformError> {
         return Ok(());
     }
     let wishes = start_wishes(&arguments, &scheme);
-    let folder = settings::config_dir();
     let to_hand_over = if wishes.is_empty() { vec![Wish::Show] } else { wishes.clone() };
-    if instance::hand_over(&folder, &to_hand_over) {
-        return Ok(());
-    }
-    let listener = instance::listen(&folder);
+    let listener = match instance::start(&settings::profile_root(), &to_hand_over) {
+        instance::Start::Taken => return Ok(()),
+        instance::Start::First(listener) => listener,
+    };
 
-    let ui = PhishSpeakApp::new()?;
+    let ui = ParrotfishApp::new()?;
     let settings_window = SettingsWindow::new()?;
     let speakers_window = SpeakersWindow::new()?;
     let settings = Settings::load();

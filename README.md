@@ -1,16 +1,21 @@
-# PhishSpeak
+# Parrotfish
 
-PhishSpeak is an unofficial TeamSpeak 3 client written in Rust with a [Slint](https://slint.dev) GUI.
+Parrotfish is an unofficial TeamSpeak 3 client written in Rust with a [Slint](https://slint.dev) GUI.
 It signs in with a regular TeamSpeak identity, shows the channel tree, sends and receives text
 chat, and carries voice in both directions with Opus. It also plays Speex, which old servers
 still use; CELT, the other old format, is not played.
+
+Until version 0.4.1 the program was called PhishSpeak. Parrotfish takes over its settings folder
+the first time it starts, so identities, bookmarks, saved passwords and keys carry over, and
+its installer replaces an installed PhishSpeak. Close PhishSpeak first, and do not go back to
+old copies afterwards: they would start empty, in a folder of their own.
 
 - A compact window: the channel tree, a chat drawer, and a dock with mute buttons and the
   microphone level. Spacer channels such as `[cspacer]Games` are drawn as dividers.
 - Channels fold and open from an arrow. A setting chooses how they start (all open, empty ones
   folded, all folded), and the channels you fold or open yourself are remembered for each server.
 - Bookmarks for one-click connections, each with the channel to join if you want one. A
-  bookmark can connect when PhishSpeak starts and can keep the server's and the channel's
+  bookmark can connect when Parrotfish starts and can keep the server's and the channel's
   password, stored encrypted for your Windows account.
 - The icons a server sets up: on channels, on people (their groups and their own) and for the
   server itself. PNG, JPEG, and GIF as a still picture.
@@ -29,7 +34,7 @@ still use; CELT, the other old format, is not played.
   stay above other windows and be made see-through. It is an ordinary window, so it shows over
   games that run in a window or borderless window, not over exclusive full screen.
 - Talk keys you choose by pressing them: any key, mouse button 3 to 5, or a combination, and
-  more than one if you like. They work while PhishSpeak is in the background. Keys for muting
+  more than one if you like. They work while Parrotfish is in the background. Keys for muting
   the microphone and the sound work the same way.
 - Whisper keys that send your voice to the channels and people you tick, or to everyone, the
   channel commanders or a server or channel group in the channels above, below or around yours,
@@ -69,12 +74,12 @@ target\release\ps-app.exe --connect host[:port] --nickname YourName --channel "C
 
 `--connect` can be repeated to open several servers; `--nickname` and `--channel` are optional
 and apply to the `--connect` before them. A `ts3server://` link can be given the same way. If
-PhishSpeak is already running, a second start passes these on to it and leaves.
+Parrotfish is already running, a second start passes these on to it and leaves.
 
-On first start PhishSpeak creates an identity for you. To use one from the TeamSpeak client,
-export it there and add the file under Settings, Identities; PhishSpeak reads the file where it
+On first start Parrotfish creates an identity for you. To use one from the TeamSpeak client,
+export it there and add the file under Settings, Identities; Parrotfish reads the file where it
 is and never changes it. Settings, bookmarks, whisper keys and identities created in the app are
-stored in `%APPDATA%\PhishSpeak`. A password typed while connecting is never saved; one typed
+stored in `%APPDATA%\Parrotfish`. A password typed while connecting is never saved; one typed
 into a bookmark is kept encrypted for your Windows account.
 
 ## Releases
@@ -88,11 +93,14 @@ git push origin v0.4.1
 ```
 
 The `Release` workflow checks that the tag is `v` plus that version, runs the tests, builds the
-program with the C runtime linked in, and publishes an installer
-(`PhishSpeak-<version>-setup.exe`, per user, no administrator prompt), a zip of the program and
-`SHA256SUMS.txt` on the repository's Releases page. Both carry `THIRD-PARTY-NOTICES.txt`, the
-licence texts of every library in the program, collected at build time. Ordinary pushes and pull requests only run
-the tests (the `Check` workflow).
+program with the C runtime linked in, tries the installer on the build machine
+(`tools/installer_test.py`: over an installed PhishSpeak, and on its own), and publishes an
+installer (`Parrotfish-<version>-setup.exe`, per user, no administrator prompt), a zip of the
+program and `SHA256SUMS.txt` on the repository's Releases page. Both carry
+`THIRD-PARTY-NOTICES.txt`, the licence texts of every library in the program, collected at build
+time. Ordinary pushes and pull requests only run the tests (the `Check` workflow); a push that
+changes the installer also runs the `Installer` workflow, which builds it and tries it the same
+way without publishing anything.
 
 To make the same files on your own PC, install [Inno Setup 6](https://jrsoftware.org/isinfo.php)
 and run `python tools/package_release.py`; they land in `dist/`. Add `--skip-installer` for the
@@ -122,16 +130,16 @@ explains how to use them.
 
 ## Credits
 
-PhishSpeak exists because other people worked out and published how the TeamSpeak 3 protocol
+Parrotfish exists because other people worked out and published how the TeamSpeak 3 protocol
 behaves. The code in this repository was written for this project; the public projects below
 supplied the protocol knowledge, and in one case test data.
 
 **Protocol sources**
 
 - [ReSpeak/tsdeclarations](https://github.com/ReSpeak/tsdeclarations) (MIT or Apache-2.0).
-  `ts3protocol.md` is the written description of the wire protocol that PhishSpeak follows: packet
+  `ts3protocol.md` is the written description of the wire protocol that Parrotfish follows: packet
   layout, encryption, the Init1 puzzle, the licence chain and the key exchange. The client version
-  and signature PhishSpeak presents to servers come from its `Versions.csv`, and error codes and
+  and signature Parrotfish presents to servers come from its `Versions.csv`, and error codes and
   message fields were checked against `Errors.csv` and `Messages.toml`.
 - [ReSpeak/tsclientlib](https://github.com/ReSpeak/tsclientlib) (MIT or Apache-2.0), in particular
   `tsproto`, `tsproto-packets` and `tsproto-types`. This Rust implementation was the reference for
@@ -152,7 +160,7 @@ supplied the protocol knowledge, and in one case test data.
 
 **Echo cancelling**
 
-- The echo canceller is PhishSpeak's own code. It is a multidelay block frequency-domain
+- The echo canceller is Parrotfish's own code. It is a multidelay block frequency-domain
   adaptive filter (J.-S. Soo and K. K. Pang, 1990) with the learning-rate control described by
   Jean-Marc Valin in "On Adjusting the Learning Rate in Frequency Domain Echo Cancellation With
   Double-Talk" (2007), which is how the echo canceller in
@@ -185,7 +193,7 @@ supplied the protocol knowledge, and in one case test data.
 
 ## TeamSpeak
 
-TeamSpeak is a trademark of TeamSpeak Systems GmbH. PhishSpeak is an independent project and is
+TeamSpeak is a trademark of TeamSpeak Systems GmbH. Parrotfish is an independent project and is
 not affiliated with, endorsed by or supported by TeamSpeak. It introduces itself to servers with a
 client version string and signature published in tsdeclarations; server owners may not permit
 third-party clients, so check the rules of the servers you join.

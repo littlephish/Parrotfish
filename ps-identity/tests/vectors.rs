@@ -112,10 +112,10 @@ fn generated_identity_is_usable() {
 #[test]
 fn sign_and_verify() {
     let id = identity_from_plain_der(TSPROTO_KEY_A, 0);
-    let sig = id.sign(b"phishspeak proof").unwrap();
+    let sig = id.sign(b"parrotfish proof").unwrap();
     assert_eq!(sig[0], 0x30);
-    assert!(id.public_key.verify(b"phishspeak proof", &sig));
-    assert!(!id.public_key.verify(b"phishspeak prooF", &sig));
+    assert!(id.public_key.verify(b"parrotfish proof", &sig));
+    assert!(!id.public_key.verify(b"parrotfish prooF", &sig));
 }
 
 #[test]

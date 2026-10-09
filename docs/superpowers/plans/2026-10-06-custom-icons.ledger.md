@@ -75,7 +75,7 @@ checked and how, and what was not checked.
   connected; restart from the cache with the files untouched; closed file port; default flood
   protection; voice complete while 40 icons were fetched.
 - Live, `ts.busaesi.space`: one connection of about 25 seconds with a throwaway identity and
-  the nickname PhishSpeak, and one of about 10 seconds from the test window. Five icons, all
+  the nickname Parrotfish, and one of about 10 seconds from the test window. Five icons, all
   PNG, were fetched and drawn.
 
 ## Not checked

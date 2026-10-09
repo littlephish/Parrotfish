@@ -1,4 +1,4 @@
-# PhishSpeak compact window: design
+# Parrotfish compact window: design
 
 Date: 2026-10-06. Status: waiting for your review. Nothing in here is built yet.
 
@@ -25,7 +25,7 @@ Say so if any of these should change. I will build to them otherwise.
 3. **Settings open in their own window.** The compact window is about 400 px wide and six tabs
    need about 650. The mock-up on the first page showed the panel inside a wide window, so this
    differs from what you saw there.
-4. **Bookmarks do not store server passwords in this round.** PhishSpeak asks when a server
+4. **Bookmarks do not store server passwords in this round.** Parrotfish asks when a server
    wants one. Saving them safely needs Windows credential encryption, which I would add next
    rather than store passwords as plain text now.
 
@@ -94,7 +94,7 @@ the address and port."), or as a dim line in chat for errors from a server you a
 ## Bookmarks and connections
 
 A bookmark holds a name, the server address, the nickname to use and which identity to use.
-Bookmarks live in `%APPDATA%\PhishSpeak\bookmarks.ini`. The tile shows the initials of the name.
+Bookmarks live in `%APPDATA%\Parrotfish\bookmarks.ini`. The tile shows the initials of the name.
 
 Connect to a server opens a small dialog: address, nickname, optional server password,
 identity, and a "Save as a bookmark" box. Edit bookmarks opens the Bookmarks tab of settings.

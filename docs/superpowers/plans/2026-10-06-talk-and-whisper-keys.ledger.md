@@ -101,7 +101,7 @@ Rulings inside those:
     channels a server and 64 servers; channels that no longer exist are dropped when saving.
 24. Ruling: the release workflow runs the tests in release mode, links the C runtime into the
     program (in the workflow and in `tools/package_release.py` only; `build.bat` is unchanged),
-    builds a per-user installer with Inno Setup that leaves `%APPDATA%\PhishSpeak` alone, and
+    builds a per-user installer with Inno Setup that leaves `%APPDATA%\Parrotfish` alone, and
     refuses to run when the tag is not `v` plus the version in `Cargo.toml`. The installer is
     for 64-bit Intel/AMD Windows; the zip is the fallback elsewhere. Nothing is code-signed.
 

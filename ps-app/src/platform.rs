@@ -78,9 +78,13 @@ mod imp {
     const PURPOSE: &[u8] = b"PhishSpeak bookmark";
 
     fn seal(data: &[u8], open: bool) -> Option<Vec<u8>> {
+        seal_for(PURPOSE, data, open)
+    }
+
+    fn seal_for(purpose: &[u8], data: &[u8], open: bool) -> Option<Vec<u8>> {
         let size = u32::try_from(data.len()).ok().filter(|size| *size > 0)?;
         let input = Blob { size, data: data.as_ptr() as *mut u8 };
-        let purpose = Blob { size: PURPOSE.len() as u32, data: PURPOSE.as_ptr() as *mut u8 };
+        let purpose = Blob { size: purpose.len() as u32, data: purpose.as_ptr() as *mut u8 };
         let mut output = Blob { size: 0, data: std::ptr::null_mut() };
         let nothing = std::ptr::null_mut();
         let done = unsafe {
@@ -350,6 +354,23 @@ mod imp {
         let mut t = SystemTime::default();
         unsafe { GetLocalTime(&mut t) };
         (t.hour as u32, t.minute as u32, t.second as u32)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_password_sealed_before_the_program_was_renamed_still_opens() {
+            let earlier = seal_for(b"PhishSpeak bookmark", b"reef-pass", false).expect("Windows seals it");
+            assert_eq!(unprotect(&earlier).as_deref(), Some(&b"reef-pass"[..]));
+            let stranger = seal_for(b"Parrotfish bookmark", b"reef-pass", false).expect("Windows seals it");
+            assert_eq!(unprotect(&stranger), None, "sealed for another purpose, it must not open");
+            let own = protect(b"reef-pass").expect("Windows seals it");
+            assert!(!own.windows(9).any(|part| part == b"reef-pass"));
+            assert_eq!(seal_for(b"PhishSpeak bookmark", &own, true).as_deref(), Some(&b"reef-pass"[..]));
+            assert_eq!(protect(b""), None);
+        }
     }
 }
 

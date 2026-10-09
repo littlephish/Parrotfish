@@ -8,6 +8,7 @@ use std::time::Duration;
 use rand::RngCore;
 
 use crate::platform;
+use crate::settings;
 
 const FILE: &str = "instance";
 const MAX_MESSAGE: usize = 8192;
@@ -83,23 +84,34 @@ fn same_word(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |sum, (x, y)| sum | (x ^ y)) == 0
 }
 
-pub fn hand_over(folder: &Path, wishes: &[Wish]) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reply {
+    Taken,
+    Silence,
+    Nobody,
+}
+
+fn ask(folder: &Path, wishes: &[Wish]) -> Reply {
     let Some(card) = read_card(&folder.join(FILE)) else {
-        return false;
+        return Reply::Nobody;
     };
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, card.port));
     let Ok(mut stream) = TcpStream::connect_timeout(&address, CONNECT_WAIT) else {
-        return false;
+        return Reply::Nobody;
     };
     let _ = stream.set_read_timeout(Some(ANSWER_WAIT));
     let _ = stream.set_write_timeout(Some(ANSWER_WAIT));
     platform::allow_front(card.process);
     let message = format!("{}\n{}\n", card.word, write_wishes(wishes));
     if message.len() > MAX_MESSAGE || stream.write_all(message.as_bytes()).is_err() {
-        return false;
+        return Reply::Silence;
     }
     let mut answer = [0u8; 6];
-    stream.read_exact(&mut answer).is_ok() && answer == *ACCEPTED
+    if stream.read_exact(&mut answer).is_ok() && answer == *ACCEPTED {
+        Reply::Taken
+    } else {
+        Reply::Silence
+    }
 }
 
 pub struct Listener {
@@ -171,15 +183,112 @@ pub fn listen(folder: &Path) -> Option<Listener> {
     Some(Listener { wishes: rx, path })
 }
 
+pub enum Start {
+    Taken,
+    First(Option<Listener>),
+}
+
+pub fn start(root: &Path, wishes: &[Wish]) -> Start {
+    match ask(&settings::folder_in(root), wishes) {
+        Reply::Taken => return Start::Taken,
+        Reply::Nobody => {
+            settings::take_over_earlier_folder(root);
+        }
+        Reply::Silence => {}
+    }
+    Start::First(listen(&settings::folder_in(root)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let folder = std::env::temp_dir().join(format!("phishspeak-instance-test-{}-{name}", std::process::id()));
+        let folder = std::env::temp_dir().join(format!("parrotfish-instance-test-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&folder);
         fs::create_dir_all(&folder).unwrap();
         folder
+    }
+
+    fn hand_over(folder: &Path, wishes: &[Wish]) -> bool {
+        ask(folder, wishes) == Reply::Taken
+    }
+
+    #[test]
+    fn a_folder_where_something_listens_without_answering_is_not_moved_from_under_it() {
+        let root = scratch("earlier-silent");
+        let (earlier, own) = (root.join("PhishSpeak"), root.join("Parrotfish"));
+        fs::create_dir_all(&earlier).unwrap();
+        fs::write(earlier.join("settings.ini"), "nickname=Minnow\n").unwrap();
+        let busy = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = busy.local_addr().unwrap().port();
+        fs::write(earlier.join(FILE), format!("{port}\n{}\n1\n", "cd".repeat(32))).unwrap();
+        assert_eq!(ask(&earlier, &[Wish::Show]), Reply::Silence);
+        let Start::First(Some(first)) = start(&root, &[Wish::Show]) else {
+            panic!("silence was taken for an answer");
+        };
+        assert!(earlier.join("settings.ini").is_file(), "the folder was moved although something listens for it");
+        assert!(!own.exists());
+        assert!(read_card(&earlier.join(FILE)).is_some_and(|card| card.port != port), "the first one listens in the folder in use");
+        drop(first);
+        drop(busy);
+        assert_eq!(ask(&earlier, &[Wish::Show]), Reply::Nobody);
+        let Start::First(Some(next)) = start(&root, &[Wish::Show]) else {
+            panic!("nobody could have answered");
+        };
+        assert_eq!(fs::read_to_string(own.join("settings.ini")).unwrap(), "nickname=Minnow\n", "with nobody there the move goes through");
+        assert!(!earlier.exists());
+        drop(next);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_program_from_before_the_rename_that_still_runs_gets_the_wishes_and_keeps_its_folder() {
+        let root = scratch("earlier-running");
+        let earlier = root.join("PhishSpeak");
+        fs::create_dir_all(&earlier).unwrap();
+        fs::write(earlier.join("settings.ini"), "nickname=Minnow\n").unwrap();
+        let running = listen(&earlier).expect("the earlier program listens in its folder");
+        assert!(matches!(start(&root, &sample()), Start::Taken));
+        let got: Vec<Wish> = (0..3).map(|_| running.wishes.recv_timeout(Duration::from_secs(2)).unwrap()).collect();
+        assert_eq!(got, sample());
+        assert!(earlier.join("settings.ini").is_file(), "its folder was moved from under it");
+        assert!(!root.join("Parrotfish").exists());
+        drop(running);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn with_nobody_running_the_earlier_folder_is_moved_and_the_first_one_listens_there() {
+        let root = scratch("earlier-idle");
+        let (earlier, own) = (root.join("PhishSpeak"), root.join("Parrotfish"));
+        fs::create_dir_all(&earlier).unwrap();
+        fs::write(earlier.join("settings.ini"), "nickname=Minnow\n").unwrap();
+        let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap().local_addr().unwrap().port();
+        fs::write(earlier.join(FILE), format!("{port}\n{}\n1\n", "ab".repeat(32))).unwrap();
+        let Start::First(Some(first)) = start(&root, &[Wish::Show]) else {
+            panic!("a note left by a program that is gone was taken for a running one");
+        };
+        assert!(!earlier.exists());
+        assert_eq!(fs::read_to_string(own.join("settings.ini")).unwrap(), "nickname=Minnow\n");
+        assert!(read_card(&own.join(FILE)).is_some_and(|card| card.port != port), "the old note was replaced by a new one");
+        assert!(first.wishes.try_recv().is_err(), "the first one does not send wishes to itself");
+        assert!(matches!(start(&root, &[Wish::Link("ts3server://example.org".to_string())]), Start::Taken));
+        assert_eq!(first.wishes.recv_timeout(Duration::from_secs(2)), Ok(Wish::Link("ts3server://example.org".to_string())));
+        drop(first);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_first_start_ever_listens_under_the_new_name() {
+        let root = scratch("never-before");
+        let Start::First(Some(first)) = start(&root, &[Wish::Show]) else {
+            panic!("nobody could have been there");
+        };
+        assert!(root.join("Parrotfish").join(FILE).is_file());
+        assert!(!root.join("PhishSpeak").exists());
+        drop(first);
+        let _ = fs::remove_dir_all(&root);
     }
 
     fn sample() -> Vec<Wish> {
@@ -261,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn something_else_listening_there_is_not_mistaken_for_phishspeak() {
+    fn something_else_listening_there_is_not_mistaken_for_parrotfish() {
         let folder = scratch("stranger");
         let stranger = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = stranger.local_addr().unwrap().port();

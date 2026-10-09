@@ -273,6 +273,6 @@ mod tests {
         assert_eq!(initials("TeamSpeak ]I[ Server"), "TI");
         assert_eq!(initials("--- ***"), "?");
         assert_eq!(initials("[EU] reef-runners"), "ER");
-        assert_eq!(initials("172.31.183.111"), "17");
+        assert_eq!(initials("203.0.113.7"), "20");
     }
 }

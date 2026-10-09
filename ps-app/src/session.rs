@@ -504,7 +504,7 @@ pub fn connect_failure(reason: &str, address: &str, had_password: bool) -> (Dial
         );
     }
     if has("pre-3.1") {
-        return (DialogField::Address, "This server is too old for PhishSpeak to talk to.".to_string());
+        return (DialogField::Address, "This server is too old for Parrotfish to talk to.".to_string());
     }
     (DialogField::Address, format!("Could not connect: {}.", reason.trim().trim_end_matches('.')))
 }

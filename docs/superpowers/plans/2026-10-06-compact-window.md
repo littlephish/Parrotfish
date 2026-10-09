@@ -96,7 +96,7 @@ Conditions the spec implies that are most likely to bite, each pinned to a task 
 `pub struct Bookmark { pub name: String, pub address: String, pub nickname: String, pub identity_uid: String }`,
 `pub struct Bookmarks { pub items: Vec<Bookmark> }` with `parse(&str) -> Self`, `serialize(&self) -> String`, `load() -> Self`, `save(&self) -> io::Result<()>`, `upsert(&mut self, Bookmark) -> usize` (same address, ignoring case, replaces), `remove(&mut self, usize)`,
 `pub fn initials(name: &str) -> String`.
-File: `%APPDATA%\PhishSpeak\bookmarks.ini`, one `[bookmark]` section per entry with `name`, `address`, `nickname`, `identity`.
+File: `%APPDATA%\Parrotfish\bookmarks.ini`, one `[bookmark]` section per entry with `name`, `address`, `nickname`, `identity`.
 
 - [x] Write the failing tests: round trip of three bookmarks including a name with `=` and non-ASCII letters and an identity UID ending in `=`; a damaged file (stray lines, a section with no address, an empty section) keeps only the complete entries; `upsert` replaces an entry with the same address in different case and appends a new one; `initials`: "Reef Runners" -> "RR", "night shift raids" -> "NS", "Home" -> "HO", "x" -> "X", "" -> "?", "  the   reef " -> "TR".
 - [x] Run `cargo test -p ps-app bookmarks`; expect compile failure.
@@ -127,7 +127,7 @@ File: `%APPDATA%\PhishSpeak\bookmarks.ini`, one `[bookmark]` section per entry w
 
 **Files:** Create `ps-app/ui/theme.slint`, `widgets.slint`, `settings.slint`, `icons/*.svg`; rewrite `ps-app/ui/main.slint`; modify `ps-app/build.rs` only if the include paths need it.
 
-**Interfaces:** Consumes the Task 4 types, converted to Slint structs `TreeRow`, `ServerTile`, `ChatRow`, `BookmarkRow`, `IdentityRow`. Produces two components, `PhishSpeakApp` (main window) and `SettingsWindow`, with these callbacks to Rust: `open-menu`, `view-server(id)`, `connect-bookmark(index)`, `connect-new(address, nickname, password, identity-index, save)`, `disconnect-viewed`, `row-activated(row)`, `join-with-password(channel-id, password)`, `send-chat(text, to-server)`, `toggle-mic`, `toggle-sound`, `open-settings(tab)` (the cog opens the Microphone tab, "Edit bookmarks" opens the Bookmarks tab); and from the settings window: `audio-changed`, `input-device-selected`, `output-device-selected`, `new-identity`, `import-identity(path)`, `bookmark-saved(index, name, address, nickname, identity-index)`, `bookmark-removed(index)`, `ptt-key-selected`.
+**Interfaces:** Consumes the Task 4 types, converted to Slint structs `TreeRow`, `ServerTile`, `ChatRow`, `BookmarkRow`, `IdentityRow`. Produces two components, `ParrotfishApp` (main window) and `SettingsWindow`, with these callbacks to Rust: `open-menu`, `view-server(id)`, `connect-bookmark(index)`, `connect-new(address, nickname, password, identity-index, save)`, `disconnect-viewed`, `row-activated(row)`, `join-with-password(channel-id, password)`, `send-chat(text, to-server)`, `toggle-mic`, `toggle-sound`, `open-settings(tab)` (the cog opens the Microphone tab, "Edit bookmarks" opens the Bookmarks tab); and from the settings window: `audio-changed`, `input-device-selected`, `output-device-selected`, `new-identity`, `import-identity(path)`, `bookmark-saved(index, name, address, nickname, identity-index)`, `bookmark-removed(index)`, `ptt-key-selected`.
 
 - [x] Write `theme.slint` with the eight colours and the sizes from Global Constraints.
 - [x] Write the icons as 24 x 24 stroke-only SVG files and check each loads with `colorize`.

@@ -36,7 +36,7 @@ component Divider inherits Rectangle {
 }
 
 export component SettingsWindow inherits Window {
-    title: "PhishSpeak settings";
+    title: "Parrotfish settings";
     preferred-width: 700px;
     preferred-height: 600px;
     min-width: 640px + root.scale-nudge * 0.01px;
@@ -685,7 +685,7 @@ export component SettingsWindow inherits Window {
                         }
 
                         Hint {
-                            text: "Server links on web pages then open in PhishSpeak, which shows where a link leads before it connects. Switching this off gives the links back to the program that had them.";
+                            text: "Server links on web pages then open in Parrotfish, which shows where a link leads before it connects. Switching this off gives the links back to the program that had them.";
                         }
 
                         if root.links-note != "": Hint {
@@ -831,7 +831,7 @@ export component SettingsWindow inherits Window {
                         }
 
                         Check {
-                            text: "Connect when PhishSpeak starts";
+                            text: "Connect when Parrotfish starts";
                             checked <=> root.bm-auto;
                         }
 
@@ -934,7 +934,7 @@ export component SettingsWindow inherits Window {
                                 }
 
                                 Hint {
-                                    text: "Click a key, then press the key, mouse button or combination you want. Esc cancels. Works while PhishSpeak is in the background.";
+                                    text: "Click a key, then press the key, mouse button or combination you want. Esc cancels. Works while Parrotfish is in the background.";
                                 }
                             }
                         }
@@ -1402,7 +1402,7 @@ export component SettingsWindow inherits Window {
                             }
 
                             Hint {
-                                text: "Click the arrow beside a channel to fold or open it yourself. PhishSpeak remembers that for each server, until you change this setting.";
+                                text: "Click the arrow beside a channel to fold or open it yourself. Parrotfish remembers that for each server, until you change this setting.";
                             }
                         }
                     }
@@ -1517,7 +1517,7 @@ export component SettingsWindow inherits Window {
                     spacing: 10px;
 
                     Heading {
-                        text: "PhishSpeak \{root.version}";
+                        text: "Parrotfish \{root.version}";
                     }
 
                     Hint {

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::hotkeys::Chord;
 use crate::links::Claim;
@@ -132,13 +132,40 @@ impl Default for Settings {
     }
 }
 
-pub fn config_dir() -> PathBuf {
-    let base = std::env::var_os("APPDATA")
+const FOLDER: &str = "Parrotfish";
+const EARLIER_FOLDER: &str = "PhishSpeak";
+
+pub fn profile_root() -> PathBuf {
+    std::env::var_os("APPDATA")
         .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("PhishSpeak")
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+pub fn folder_in(root: &Path) -> PathBuf {
+    let (own, earlier) = (root.join(FOLDER), root.join(EARLIER_FOLDER));
+    if earlier.is_dir() && !own.exists() {
+        earlier
+    } else {
+        own
+    }
+}
+
+pub fn take_over_earlier_folder(root: &Path) -> bool {
+    let (own, earlier) = (root.join(FOLDER), root.join(EARLIER_FOLDER));
+    earlier.is_dir() && !own.exists() && fs::rename(&earlier, &own).is_ok()
+}
+
+pub fn config_dir() -> PathBuf {
+    folder_in(&profile_root())
+}
+
+pub fn identity_name_now(name: &str) -> String {
+    match name.strip_prefix(EARLIER_FOLDER).and_then(|rest| rest.strip_prefix(' ')) {
+        Some(number) if !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) => format!("{FOLDER} {number}"),
+        _ => name.to_string(),
+    }
 }
 
 pub fn identities_dir() -> PathBuf {
@@ -413,13 +440,105 @@ impl Settings {
 mod tests {
     use super::*;
 
+    fn scratch_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("parrotfish-profile-test-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn a_new_profile_goes_under_the_new_name() {
+        let root = scratch_root("fresh");
+        assert_eq!(folder_in(&root), root.join("Parrotfish"));
+        assert!(!take_over_earlier_folder(&root), "there is nothing to take over");
+        assert!(fs::read_dir(&root).unwrap().next().is_none(), "looking creates nothing");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_folder_from_before_the_rename_is_the_profile_until_it_is_moved_whole() {
+        let root = scratch_root("moved");
+        let (earlier, own) = (root.join("PhishSpeak"), root.join("Parrotfish"));
+        fs::create_dir_all(earlier.join("identities")).unwrap();
+        fs::write(earlier.join("settings.ini"), "nickname=Minnow\n").unwrap();
+        fs::write(earlier.join("identities").join("identity_1.ini"), "kept as it was").unwrap();
+        assert_eq!(folder_in(&root), earlier);
+        assert!(take_over_earlier_folder(&root));
+        assert_eq!(folder_in(&root), own);
+        assert!(!earlier.exists(), "moved, not copied");
+        assert_eq!(fs::read_to_string(own.join("settings.ini")).unwrap(), "nickname=Minnow\n");
+        assert_eq!(fs::read_to_string(own.join("identities").join("identity_1.ini")).unwrap(), "kept as it was");
+        assert!(!take_over_earlier_folder(&root), "a second time there is nothing left to move");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_profile_under_the_new_name_is_never_replaced_by_the_earlier_one() {
+        let root = scratch_root("both");
+        let (earlier, own) = (root.join("PhishSpeak"), root.join("Parrotfish"));
+        fs::create_dir_all(&earlier).unwrap();
+        fs::create_dir_all(&own).unwrap();
+        fs::write(earlier.join("settings.ini"), "nickname=Earlier\n").unwrap();
+        fs::write(own.join("settings.ini"), "nickname=Now\n").unwrap();
+        assert_eq!(folder_in(&root), own);
+        assert!(!take_over_earlier_folder(&root));
+        assert_eq!(fs::read_to_string(own.join("settings.ini")).unwrap(), "nickname=Now\n");
+        assert_eq!(fs::read_to_string(earlier.join("settings.ini")).unwrap(), "nickname=Earlier\n");
+        let _ = fs::remove_dir_all(&root);
+
+        let root = scratch_root("empty");
+        fs::create_dir_all(root.join("PhishSpeak")).unwrap();
+        fs::write(root.join("PhishSpeak").join("settings.ini"), "nickname=Earlier\n").unwrap();
+        fs::create_dir_all(root.join("Parrotfish")).unwrap();
+        assert!(!take_over_earlier_folder(&root), "an empty folder under the new name is still the profile");
+        assert!(root.join("PhishSpeak").join("settings.ini").is_file());
+        assert!(fs::read_dir(root.join("Parrotfish")).unwrap().next().is_none());
+        let _ = fs::remove_dir_all(&root);
+
+        let root = scratch_root("file");
+        fs::write(root.join("PhishSpeak"), "a file, not a folder").unwrap();
+        assert_eq!(folder_in(&root), root.join("Parrotfish"));
+        assert!(!take_over_earlier_folder(&root));
+        assert!(root.join("PhishSpeak").is_file() && !root.join("Parrotfish").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_folder_that_cannot_be_moved_yet_is_used_where_it_is() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = scratch_root("busy");
+        let (earlier, own) = (root.join("PhishSpeak"), root.join("Parrotfish"));
+        fs::create_dir_all(&earlier).unwrap();
+        fs::write(earlier.join("settings.ini"), "nickname=Minnow\n").unwrap();
+        let held = fs::OpenOptions::new().read(true).share_mode(0).open(earlier.join("settings.ini")).unwrap();
+        assert!(!take_over_earlier_folder(&root), "a folder with a file held open was moved");
+        assert_eq!(folder_in(&root), earlier);
+        assert!(!own.exists());
+        drop(held);
+        assert!(take_over_earlier_folder(&root), "once the file is free the move goes through");
+        assert_eq!(folder_in(&root), own);
+        assert_eq!(fs::read_to_string(own.join("settings.ini")).unwrap(), "nickname=Minnow\n");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn identities_the_earlier_program_named_are_shown_under_the_new_name() {
+        assert_eq!(identity_name_now("PhishSpeak 1"), "Parrotfish 1");
+        assert_eq!(identity_name_now("PhishSpeak 27"), "Parrotfish 27");
+        for chosen in ["PhishSpeak", "PhishSpeak ", "PhishSpeak one", "PhishSpeak 1a", "PhishSpeak  2", "My PhishSpeak 1", "phishspeak 1", "Reef", ""] {
+            assert_eq!(identity_name_now(chosen), chosen, "a name somebody chose is left as it is");
+        }
+    }
+
     #[test]
     fn who_opens_links_is_remembered() {
         assert_eq!(Settings::default().links, Claim::default());
         let mut s = Settings::default();
         s.links = Claim {
             on: true,
-            command: "\"D:\\Apps\\PhishSpeak.exe\" \"%1\"".to_string(),
+            command: "\"D:\\Apps\\Parrotfish.exe\" \"%1\"".to_string(),
             previous: "\"D:\\Other\\voice.exe\" --open=\"%1\"".to_string(),
         };
         let text = s.serialize();

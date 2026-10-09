@@ -72,8 +72,8 @@ Changed because of the identity incident on the same day:
 
 20. Ruling: importing an identity remembers where the file is. It is not copied into the app's
     folder, so a private key exists in one place only.
-21. Ruling: PhishSpeak no longer looks for a particular identity file by name at start-up. With
-    no identity it creates one, with the nickname "PhishSpeakUser".
+21. Ruling: Parrotfish no longer looks for a particular identity file by name at start-up. With
+    no identity it creates one, with the nickname "ParrotfishUser".
 22. Ruling: the live tests used generated identities only.
 
 About the test itself:

@@ -39,7 +39,7 @@ pub fn scheme_from(chosen: Option<&str>) -> String {
 }
 
 pub fn scheme() -> String {
-    scheme_from(std::env::var("PHISHSPEAK_LINK_SCHEME").ok().as_deref())
+    scheme_from(std::env::var("PARROTFISH_LINK_SCHEME").ok().as_deref())
 }
 
 fn after_scheme<'a>(text: &'a str, scheme: &str) -> Option<&'a str> {
@@ -428,7 +428,7 @@ mod tests {
         }
     }
 
-    const HERE: &str = "D:\\Apps\\PhishSpeak\\PhishSpeak.exe";
+    const HERE: &str = "D:\\Apps\\Parrotfish\\Parrotfish.exe";
     const OTHER: &str = "\"D:\\Other\\voice.exe\" \"%1\"";
 
     #[test]
@@ -436,7 +436,7 @@ mod tests {
         let mut registry = Fake::default();
         let mut state = Claim::default();
         assert!(claim(&mut registry, HERE, &mut state));
-        assert_eq!(registry.command.as_deref(), Some("\"D:\\Apps\\PhishSpeak\\PhishSpeak.exe\" \"%1\""));
+        assert_eq!(registry.command.as_deref(), Some("\"D:\\Apps\\Parrotfish\\Parrotfish.exe\" \"%1\""));
         assert_eq!(state, Claim { on: true, command: command_for(HERE), previous: String::new() });
         assert!(claim(&mut registry, HERE, &mut state));
         assert_eq!(registry.writes, 1, "asking twice writes once");
@@ -466,7 +466,7 @@ mod tests {
         claim(&mut registry, HERE, &mut state);
         registry.command = Some(OTHER.to_string());
         refresh(&mut registry, HERE, &mut state);
-        assert_eq!(state, Claim::default(), "the switch goes off, PhishSpeak does not take them back");
+        assert_eq!(state, Claim::default(), "the switch goes off, Parrotfish does not take them back");
         assert_eq!(registry.command.as_deref(), Some(OTHER));
     }
 
@@ -474,7 +474,7 @@ mod tests {
     fn a_program_that_moved_points_the_links_at_its_new_place() {
         let mut registry = Fake::default();
         let mut state = Claim::default();
-        claim(&mut registry, "D:\\Old\\PhishSpeak.exe", &mut state);
+        claim(&mut registry, "D:\\Old\\Parrotfish.exe", &mut state);
         refresh(&mut registry, HERE, &mut state);
         assert_eq!(registry.command, Some(command_for(HERE)));
         assert_eq!(state.command, command_for(HERE));
@@ -489,6 +489,19 @@ mod tests {
         let mut untouched = Fake::default();
         refresh(&mut untouched, HERE, &mut off);
         assert_eq!((untouched.command, untouched.writes, off), (None, 0, Claim::default()), "switched off means hands off");
+    }
+
+    #[test]
+    fn links_taken_under_the_earlier_name_follow_the_renamed_program() {
+        let mut registry = Fake { command: Some(OTHER.to_string()), ..Fake::default() };
+        let mut state = Claim::default();
+        claim(&mut registry, "D:\\Apps\\PhishSpeak\\PhishSpeak.exe", &mut state);
+        let renamed = "D:\\Apps\\PhishSpeak\\Parrotfish.exe";
+        refresh(&mut registry, renamed, &mut state);
+        assert_eq!(registry.command, Some(command_for(renamed)));
+        assert_eq!(state, Claim { on: true, command: command_for(renamed), previous: OTHER.to_string() });
+        assert!(release(&mut registry, &mut state));
+        assert_eq!(registry.command.as_deref(), Some(OTHER), "switching off still gives them back to who had them");
     }
 
     #[test]
@@ -509,9 +522,9 @@ mod tests {
     fn taking_the_links_again_after_moving_keeps_what_was_there_first() {
         let mut registry = Fake { command: Some(OTHER.to_string()), ..Fake::default() };
         let mut state = Claim::default();
-        claim(&mut registry, "D:\\Old\\PhishSpeak.exe", &mut state);
+        claim(&mut registry, "D:\\Old\\Parrotfish.exe", &mut state);
         claim(&mut registry, HERE, &mut state);
-        assert_eq!(state.previous, OTHER, "PhishSpeak's own old entry is not what was there before");
+        assert_eq!(state.previous, OTHER, "Parrotfish's own old entry is not what was there before");
         release(&mut registry, &mut state);
         assert_eq!(registry.command.as_deref(), Some(OTHER));
     }

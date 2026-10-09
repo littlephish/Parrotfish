@@ -1,0 +1,47 @@
+name: Installer
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "installer/**"
+      - "tools/package_release.py"
+      - "tools/installer_test.py"
+      - ".github/workflows/installer.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  installer:
+    name: Build, install, upgrade, remove
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - name: Inno Setup
+        run: |
+          $known = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue) -and -not (Test-Path $known)) {
+            choco install innosetup --no-progress -y
+          }
+
+      - name: Build and package
+        run: python tools/package_release.py
+
+      - name: Installer test
+        run: python tools/installer_test.py

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a second way of reading the talk, whisper, reply and mute keys, in which Windows tells PhishSpeak the moment a key moves (Windows calls this Raw Input, and it is how Mumble does it), and let the user switch between that and today's check in Settings.
+**Goal:** Add a second way of reading the talk, whisper, reply and mute keys, in which Windows tells Parrotfish the moment a key moves (Windows calls this Raw Input, and it is how Mumble does it), and let the user switch between that and today's check in Settings.
 
 **Architecture:** The part that decides what a set of held keys means (`WatchCore::step`) already takes "is this key down?" as a question it asks, so it does not change. Today a thread answers that question by asking Windows every 5 ms. The new way gives the same thread a hidden window that can never be focused, registers it with Windows to be told about every key and (only when needed) mouse button, keeps a small table of which chosen keys are down, and runs the same decision each time a key moves. The thread sleeps while nothing moves. A slow check against Windows' own key state guards against a microphone left open by a release that never arrived.
 
@@ -26,23 +26,23 @@ Shortcuts
   Incoming whispers  [x] Let others whisper to me
 
   Reading keys       [ Checked every 5 ms ][ As they happen ]
-                     As they happen: Windows tells PhishSpeak the moment a key moves, so it
+                     As they happen: Windows tells Parrotfish the moment a key moves, so it
                      reacts up to 5 ms sooner and rests while no key moves. Both ways work
                      while another program has the focus. If a key ever stops working,
                      switch back.
 ```
 
-- **Checked every 5 ms** is what PhishSpeak does today and stays the choice it starts with.
+- **Checked every 5 ms** is what Parrotfish does today and stays the choice it starts with.
 - **As they happen** is the new way. The switch takes effect at once; nothing has to be restarted and the keys you chose stay as they are.
 - Both ways read the same keys: any key, mouse buttons 3 to 5, combinations of up to four. A settings file works with either.
-- Both ways work with PhishSpeak in the background, minimised, or never focused at all. That is the normal case, not a special one.
-- If Windows refuses the new way, PhishSpeak keeps checking every 5 ms and says so under the switch.
+- Both ways work with Parrotfish in the background, minimised, or never focused at all. That is the normal case, not a special one.
+- If Windows refuses the new way, Parrotfish keeps checking every 5 ms and says so under the switch.
 
 What you would notice with "As they happen": nothing audible. A press or release is acted on within a fraction of a millisecond where today it can take up to 5; a very short tap on a mute key cannot fall between two checks; and the key thread goes from about 200 wake-ups a second to one every 2 seconds while no key moves.
 
 ## How this compares with Mumble
 
-| | PhishSpeak today | PhishSpeak with this plan | Mumble on Windows |
+| | Parrotfish today | Parrotfish with this plan | Mumble on Windows |
 |---|---|---|---|
 | How keys are read | asks Windows every 5 ms | told by Windows, or asks every 5 ms, your choice | told by Windows |
 | Needs its window focused | no | no | no |
@@ -57,20 +57,20 @@ What you would notice with "As they happen": nothing audible. A press or release
 1. **The 5 ms check stays the default.** It is the way that has been used and tested, and "As they happen" is opt-in until it has had real use. Registering to be told about every key in the background is also the technique key-logging programs use, so a security or anti-cheat tool might look at it. Mumble, Discord and OBS do the same, and I have not checked how any such tool treats it.
 2. **Wording.** The row is called "Reading keys" and the two choices are "Checked every 5 ms" and "As they happen". The words "Raw Input" do not appear in the window. Say so if you want them to.
 3. **Same keys in both ways.** This plan does not add new kinds of keys. Keys that Windows gives no key code, more than five mouse buttons, and game controllers stay out. The new way is the one that could carry them later.
-4. **A guard against an open microphone.** In the new way a key is "down" from the moment its press arrives until its release arrives. A release can fail to arrive: the PC is locked with Win+L while the key is held, a program running as administrator takes the focus, a keyboard is unplugged. So while any chosen key is believed held, PhishSpeak also asks Windows about it every 50 ms, and lets it go after two answers of "not down" in a row. The worst case is a microphone open about 0.1 s longer than the key was held.
+4. **A guard against an open microphone.** In the new way a key is "down" from the moment its press arrives until its release arrives. A release can fail to arrive: the PC is locked with Win+L while the key is held, a program running as administrator takes the focus, a keyboard is unplugged. So while any chosen key is believed held, Parrotfish also asks Windows about it every 50 ms, and lets it go after two answers of "not down" in a row. The worst case is a microphone open about 0.1 s longer than the key was held.
 5. **Keys that guard cannot see are left alone.** If Windows' own key state never showed a press (a remapping tool can cause that), that press is released only by its own release. The other choice would cut such a key off after 0.1 s every time.
 6. **Presses are never invented.** The guard only lets keys go. One consequence, on keyboards with an AltGr key: Windows tells the 5 ms check that AltGr is Left Ctrl plus Right Alt, and tells the new way only Right Alt. A talk key chosen as AltGr in one way has to be chosen again after switching. A talk key on Left Ctrl is no longer set off by typing with AltGr in the new way, which is a small improvement.
-7. **The mouse is listened to only when it has to be:** while a chosen combination contains a mouse button, or while you are choosing a key. A gaming mouse can report thousands of movements a second and each one would wake PhishSpeak for nothing. I could not measure that cost here (see "Facts").
-8. **Keys nobody chose are dropped the moment they arrive.** In the new way every key press on the PC reaches PhishSpeak. Only keys that are part of a chosen combination are remembered, as "down" or "not down", and nothing is ever written or logged. While you are choosing a key in Settings, every key counts until you have chosen.
+7. **The mouse is listened to only when it has to be:** while a chosen combination contains a mouse button, or while you are choosing a key. A gaming mouse can report thousands of movements a second and each one would wake Parrotfish for nothing. I could not measure that cost here (see "Facts").
+8. **Keys nobody chose are dropped the moment they arrive.** In the new way every key press on the PC reaches Parrotfish. Only keys that are part of a chosen combination are remembered, as "down" or "not down", and nothing is ever written or logged. While you are choosing a key in Settings, every key counts until you have chosen.
 9. **Switching is immediate and never leaves a key held.** The key thread is stopped and started again. If you are holding the talk key at that moment, your voice stops for an instant and continues. A key being chosen at that moment is abandoned.
 10. **If Windows says no, fall back and say so.** No error window. The switch stays where you put it, a line under it reads "Windows did not allow that. Keys are still checked every 5 ms.", and the next start tries again.
-11. **PhishSpeak takes the registration from the window toolkit.** Windows allows one listener per kind of device in a program. The toolkit PhishSpeak's windows are built with registers itself at start-up, for a feature PhishSpeak does not use. The new way replaces that registration, and re-asserts its own every 2 seconds in case anything takes it back. See "Facts".
+11. **Parrotfish takes the registration from the window toolkit.** Windows allows one listener per kind of device in a program. The toolkit Parrotfish's windows are built with registers itself at start-up, for a feature Parrotfish does not use. The new way replaces that registration, and re-asserts its own every 2 seconds in case anything takes it back. See "Facts".
 
 ## Facts this plan rests on
 
 Checked on 2026-10-07 on this PC unless marked "read".
 
-**PhishSpeak today** (read in the code):
+**Parrotfish today** (read in the code):
 
 - `keywatch.rs` runs one thread, `ps-keys`. Every 5 ms it calls `WatchCore::step(state, now, down)`, where `down` is a function "is this key code down?" answered with `GetAsyncKeyState`, and passes the result to the audio engine with `set_keys(talk, lane)`.
 - `step` holds everything that matters: which talk, whisper and reply keys count as held (`evaluate`), the release delay (`Latch`), mute keys firing once per press (`Edges`), and choosing a key in Settings (`Capture`). It never asks how the answer to `down` was obtained. That is the seam this plan uses.
@@ -105,8 +105,8 @@ Checked on 2026-10-07 on this PC unless marked "read".
 **The window toolkit** (read in the sources this build uses, winit 0.30.13 and Slint's winit backend 1.18.1):
 
 - winit registers every keyboard and mouse for Raw Input when it starts, with its own hidden window, so that programs can ask it for device events. It does this once, and again only if a program calls `listen_device_events`.
-- Slint passes those device events to a hook that PhishSpeak does not install. Nothing in PhishSpeak depends on them.
-- So turning on the new way takes the registration away from winit (see the one-window rule above) and turning it off removes it altogether. Neither has an effect anyone can see today. If a later version of the toolkit registered again while PhishSpeak ran, the talk key would go dead in the new way; the 2-second renewal in Decision 11 is there for that.
+- Slint passes those device events to a hook that Parrotfish does not install. Nothing in Parrotfish depends on them.
+- So turning on the new way takes the registration away from winit (see the one-window rule above) and turning it off removes it altogether. Neither has an effect anyone can see today. If a later version of the toolkit registered again while Parrotfish ran, the talk key would go dead in the new way; the 2-second renewal in Decision 11 is there for that.
 
 **Mumble** (read, `src/mumble/GlobalShortcut_win.cpp` on its main branch):
 
@@ -127,7 +127,7 @@ Pages read: learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getas
 ## Global Constraints
 
 - No new crates. Win32 calls live in `platform.rs` and nowhere else.
-- **PhishSpeak never has the focus when its keys matter.** Nothing in either way may depend on a PhishSpeak window being focused, visible or even existing on screen. No live check counts unless another program had the focus while the keys were pressed; `tools/hold_keys.py --not-focused ps-app.exe` refuses to press otherwise.
+- **Parrotfish never has the focus when its keys matter.** Nothing in either way may depend on a Parrotfish window being focused, visible or even existing on screen. No live check counts unless another program had the focus while the keys were pressed; `tools/hold_keys.py --not-focused ps-app.exe` refuses to press otherwise.
 - No keyboard or mouse hook in either way. No key is hidden from other programs.
 - The 5 ms check stays, complete and unchanged in what it does, and is the default.
 - The same stored keys work in both ways; nothing about a key is saved differently.
@@ -146,7 +146,7 @@ Conditions the scope implies that are most likely to bite, each pinned to a task
 
 1. **The microphone stays open.** A release that never arrives: the PC locked while the talk key is held, an administrator's window taking the focus, a keyboard unplugged. (Task 1 tests `a_release_that_never_arrives_is_noticed`, `one_disagreement_is_forgiven`, `a_key_windows_cannot_see_is_held_until_its_own_release`; Task 6 check only you can do, with Win+L.)
 2. **The talk key is dead.** Presses stop arriving because something else in the program registered for the same devices, or because the key was already held when the watcher started or the keys changed. (Task 1 test `keys_already_held_are_taken_over_when_asked`; the 2-second renewal in Task 4; Task 6 live check "held before the app started".)
-3. **Focus.** Any step that only works because a PhishSpeak window happened to be focused during a test. (The `--not-focused` rule on every live check in Task 6; the hidden window in Task 3 is message-only and cannot take the focus.)
+3. **Focus.** Any step that only works because a Parrotfish window happened to be focused during a test. (The `--not-focused` rule on every live check in Task 6; the hidden window in Task 3 is message-only and cannot take the focus.)
 4. **Timing that used to come for free.** The release delay, and the end of a chosen-key session, relied on a loop that came round every 5 ms. A loop that sleeps until a key moves has to wake itself for them. (Task 2 test `the_latch_says_when_a_held_over_key_runs_out`, Task 4 test `the_watcher_knows_when_a_held_over_key_runs_out`, Task 6 live check with a 300 ms delay.)
 5. **Switching mid-press.** The switch flipped while a talk key or a mute key is held, or while a key is being chosen. (Task 4 test `a_watcher_that_starts_while_a_key_is_held_does_not_fire_it`; Task 6 live check "switching while held".)
 6. **Several things in one wake-up.** A press and a release of a mute key arriving together must still count as one press. (Task 4 test `keys_reported_one_by_one_give_the_same_answers`.)
@@ -1174,13 +1174,13 @@ How the new loop meets the Review Focus, line by line:
 - **Each record gets its own decision.** `step` runs inside `drain` for every change, so a press and a release that arrive together are two decisions, and a tap is one press (focus 6).
 - **It wakes itself only when time matters:** for the guard while a key is held (50 ms), for the release delay (`release_due`), and every 2 s to renew the registration. With no key held and no delay pending it sleeps until a key moves, something wakes it, or the 2 s are up (focus 4).
 - **`take_over` runs whenever the set of followed keys changes,** which includes the first time round: a key already held when the watcher starts, when a key has just been chosen, or when the switch is flipped is picked up at once (focus 2, 5).
-- **`WatchCore::fresh` starts with mute keys blocked** until they have all been seen up, so a mute key held across a switch does not fire (focus 5). The 5 ms loop uses it too; today a mute key held while PhishSpeak starts fires once, and after this it does not.
+- **`WatchCore::fresh` starts with mute keys blocked** until they have all been seen up, so a mute key held across a switch does not fire (focus 5). The 5 ms loop uses it too; today a mute key held while Parrotfish starts fires once, and after this it does not.
 - **Stopping:** `halt` sets the flag and posts a wake-up. If the thread has not stored its id yet, the wake-up goes nowhere and the loop sees the flag before its first sleep. If it is about to sleep, the posted message ends the sleep at once.
 - **The listener is opened on the key thread** and dropped there when the loop returns, as Task 3 requires.
 
 - [ ] **Step 4: Implement in `settings.rs` and `app.rs`.** `Settings` gets `pub key_reading: Reading` (default `Reading::Checked`) after `mute_sound_key`; `parse` reads `"key_reading" => s.key_reading = Reading::parse(value)`; `serialize` writes `put("key_reading", self.key_reading.to_text().to_string())` after the mute keys. In `App::new`, `KeyWatcher::start(engine.shared().clone(), settings.key_reading)`.
 - [ ] **Step 5:** Run `cargo test --workspace`; expect all pass (274: 18 new). `cargo build --workspace --all-targets`; expect warnings only for `refused` and `set_reading`, which Task 5 uses.
-- [ ] **Step 6: Extend `tools/hold_keys.py`** so that a check cannot pass because PhishSpeak happened to be focused (tried on 2026-10-07: exit codes 0, 2 and 3 as written):
+- [ ] **Step 6: Extend `tools/hold_keys.py`** so that a check cannot pass because Parrotfish happened to be focused (tried on 2026-10-07: exit codes 0, 2 and 3 as written):
 
 ```python
 import ctypes
@@ -1257,7 +1257,7 @@ import tkinter
 
 seconds = float(sys.argv[1]) if len(sys.argv) > 1 else 8.0
 root = tkinter.Tk()
-root.title("focus holder for a PhishSpeak test")
+root.title("focus holder for a Parrotfish test")
 root.geometry("260x60+60+60")
 tkinter.Label(root, text="Holding the focus for a key test.\nCloses by itself.").pack(expand=True)
 root.lift()
@@ -1266,7 +1266,7 @@ root.after(int(seconds * 1000), root.destroy)
 root.mainloop()
 ```
 
-- [ ] **Step 7: Live check, the new way carries a talk key.** Throwaway profile with `tx_mode=1`, `talk_key=135` (F24), `key_reading=raw`, output volume 0. Test server up, `cargo run -p ps-voice --example channeltest -- <server ip> --join <Lobby id> --nick Listener --seconds 9` listening, the app connected to the same channel. If PhishSpeak has the focus, run `python tools/hold_focus.py 6` first. Then `python tools/hold_keys.py F24 2 --not-focused ps-app.exe`. Expected from the listener: a first voice packet, about 100 packets, one end-of-talk packet; and from the tool, "held F24 for 2 s, while ps-app.exe did not have the focus". Repeat with `key_reading=poll`: the same numbers.
+- [ ] **Step 7: Live check, the new way carries a talk key.** Throwaway profile with `tx_mode=1`, `talk_key=135` (F24), `key_reading=raw`, output volume 0. Test server up, `cargo run -p ps-voice --example channeltest -- <server ip> --join <Lobby id> --nick Listener --seconds 9` listening, the app connected to the same channel. If Parrotfish has the focus, run `python tools/hold_focus.py 6` first. Then `python tools/hold_keys.py F24 2 --not-focused ps-app.exe`. Expected from the listener: a first voice packet, about 100 packets, one end-of-talk packet; and from the tool, "held F24 for 2 s, while ps-app.exe did not have the focus". Repeat with `key_reading=poll`: the same numbers.
 
 ### Task 5: The switch in Settings
 
@@ -1299,7 +1299,7 @@ Every check below is run with `key_reading=raw` unless it says otherwise, with t
   1. A mouse button (4 or 5) as the talk key with "As they happen": talk, then let go.
   2. Hold the talk key, press Win+L, let go of everything, sign in again: the dock must not read "Talking".
   3. With a game in the focus, in a window and in full screen: the talk key works in both positions of the switch.
-  4. With a program that runs as administrator in the focus: expected not to work in either position unless PhishSpeak is also started as administrator. Say what happened.
+  4. With a program that runs as administrator in the focus: expected not to work in either position unless Parrotfish is also started as administrator. Say what happened.
   5. If your keyboard has AltGr: a talk key on Left Ctrl is not set off by typing with AltGr in the new way.
 - [ ] **Step 11: Documents.** In `PLAN.md`, where it says keys are read by asking Windows 200 times a second: the two ways, which is the default and why, the guard and its 0.1 s bound, the one-listener-per-program rule and the toolkit, the mouse being listened to only when chosen, the limits that both ways share (administrator windows, the lock screen), and the test count. In `README.md`: one line in the feature list. Write the ledger `2026-10-07-raw-input-keys.ledger.md` beside this plan with what was decided on the way and the numbers from Steps 1 to 9. Run `build.bat`.
 
@@ -1307,7 +1307,7 @@ Every check below is run with `key_reading=raw` unless it says otherwise, with t
 
 - **Game controllers, pedals and joysticks.** Mumble reads them through the same mechanism with other device kinds. You left them out for now; this plan makes the place where they would go.
 - **Keys Windows gives no key code, and mouse buttons beyond five.** They need keys to be stored by another number than the Windows key code, which touches the settings file, the key names and the 5 ms check.
-- **Telling two keyboards or two mice apart.** Raw Input says which device a record came from; PhishSpeak ignores it.
+- **Telling two keyboards or two mice apart.** Raw Input says which device a record came from; Parrotfish ignores it.
 - **Hiding a talk key from other programs.** That needs a keyboard hook, which this project decided against.
 - **Making "As they happen" the default.** Worth deciding after it has been used for a while.
-- **Other systems.** PhishSpeak's key reading is Windows-only in both ways.
+- **Other systems.** Parrotfish's key reading is Windows-only in both ways.

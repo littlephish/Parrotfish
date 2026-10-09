@@ -8,7 +8,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo Building PhishSpeak in release mode. The first build takes several minutes.
+echo Building Parrotfish in release mode. The first build takes several minutes.
 cargo build --release -p ps-app
 if errorlevel 1 (
     echo.

@@ -31,15 +31,15 @@
 - A channel with an icon shows it at the right of its row.
 - A person shows up to four icons at the right of their row: channel group, then server groups, then their own.
 - The server's icon appears after its name in the header.
-- TeamSpeak's five standard group icons (channel admin, operator, server admin, query admin, voice) are drawn for PhishSpeak, because servers refer to them by number and never send them.
-- Every other icon is downloaded once, kept in `%APPDATA%\PhishSpeak\cache\icons`, and loaded from there on later runs.
+- TeamSpeak's five standard group icons (channel admin, operator, server admin, query admin, voice) are drawn for Parrotfish, because servers refer to them by number and never send them.
+- Every other icon is downloaded once, kept in `%APPDATA%\Parrotfish\cache\icons`, and loaded from there on later runs.
 - A row never waits for an icon. If an icon cannot be fetched the row simply has none.
 
 ## Decisions I made that you have not confirmed
 
 1. **Order on a person's row:** channel group, server groups (in the server's sort order), own icon. At most four; extra ones are not shown.
 2. **Where the server icon goes:** after the server name in the header. The tiles keep their initials, because a 16 px icon stretched over a 34 px tile looks blurred.
-3. **PNG and JPEG only in Tasks 1 to 5.** That is what the app can decode today. Some servers use GIF icons, so Task 6 adds them (first frame only) by using the `gif` crate directly. That crate is already compiled into the app for SVG rendering, so the build does not grow, but it becomes a dependency PhishSpeak names itself. Drop Task 6 if you do not want that. BMP and SVG icons from servers are not shown.
+3. **PNG and JPEG only in Tasks 1 to 5.** That is what the app can decode today. Some servers use GIF icons, so Task 6 adds them (first frame only) by using the `gif` crate directly. That crate is already compiled into the app for SVG rendering, so the build does not grow, but it becomes a dependency Parrotfish names itself. Drop Task 6 if you do not want that. BMP and SVG icons from servers are not shown.
 4. **Not in this plan:** country flags, myTeamSpeak badges, avatars, group names shown beside nicknames, a tooltip naming the group, and uploading or managing icons. Avatars would reuse the download path built here.
 5. **No on/off switch.** Icons are always shown. Say so if you want a setting.
 6. **Limits:** an icon file may be at most 512 KiB and 256 x 256 pixels; anything else is ignored. At most 500 icons are kept per server.
@@ -49,7 +49,7 @@
 
 Checked on 2026-10-06 against the local TeamSpeak 3.13.8 test server and the reference projects (tsdeclarations `Messages.toml`, tsclientlib, TSLib).
 
-- Ids arrive in fields PhishSpeak already receives and ignores: `channel_icon_id` (`channellist`, `notifychannelcreated`, `notifychanneledited`), `client_icon_id`, `client_servergroups` (comma-separated) and `client_channel_group_id` (`notifycliententerview`, `notifyclientupdated`), `virtualserver_icon_id` (`initserver`, `notifyserveredited`).
+- Ids arrive in fields Parrotfish already receives and ignores: `channel_icon_id` (`channellist`, `notifychannelcreated`, `notifychanneledited`), `client_icon_id`, `client_servergroups` (comma-separated) and `client_channel_group_id` (`notifycliententerview`, `notifyclientupdated`), `virtualserver_icon_id` (`initserver`, `notifyserveredited`).
 - The server sends `notifyservergrouplist` and `notifychannelgrouplist` at sign-in without being asked. Each item has `sgid` or `cgid`, `name`, `iconid`, `sortid`.
 - Group changes while connected: `notifyservergroupclientadded` / `notifyservergroupclientdeleted` (`sgid`, `clid`), `notifyclientchannelgroupchanged` (`cgid`, `cid`, `clid`).
 - **The same icon is written two ways.** With id 2154984321 on a channel, `channellist` reported `2154984321` and the permission list reported `-2139982975`. tsdeclarations adds that some servers send it as a 64-bit number. All three must become the same 32-bit id.
@@ -72,7 +72,7 @@ Not checked yet, and settled in Task 2: how many flood points one `ftinitdownloa
 - One download at a time per connection, at least 500 ms between requests, 5 s to connect, 10 s in total. A flood warning from the server pauses icon requests for 15 s.
 - Downloads never run on the connection thread or the UI thread. Voice must be unaffected.
 - Icons are drawn 16 x 16 in rows that stay 26 px high. The space for an icon is reserved while it is on its way, so a row does not shift when the picture arrives.
-- Cache files live under `%APPDATA%\PhishSpeak\cache\icons\<server>\`, named only from digits and hex. Nothing from the server is used as a path.
+- Cache files live under `%APPDATA%\Parrotfish\cache\icons\<server>\`, named only from digits and hex. Nothing from the server is used as a path.
 - Amber keeps its three meanings; downloaded icons are never tinted.
 - No comments in code. No real identities, UIDs or machine paths in tests, documents or scripts.
 - Existing tests keep passing (120 today).
@@ -562,7 +562,7 @@ mod tests {
 
     #[test]
     fn an_icon_is_asked_for_once_and_retried_later() {
-        let root = std::env::temp_dir().join(format!("phishspeak-icon-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("parrotfish-icon-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let mut store = IconStore::new(root.clone());
         let start = Instant::now();
@@ -761,7 +761,7 @@ impl IconStore {
 
 **Files:** Modify `ps-app/src/session.rs`, `ps-app/ui/widgets.slint`, `ps-app/ui/main.slint`, `ps-app/ui/theme.slint`; create `ps-app/ui/icons/group-100.svg`, `group-200.svg`, `group-300.svg`, `group-500.svg`, `group-600.svg`.
 
-**Interfaces:** Consumes `ClientInfo::icons` and `Channel::icon` from Task 1. Produces `RowData::icons: Vec<u32>` (a channel row: its icon if any; a person row: at most four), and in Slint: `TreeRow.badges: int`, `TreeRow.badge-tint: int` (bit n set when slot n holds a standard icon), `TreeRow.badge-a`, `badge-b`, `badge-c`, `badge-d: image`; `Icons.group-100` to `Icons.group-600`; on `PhishSpeakApp`: `in property <image> server-icon;` and `in property <bool> has-server-icon;`.
+**Interfaces:** Consumes `ClientInfo::icons` and `Channel::icon` from Task 1. Produces `RowData::icons: Vec<u32>` (a channel row: its icon if any; a person row: at most four), and in Slint: `TreeRow.badges: int`, `TreeRow.badge-tint: int` (bit n set when slot n holds a standard icon), `TreeRow.badge-a`, `badge-b`, `badge-c`, `badge-d: image`; `Icons.group-100` to `Icons.group-600`; on `ParrotfishApp`: `in property <image> server-icon;` and `in property <bool> has-server-icon;`.
 
 - [x] **Step 1: Write the failing test** by extending `rows_follow_the_tree` in `session.rs`: in `sample_view`, give the `Squad Alpha` channel `icon: 2154984321`, give `marlin` `icons: vec![100, 300, 452340182, 2154984321, 7]` and leave the others empty, then assert
 
@@ -827,7 +827,7 @@ if root.entry.badges > 0: VerticalLayout {
 - [x] **Step 2:** `cargo test --workspace` and `cargo build --workspace --all-targets`; expect all tests pass (129) and no warnings.
 - [x] **Step 3: Live check, what you see.** Seed the server, start the app with the software renderer and a throwaway profile (output volume 0), connect, and take screenshots. Expected: the coloured square on Deep Rock and Tide Pool, the Guest square on every person, the server icon after the server name, no icon and no error on Squad Alpha and Radio (the two bad files), row height unchanged at 26 px.
 - [x] **Step 4: Live check, changes while connected.** With the app connected, through ServerQuery: add an icon to Lobby (`channeladdperm`), remove the one on Tide Pool (`channeldelperm cid=<id> permsid=i_icon_id`), add a connected test client to Server Admin (`servergroupaddclient sgid=<id> cldbid=<dbid>`). Expected in screenshots taken 2 s after each: Lobby gains the icon, Tide Pool loses it, the person gains the shield.
-- [x] **Step 5: Live check, restart.** Close the app and start it again with `PHISHSPEAK_TRACE=1`, the server still up. Expected: the icons appear at once and the trace shows no `ftinitdownload` for icons already in the cache folder.
+- [x] **Step 5: Live check, restart.** Close the app and start it again with `PARROTFISH_TRACE=1`, the server still up. Expected: the icons appear at once and the trace shows no `ftinitdownload` for icons already in the cache folder.
 - [x] **Step 6: Live check, voice.** Connect twice (two identities, as in the compact-window test) with 40 icons seeded and a headless listener (`channeltest`) in the viewed channel. Expected: 50 voice packets per second throughout while the icons are fetched.
 - [x] **Step 7: Documents.** In `PLAN.md` add an "Icons and file transfer" part to the protocol notes with the facts from this plan, and update the status, the crates table and the test count. In `README.md` add one line to the feature list. Run `build.bat`.
 

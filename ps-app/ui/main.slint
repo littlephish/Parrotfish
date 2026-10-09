@@ -150,8 +150,8 @@ component Sheet inherits Rectangle {
     drop-shadow-color: #00000090;
 }
 
-export component PhishSpeakApp inherits Window {
-    title: "PhishSpeak";
+export component ParrotfishApp inherits Window {
+    title: "Parrotfish";
     preferred-width: 400px;
     preferred-height: 740px;
     min-width: 340px + root.scale-nudge * 0.01px;
@@ -351,7 +351,7 @@ export component PhishSpeakApp inherits Window {
                             spacing: 7px;
 
                             Text {
-                                text: root.viewing ? root.server-name : "PhishSpeak";
+                                text: root.viewing ? root.server-name : "Parrotfish";
                                 color: Theme.foam;
                                 font-size: 15px;
                                 font-weight: 600;

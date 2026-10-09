@@ -65,7 +65,7 @@ def capture(command):
 
 PORTED = [
     (
-        "Speex 1.2.1, the decoder, rewritten in Rust for PhishSpeak (ps-oldcodecs)  https://www.speex.org",
+        "Speex 1.2.1, the decoder, rewritten in Rust for Parrotfish (ps-oldcodecs)  https://www.speex.org",
         ROOT / "ps-oldcodecs" / "LICENSE-speex.txt",
     ),
 ]
@@ -126,7 +126,7 @@ def write_notices(path, version):
             by_text.setdefault(text, []).append(label)
     rule = "=" * 78
     out = [
-        f"PhishSpeak {version} is built with the software listed below.",
+        f"Parrotfish {version} is built with the software listed below.",
         "Each block names the packages and then gives the licence text they are shipped under.",
         "Slint is used under the Slint Royalty-free Desktop, Mobile, and Web Applications License.",
         f"{len(packages)} packages, {len(by_text)} distinct licence texts.",
@@ -141,7 +141,7 @@ def write_notices(path, version):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Build the PhishSpeak release files into dist/.")
+    parser = argparse.ArgumentParser(description="Build the Parrotfish release files into dist/.")
     parser.add_argument("--tag", help="the release tag, for example v0.1.0; it must match the version in Cargo.toml")
     parser.add_argument("--check", action="store_true", help="only check the tag against Cargo.toml")
     parser.add_argument("--skip-build", action="store_true", help="package the program that is already built")
@@ -186,9 +186,9 @@ def main():
     counts = write_notices(notices, version)
     print(f"{NOTICES}: {counts[0]} packages, {counts[1]} licence texts, {counts[2]} without a licence file")
 
-    archive = DIST / f"PhishSpeak-{version}-windows-x64.zip"
+    archive = DIST / f"Parrotfish-{version}-windows-x64.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
-        bundle.write(built, "PhishSpeak.exe")
+        bundle.write(built, "Parrotfish.exe")
         bundle.write(ROOT / "README.md", "README.md")
         bundle.write(notices, NOTICES)
     produced.append(archive)
@@ -202,10 +202,10 @@ def main():
                 f"/DNoticesFile={notices}",
                 f"/DReadmeFile={ROOT / 'README.md'}",
                 f"/DOutputDir={DIST}",
-                "installer\\phishspeak.iss",
+                "installer\\parrotfish.iss",
             ]
         )
-        setup = DIST / f"PhishSpeak-{version}-setup.exe"
+        setup = DIST / f"Parrotfish-{version}-setup.exe"
         if not setup.is_file():
             fail(f"Inno Setup finished but {setup.name} is missing")
         produced.append(setup)
@@ -215,9 +215,10 @@ def main():
     sums.write_text("".join(f"{sha256(path)}  {path.name}\n" for path in produced), encoding="utf-8", newline="\n")
     produced.append(sums)
 
-    print(f"PhishSpeak {version}")
+    print(f"Parrotfish {version}")
     for path in produced:
         print(f"  {path.relative_to(ROOT)}  {path.stat().st_size} bytes")
 
 
-main()
+if __name__ == "__main__":
+    main()

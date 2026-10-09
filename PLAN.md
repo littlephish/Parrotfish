@@ -1,4 +1,4 @@
-# PhishSpeak — Build Plan
+# Parrotfish — Build Plan
 
 A TeamSpeak 3 client in Rust with a Slint GUI. It logs in with real TS3 identities (P-256),
 joins a server, shows the channel tree, chats, and does voice (Opus) both ways.
@@ -7,7 +7,7 @@ joins a server, shows the channel tree, chats, and does voice (Opus) both ways.
 
 Working end to end against a real TeamSpeak 3.13.8 server: login, channel tree, channel
 switching (incl. password channels), text chat, microphone capture → Opus → server, and
-server → Opus → speakers, with and without voice encryption. 381 unit tests green.
+server → Opus → speakers, with and without voice encryption. 393 unit tests green.
 
 The window is the compact tree layout in the Twilight reef palette (design:
 `docs/superpowers/specs/2026-10-06-compact-window-design.md`): spacer channels are drawn as
@@ -34,7 +34,8 @@ Each bookmark can name the channel to join when you connect: pick it under Setti
 Bookmarks, or use "Start in <channel> next time" in the server menu.
 
 Releases are built by GitHub Actions only when a `v*` tag is pushed (`.github/workflows/`,
-`tools/package_release.py`, `installer/phishspeak.iss`); ordinary pushes run the tests only.
+`tools/package_release.py`, `installer/parrotfish.iss`); ordinary pushes run the tests only,
+and a push that changes the installer also builds it and tries it (`tools/installer_test.py`).
 
 Run it:
 
@@ -47,10 +48,10 @@ cargo run --release -p ps-app -- --connect <bookmark name or host[:port]> [--nic
 
 Icons a server defines are shown: on channels, on people (channel group, server groups, their
 own icon, at most four) and the server's own icon after its name. They are fetched once, two a
-second at most, and kept in `%APPDATA%\PhishSpeak\cache\icons`. PNG and JPEG, and the first
+second at most, and kept in `%APPDATA%\Parrotfish\cache\icons`. PNG and JPEG, and the first
 frame of a GIF.
 
-A bookmark can connect when PhishSpeak starts and can keep a server password and a password
+A bookmark can connect when Parrotfish starts and can keep a server password and a password
 for its start channel. Passwords are stored encrypted for the Windows account, never as text.
 
 Added on 2026-10-07:
@@ -77,10 +78,10 @@ Added on 2026-10-07:
   while the main window does not, and can be made see-through.
 - A window dragged to a display with another scale keeps its size and its limits.
 - Speex, the voice format of old TeamSpeak channels, is played in all its three kinds.
-  PhishSpeak itself always talks in Opus. CELT, the other old format, is not played.
-- `ts3server://` links: a switch under Settings, Bookmarks makes PhishSpeak the program that
+  Parrotfish itself always talks in Opus. CELT, the other old format, is not played.
+- `ts3server://` links: a switch under Settings, Bookmarks makes Parrotfish the program that
   opens them. A link never connects by itself: it opens the connect dialog filled in, with a
-  line saying what else the link carries. Starting PhishSpeak while it is already running
+  line saying what else the link carries. Starting Parrotfish while it is already running
   hands the link (or a `--connect`) to the running one.
 - With several servers connected, the ones that do not have your microphone are told it is
   switched off, as the TeamSpeak client does for its other server tabs. People there see that on
@@ -102,7 +103,7 @@ Added on 2026-10-08:
 - Version 0.4.0 was built and published by the release workflow.
 - In a person's panel, 0.4.1: "Do not even them out" leaves that one person out of evening
   out.
-- Priority speakers of your own, 0.4.1, in PhishSpeak only (the server is told nothing):
+- Priority speakers of your own, 0.4.1, in Parrotfish only (the server is told nothing):
   "Treat them as a priority speaker" in a person's panel and "Treat everyone in here as a
   priority speaker" in a channel's. Made for command channels whose people reach a fleet by
   whisper and were never given the server's mark, and for a commander in your own channel
@@ -110,6 +111,19 @@ Added on 2026-10-08:
 - From 0.4.1 a priority speaker's whisper lowers the others too, and a priority speaker you
   have muted lowers nobody.
 - Version 0.4.1 was built and published by the release workflow.
+
+Renamed on 2026-10-08, version 0.5.0: the program is Parrotfish now and its repository is
+`github.com/littlephish/Parrotfish`. Until 0.4.1 it was called PhishSpeak.
+
+- The windows, the texts, the program file (`Parrotfish.exe`), the installer and the release
+  files carry the new name.
+- Nothing you had is lost. The settings folder `%APPDATA%\PhishSpeak` becomes
+  `%APPDATA%\Parrotfish` the first time the new program starts, with identities, bookmarks,
+  saved passwords, whisper keys and the icon cache in it.
+- The installer puts the new program in the place of an installed PhishSpeak and takes the
+  old program file and its shortcuts away.
+- Fixed: when the program corrected its `ts3server://` entry at start, because its file had
+  moved or been renamed, the settings file only followed when the program was closed.
 
 Planned, not built: reading keys through Windows' Raw Input as a switch in settings
 (`docs/superpowers/plans/2026-10-07-raw-input-keys.md`).
@@ -130,7 +144,7 @@ country flags and badges; myTeamSpeak sign-in and sync, bookmark folders and imp
 TeamSpeak client's bookmarks; plugins, themes and translations.
 
 Not yet verified by anyone: a conversation or a whisper with the **official** TS3 client
-(everything so far is PhishSpeak ↔ real server ↔ PhishSpeak), and voice on a real
+(everything so far is Parrotfish ↔ real server ↔ Parrotfish), and voice on a real
 internet server (signing in to one has worked). Do that first before trusting it for daily use.
 Also unverified: sound by ear (which includes the event sounds, noise suppression and automatic
 gain), a talk key held on a real keyboard or mouse (the checks pressed F13 to F24 by program),
@@ -164,10 +178,10 @@ order against the test server, not by ear and not with an official client talkin
 | `ps-identity` | INI parse, identity (de)obfuscation, DER, P-256, UID, hashcash level, sign/verify, generate/save | done, 14 tests |
 | `ps-crypto` | EAX-AES128 (8-byte MAC), dummy key, per-packet key/nonce, license chain, Ed25519 shared secret, RSA puzzle | done, 16 tests |
 | `ps-protocol` | Packet headers, command escape/parse/build, QuickLZ + fragmentation, receive windows/generations, Init1 payloads, voice and whisper payloads | done, 34 tests |
-| `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client/group book, voice and whispers in/out, events; `spacer` recognises spacer channels, `filetransfer` fetches icons over the server's file port, `resolve` finds a server through SRV, TSDNS or its plain name | done, 34 tests + live tests |
+| `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client/group book, voice and whispers in/out, events; `spacer` recognises spacer channels, `filetransfer` fetches icons over the server's file port, `resolve` finds a server through SRV, TSDNS or its plain name | done, 35 tests + live tests |
 | `ps-oldcodecs` | Speex decoder (8, 16 and 32 kHz) in safe Rust, no dependencies | done, 27 tests + 3 run by hand |
 | `ps-voice` | Opus codec, Speex playback at 48 kHz, resampler, jitter buffer + mixer (talkers keyed by connection and client, a volume per talker, lowering for priority speakers), evening out how loud talkers are (`level.rs`), VAD/PTT gate, lanes (which key is held decides where a frame goes), echo canceller (`echo.rs`), noise suppression (`denoise.rs`), automatic gain (`agc.rs`), event sounds (`cues.rs`), cpal device I/O (WASAPI) | done, 127 tests + live tests |
-| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `mic.rs` what each server is told about the microphone and when, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` keeping a window's size across displays, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 129 tests + live tests |
+| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `mic.rs` what each server is told about the microphone and when, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` keeping a window's size across displays, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 140 tests + live tests |
 | `ps-serverquery` | Text protocol over TCP 10011 | not started |
 
 Threads: UI thread (Slint, 33 ms timer drains client events) · `ps-client` actor + UDP reader ·
@@ -269,11 +283,11 @@ ConnectOk", "level 213"). What is actually on the wire:
 ### Voice
 - C→S `[voice id u16][codec u8][opus]`, S→C `[voice id u16][client id u16][codec u8][opus]`;
   codec 4 Opus Voice (mono), 5 Opus Music (stereo); 48 kHz, 20 ms frames. Empty opus data ends a
-  talk spurt (tsclientlib also counts one byte as empty, and so does PhishSpeak; a one-byte
+  talk spurt (tsclientlib also counts one byte as empty, and so does Parrotfish; a one-byte
   Opus packet carries no sound). Voice id = the Voice packet id.
 - The server can hand on two packets sent back to back in the other order (live, 3.13.8: an
   end packet sent right behind the last voice packet arrived first in three of four tries). So
-  PhishSpeak sends its end packet one frame later, and a receiver must treat a voice packet
+  Parrotfish sends its end packet one frame later, and a receiver must treat a voice packet
   that is older than the end packet as the tail of that speech, not as new speech.
 - Encrypt voice when `virtualserver_codec_encryption_mode` is 2, or 0 and the channel has
   `channel_codec_is_unencrypted=0`; otherwise send with the Unencrypted flag + SharedMac.
@@ -402,7 +416,7 @@ ConnectOk", "level 213"). What is actually on the wire:
   tests, and two pieces of code that no test needed were taken out.
   Not done: by ear; with voices instead of tones; side by side with what the TeamSpeak client
   plays in the same situation.
-- One microphone with several servers, live: one PhishSpeak with two connections to the test
+- One microphone with several servers, live: one Parrotfish with two connections to the test
   server at its default flood settings, a `channeltest` listener in the channel, and ServerQuery
   reading what the server holds. The connection not viewed was reported off about 2 s after it
   connected. On switching, the end-of-talk packet reached the channel, the new connection was
@@ -414,7 +428,7 @@ ConnectOk", "level 213"). What is actually on the wire:
   it to the other in the same tenth of a second. After the server was restarted both
   connections came back by themselves, the viewed one on and the other already off when it was
   first seen; the same with two bookmarks set to connect at start. With the server set to
-  refuse a second command within two seconds, the "on" report was refused: PhishSpeak showed
+  refuse a second command within two seconds, the "on" report was refused: Parrotfish showed
   its own name as muted and "Microphone not on here yet", sent nothing more until the time the
   server named had passed, then sent it once and was heard 4.8 s after the switch (twice the
   same). Before that rule existed, a retry every 3 s was refused each time, because the server
@@ -486,7 +500,7 @@ ConnectOk", "level 213"). What is actually on the wire:
   same connection. On `ts.busaesi.space` (3.13.7) the server icon and the group icons of the
   people there were fetched and drawn.
 - Bookmarks, live: a channel password typed in the editor is written as `dpapi:` hex and the
-  word itself is not in the file; with "connect when PhishSpeak starts" the program connected
+  word itself is not in the file; with "connect when Parrotfish starts" the program connected
   by itself and went straight into the locked channel; a server password sealed by Windows'
   own tools with the same purpose text was accepted; a wrong saved password and an address
   that does not answer gave a notice, not the connect dialog.
@@ -519,8 +533,8 @@ ConnectOk", "level 213"). What is actually on the wire:
   window open; and the window did not become the active window when it was shown from the menu,
   clicked, dragged or locked. Moving and sizing were done with mouse messages sent by program.
 - Links, with a stand-in scheme so that the PC's own `ts3server` entry was never touched
-  (`PHISHSPEAK_LINK_SCHEME=ts3server-test`): the switch wrote the per-user entry and Windows
-  named PhishSpeak as the program it would run for such a link; a second start with a link
+  (`PARROTFISH_LINK_SCHEME=ts3server-test`): the switch wrote the per-user entry and Windows
+  named Parrotfish as the program it would run for such a link; a second start with a link
   handed it over and left, and the first one showed the dialog with the address, the nickname
   and the line about what the link carried; after Connect the client was in the channel the
   link named, the server had put it in the group of the privilege key the link carried, and
@@ -565,13 +579,13 @@ ConnectOk", "level 213"). What is actually on the wire:
   packets filled in. 1.2 million broken packets (random bytes, real packets with bits flipped,
   cut short, glued together or with bytes pushed in) caused no fault and no sample outside the
   range. Decoding costs 0.04, 0.07 and 0.10 % of one processor for the three kinds. Live: real
-  Speex streams sent from one PhishSpeak through the TeamSpeak 3.13.8 server to another arrived
+  Speex streams sent from one Parrotfish through the TeamSpeak 3.13.8 server to another arrived
   complete and in order and decoded to the reference sound (narrowband, wideband,
   ultra-wideband, and three frames to a packet), and came out of the mixer at 48 kHz at the
   same level; in the window the talker lit up and no "cannot play" notice appeared, while a
   packet marked CELT brought up the notice that names CELT.
   Not done: Speex made by a TeamSpeak client, and whether TeamSpeak clients in a Speex channel
-  play the Opus that PhishSpeak sends there.
+  play the Opus that Parrotfish sends there.
 
 Dev tools (examples): `cargo run -p ps-client --example probe -- <host> [--identity file] [--say TEXT]
 [--join CID] [--loss 0.2] [--auto-level] [--log]`, `cargo run -p ps-voice --example voicetest --
@@ -600,8 +614,8 @@ hears it with echo cancelling off and on, when the sound came back and the clock
 it is audible unless the output is a virtual device),
 `cargo run -p ps-client --example whispertest -- <host> --booth CID --drift CID` (re-runs the
 who-hears-what table and fails if a server behaves differently).
-`PHISHSPEAK_TRACE=1` makes the GUI show every command in the chat drawer.
-`PHISHSPEAK_LINK_SCHEME=<name>` makes the links switch and the link reader use another scheme
+`PARROTFISH_TRACE=1` makes the GUI show every command in the chat drawer.
+`PARROTFISH_LINK_SCHEME=<name>` makes the links switch and the link reader use another scheme
 than `ts3server`, so that links can be tried without touching the PC's real entry.
 `probe` also takes `--icon ID` (repeatable), `--all-icons`, `--save DIR`, `--ft-port N`,
 `--voice` (how each talker's stream ends: packet sizes and timing, no sound), `--token KEY`
@@ -619,7 +633,16 @@ reference streams from libspeex 1.2.1 (`build` and `streams` need gcc and make, 
 `pack` need numpy; `full` puts the whole set where the by-hand test looks for it);
 `package_release.py [--tag vX.Y.Z] [--skip-installer]` builds the
 release program with the C runtime linked in and writes the zip, the installer (needs Inno
-Setup 6) and their checksums to `dist/`.
+Setup 6) and their checksums to `dist/`; `installer_test.py` is for a build machine. It
+installs the program as PhishSpeak with the installer script from before the rename
+(`installer/upgrade-test/`) and then goes through three cases: the new installer over it
+while the program runs, followed by the first start of the new program (settings folder
+moved, links entry corrected and written to the settings, a second start handed over) and
+its removal; the new installer over it and removal before the program ever ran; and a first
+install beside shortcuts named PhishSpeak that the installer never made. After each step it
+checks files, shortcuts, what Windows lists and a stand-in links entry. It installs and
+removes for the current user, so it refuses to run outside GitHub Actions without
+`--this-pc`, and anywhere the program is already installed.
 
 A local test server: official `teamspeak3-server_linux_amd64` in WSL
 (`./ts3server license_accepted=1`, which accepts TeamSpeak's server license), reachable from
@@ -629,14 +652,44 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
 ## Known issues / decisions
 
 - `unsafe-libopus 0.2.0` (libopus 1.3.1 transpiled to Rust, chosen because no CMake/C toolchain
-  step is needed): its **SILK packet-loss concealment outputs full-scale noise**. PhishSpeak
+  step is needed): its **SILK packet-loss concealment outputs full-scale noise**. Parrotfish
   therefore never calls the decoder's PLC/FEC for SILK/hybrid streams and conceals lost frames
   itself (reverse/forward repeat of the last frame with a fade); CELT streams use the decoder's
   PLC. Revisit if the crate is fixed or when switching to C libopus (needs CMake).
 - Windows capture streams only accept the device's native format, so both directions go through
   our own windowed-sinc resampler.
-- Settings live in `%APPDATA%\PhishSpeak\settings.ini`, bookmarks in `bookmarks.ini` next to
-  it, identities created in the app in `%APPDATA%\PhishSpeak\identities`. Importing an identity
+- The name. The program was PhishSpeak until 0.4.1. Four things carry the old name on
+  purpose, because changing them would lose something: the words that seal bookmark passwords
+  (`PURPOSE` in `platform.rs`; changed, no saved password would open), the two words the
+  hardware id sent to servers is made from (`HARDWARE_ID_SALTS` in `conn.rs`; changed, every
+  identity would look like another PC to its servers), the installer's `AppId` (changed, the
+  new version would install beside the old one), and the name of the earlier settings folder
+  that is looked for at start. The first two each have a test that fails if the value
+  changes. The crates keep their `ps-` prefix.
+- The settings folder after the rename (`settings::folder_in`, `take_over_earlier_folder`,
+  `instance::start`). The folder in use is `%APPDATA%\Parrotfish`, or `%APPDATA%\PhishSpeak`
+  while only that one exists. At start, a program already running in the folder in use is
+  handed the link or `--connect` as always and its folder is left alone; that includes a
+  PhishSpeak from 0.3.0 on. If something listens at the port the folder names but does not
+  answer, the folder is not moved at that start either. Only when nobody is there is the
+  earlier folder renamed as a whole, which moves it and copies nothing. If Windows refuses,
+  because a file in it is held open, it is used where it is and the move is tried again at
+  the next start. A folder under the new name is never replaced, and `--forget-links` moves
+  nothing.
+- What the move does not cover. A PhishSpeak older than 0.3.0 does not say that it is
+  running, so its folder is moved while it runs, and what it saves afterwards goes to a new
+  `%APPDATA%\PhishSpeak` that Parrotfish does not read. Any PhishSpeak started after the move
+  finds no folder, begins empty with an identity of its own, and counts as another program:
+  the two do not hand over to each other. Neither touches the Parrotfish folder. So: close
+  PhishSpeak before Parrotfish starts for the first time, and do not go back to old copies.
+- Identities that PhishSpeak created were named "PhishSpeak 1", "PhishSpeak 2" and so on.
+  They are shown as "Parrotfish 1" and so on (`settings::identity_name_now`); the files are
+  not changed, and a name somebody chose is shown as it is.
+- Settings that starting changes (a corrected links entry, the identity chosen on a first
+  start) are written two seconds later, like any other change. Before 0.5.0 start-up threw
+  that pending save away and they were only written when the program closed.
+- Settings live in `%APPDATA%\Parrotfish\settings.ini`, bookmarks in `bookmarks.ini` next to
+  it, identities created in the app in `%APPDATA%\Parrotfish\identities`. Importing an identity
   remembers where the file is; it is never copied and never modified, and an improved key offset
   is cached in settings. A password typed in the connect dialog or a channel prompt is used for
   one attempt and never written to disk. A password typed into a bookmark is kept: sealed with
@@ -736,7 +789,7 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   dragging the window border.
 - Keys are read by asking Windows 200 times a second whether each bound key is down
   (`GetAsyncKeyState`); no keyboard or mouse hook is installed. That works while another program
-  has the focus. Not seen: keys of a game that runs as administrator (unless PhishSpeak does
+  has the focus. Not seen: keys of a game that runs as administrator (unless Parrotfish does
   too), and buttons on controllers, joysticks and pedals. Left and right mouse buttons cannot be
   bound; Esc alone cancels choosing a key. Old `ptt_key=<number>` settings are read once and
   rewritten as `talk_key=<key codes joined with +>`. A second way of reading keys, in which
@@ -771,7 +824,7 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   does not turn up while you are silent. The order is echo cancelling, noise suppression,
   automatic gain, then the microphone boost.
 - When a window lands on a display with another scale, the toolkit keeps the smallest allowed
-  size in the old display's pixels. PhishSpeak has the limits worked out again and then puts
+  size in the old display's pixels. Parrotfish has the limits worked out again and then puts
   the window back to the size it had, measured in the new scale (`scale.rs`).
 - Links (`links.rs`, `instance.rs`). A link is `ts3server://host[:port]` with the optional parts
   TeamSpeak documents: `port`, `nickname`, `password`, `channel`, `cid`, `channelpassword`,
@@ -788,14 +841,14 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   `HKCU\Software\Classes\ts3server` for the signed-in user only, no administrator rights, and
   remembers the command that was there (`links_previous` in `settings.ini`); off puts that
   command back, or removes the entry when there was none, so a machine-wide entry of another
-  program counts again. If another program has taken the links in the meantime, PhishSpeak
-  leaves them alone and the switch goes off. If PhishSpeak's own file has moved, the entry is
-  pointed at the new place at the next start. `PhishSpeak.exe --forget-links` does the same as
+  program counts again. If another program has taken the links in the meantime, Parrotfish
+  leaves them alone and the switch goes off. If Parrotfish's own file has moved, the entry is
+  pointed at the new place at the next start. `Parrotfish.exe --forget-links` does the same as
   switching off and is what the uninstaller runs.
-- One PhishSpeak per profile. A second start hands its link or `--connect` to the first and
+- One Parrotfish per profile. A second start hands its link or `--connect` to the first and
   leaves; with nothing to hand over it brings the first one's window to the front. The first one
   listens on a loopback port and writes the port and a random word to
-  `%APPDATA%\PhishSpeak\instance`; only a program that can read that file is listened to, so a
+  `%APPDATA%\Parrotfish\instance`; only a program that can read that file is listened to, so a
   web page cannot talk to the port. If the hand-over is not answered within two seconds the
   second start carries on as a program of its own.
 - A whisper key opens the microphone by itself whatever "Send my voice" says, acts on the server
@@ -804,7 +857,7 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   and a frame is encoded into the room the target list leaves in the packet (30 channels and 60
   people at most, 122 bytes left). Every audience gets its end marker when the stream to it
   stops: key released, another key pressed, mute, or a change of viewed server.
-- Speex is decoded by PhishSpeak's own code in `ps-oldcodecs`, a rewrite in Rust of the decoder
+- Speex is decoded by Parrotfish's own code in `ps-oldcodecs`, a rewrite in Rust of the decoder
   of libspeex 1.2.1 (floating point). The crate forbids `unsafe`, has no dependencies, and
   never trusts a packet: a frame that names something that does not exist, or reads past the
   end, is refused and leaves the decoder as it was; requests and user data inside the stream
@@ -813,12 +866,12 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   Speex is brought to 48 kHz by the resampler the devices already use (which holds back 15
   samples, 2 ms at 8 kHz), and the first lost packet is filled in by Speex itself. A packet
   that decodes louder than any voice (RMS above 0.7) is treated as lost.
-- PhishSpeak always talks in Opus, also in a channel set to Speex or CELT: the packet says what
+- Parrotfish always talks in Opus, also in a channel set to Speex or CELT: the packet says what
   it carries, the server passes it on, and every TeamSpeak client since 3.0.10 (2013) has Opus.
   That those clients play it in such a channel is an assumption.
 - The Speex test streams in `ps-oldcodecs/tests/data` come from the reference library through
   `tools/speex_vectors.py` and `tools/speexref.c`; the tool reproduced them byte for byte.
-- Whisper keys live in `%APPDATA%\PhishSpeak\whisper.ini`. People are stored by TeamSpeak UID
+- Whisper keys live in `%APPDATA%\Parrotfish\whisper.ini`. People are stored by TeamSpeak UID
   and last known name, channels by id and name, groups by id, name and the server's UID. A key
   that names channels, people or a group only works on the server it was made for.
 - The reply target is the last person who whispered to you on the viewed server, checked by UID
@@ -829,7 +882,7 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   The way to your own channel is open when you arrive. What you fold or open by hand overrides
   the setting, is stored per server UID as `folds.<uid>=<channel id>:<0|1>,…` in `settings.ini`
   (512 channels a server, 64 servers), and is forgotten when the setting is changed.
-- Echo cancelling is PhishSpeak's own code in `ps-voice/src/echo.rs`, no new crate. The
+- Echo cancelling is Parrotfish's own code in `ps-voice/src/echo.rs`, no new crate. The
   reference is what is written to the output device (one channel, after volume), sent to the
   transmit thread through a ring buffer. A block frequency-domain adaptive filter (blocks of
   256 samples, 64 partitions, 341 ms) learns the path from the speakers to the microphone; a
@@ -863,7 +916,7 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   failed download is retried after ten minutes, a refused file not again in that run. Slint
   finds a file's format from its name and caches decoded files by path and whole second,
   hence the extensions. On a person the order is channel group, server groups in the server's
-  order, own icon. The five standard group icons are drawn for PhishSpeak.
+  order, own icon. The five standard group icons are drawn for Parrotfish.
 - End of speech: the last frame is faded over its final 8 ms when the end packet is already
   there, otherwise 8 ms of the last sound are mirrored and faded. Without an end packet the
   filler fades within 60 ms instead of 120. A voice packet older than the end packet belongs
@@ -871,11 +924,24 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
 - Release builds: the workflow `Release` runs only for a pushed tag `v<version>`, checks that
   the tag matches the version in `Cargo.toml`, runs the tests, builds with the C runtime linked
   in (`-C target-feature=+crt-static`, so no Visual C++ runtime has to be installed), and
-  publishes `PhishSpeak-<version>-setup.exe`, a zip of the program and `SHA256SUMS.txt` as a
-  GitHub release. The installer is per user (no administrator prompt) and leaves
-  `%APPDATA%\PhishSpeak` alone when uninstalling. The files are not code-signed, so Windows
+  publishes `Parrotfish-<version>-setup.exe`, a zip of the program and `SHA256SUMS.txt` as a
+  GitHub release. The installer is per user (no administrator prompt). Uninstalling keeps
+  the settings folder; it only switches the links setting off in it, and gives the links
+  back. The files are not code-signed, so Windows
   SmartScreen will warn. Before publishing a build, choose the Slint licence it is distributed
   under (see README).
+- The installer after the rename (`installer/parrotfish.iss`). It keeps its `AppId`, so it
+  upgrades in place: the program stays in the folder it was installed in, which after an
+  upgrade is still called PhishSpeak under `%LOCALAPPDATA%\Programs`; a first install goes
+  to `Parrotfish`. `[InstallDelete]` takes away `PhishSpeak.exe`, and the two PhishSpeak
+  shortcuts only if that file is there, so a shortcut of that name that somebody made for a
+  copy of their own survives a first install. Because the file is listed there, Setup's
+  check for programs to close covers a PhishSpeak that is running (Inno Setup's help says so
+  for `[InstallDelete]`). The uninstaller's `--forget-links` entry keeps its `RunOnceId`: Inno Setup runs
+  the newest entry with an id and skips older ones with the same id (read in its source,
+  `Setup.UninstallLog.pas`), so the entry for the program file that is gone is not run.
+  Before a release is published, and whenever the installer changes, the build machine
+  installs and removes it for real (`tools/installer_test.py`).
 
 ## Milestones
 
@@ -903,13 +969,14 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
     sounds, noise suppression, automatic gain, mute keys; the first release built by the
     workflow (0.1.0).
 15. ✅ The speaking window; windows keep their size across displays with different scales.
-16. ✅ `ts3server://` links as a setting, one PhishSpeak per profile; Speex from old channels.
+16. ✅ `ts3server://` links as a setting, one Parrotfish per profile; Speex from old channels.
 17. ✅ With several servers, the ones without the microphone are told it is off.
 18. ✅ Everyone else is lowered while a priority speaker talks; a switch that evens out how
     loud people are; a person's volume is no longer forgotten at a channel change.
 19. ✅ One person can be left out of evening out; priority speakers of your own, by person
     and by channel.
-20. Next: test against the official client and a public server; try echo cancelling, noise
+20. ✅ Renamed to Parrotfish; the settings folder and an installed PhishSpeak are taken over.
+21. Next: test against the official client and a public server; try echo cancelling, noise
     suppression and the event sounds by ear; reading keys through Raw Input (planned);
     avatars.
 
@@ -929,7 +996,7 @@ Build/compile:
 - External `.slint` files compile via `slint_build::compile("ui/main.slint")` in `build.rs`
   + `slint::include_modules!();` in `main.rs`. The `slint!` macro is inline-only and does not
   expand `include!(concat!(env!(...)))`.
-- Components land at the `include_modules!` site (crate root): `PhishSpeakApp::new()`.
+- Components land at the `include_modules!` site (crate root): `ParrotfishApp::new()`.
 - Event loop is the free function `slint::run_event_loop()` — there is no `EventLoop` type.
 
 Rust ↔ .slint API:

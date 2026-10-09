@@ -46,7 +46,7 @@ pub struct ConnectOptions {
 impl ConnectOptions {
     pub fn new(host: &str, port: u16, identity: Identity) -> Self {
         let nickname = if identity.nickname.trim().is_empty() {
-            "PhishSpeak".to_string()
+            "Parrotfish".to_string()
         } else {
             identity.nickname.clone()
         };

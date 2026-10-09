@@ -33,12 +33,12 @@ use crate::session::{
 use crate::settings::{self, Settings, Voice, MAX_REMEMBERED_VOICES};
 use crate::whisper::{route, Route, WhisperKeys};
 use crate::{
-    BookmarkRow, ChatRow, Icons, IdentityRow, PhishSpeakApp, PickRow, ServerTile, SettingsWindow, SpeakerRow,
+    BookmarkRow, ChatRow, Icons, IdentityRow, ParrotfishApp, PickRow, ServerTile, SettingsWindow, SpeakerRow,
     SpeakersWindow, TreeRow, WhisperKeyRow,
 };
 
-const SPEAKERS_TITLE: &str = "PhishSpeak speaking";
-const MAIN_TITLE: &str = "PhishSpeak";
+const SPEAKERS_TITLE: &str = "Parrotfish speaking";
+const MAIN_TITLE: &str = "Parrotfish";
 
 mod shortcuts;
 
@@ -46,7 +46,7 @@ const SETTINGS_SAVE_DELAY: Duration = Duration::from_secs(2);
 const METER_FLOOR_DB: f32 = -70.0;
 const SILENCE_DB: f32 = -95.9;
 const SILENCE_HINT_AFTER: Duration = Duration::from_secs(4);
-const DEFAULT_NICKNAME: &str = "PhishSpeakUser";
+const DEFAULT_NICKNAME: &str = "ParrotfishUser";
 const HEADER_TILES: usize = 3;
 
 pub fn level_position(db: f32) -> f32 {
@@ -198,7 +198,7 @@ impl links::Handlers for LinkRegistry {
 }
 
 pub struct Windows {
-    pub main: PhishSpeakApp,
+    pub main: ParrotfishApp,
     pub settings: SettingsWindow,
     pub speakers: SpeakersWindow,
 }
@@ -240,7 +240,7 @@ impl Dirty {
 }
 
 pub struct App {
-    main: Weak<PhishSpeakApp>,
+    main: Weak<ParrotfishApp>,
     settings_window: Weak<SettingsWindow>,
     speakers_window: Weak<SpeakersWindow>,
     speaker_rows: Rc<VecModel<SpeakerRow>>,
@@ -326,7 +326,7 @@ pub fn with_app(app: &Rc<RefCell<App>>, f: impl FnOnce(&mut App, &Windows)) {
 
 impl App {
     pub fn new(
-        main: &PhishSpeakApp,
+        main: &ParrotfishApp,
         settings_window: &SettingsWindow,
         speakers_window: &SpeakersWindow,
         settings: Settings,
@@ -408,11 +408,12 @@ impl App {
             shown_wide: false,
             shown_devices: (String::new(), String::new()),
             shown_person_heard: String::new(),
-            trace: std::env::var_os("PHISHSPEAK_TRACE").is_some(),
+            trace: std::env::var_os("PARROTFISH_TRACE").is_some(),
         }
     }
 
     pub fn start(&mut self, w: &Windows, wishes: &[Wish]) {
+        let stored = self.settings.serialize();
         w.main.set_tree(ModelRc::from(self.tree.clone()));
         w.main.set_chat(ModelRc::from(self.chat.clone()));
         w.settings.set_talk_keys(ModelRc::from(self.talk_rows.clone()));
@@ -455,6 +456,9 @@ impl App {
         self.push_bindings();
         self.rebuild_lanes(true);
         self.save_at = None;
+        if self.settings.serialize() != stored {
+            self.mark_settings_dirty();
+        }
         self.dirty = Dirty::everything();
         let wanted: Vec<Bookmark> = self.bookmarks.items.iter().filter(|b| b.auto_connect).cloned().collect();
         for (position, bookmark) in wanted.iter().enumerate().rev() {
@@ -622,6 +626,7 @@ impl App {
                             problems.push(format!("{} has no private key, so it was skipped.", path.display()));
                             continue;
                         }
+                        identity.name = settings::identity_name_now(&identity.name);
                         let uid = identity.uid();
                         if let Some(offset) = self.settings.key_offsets.get(&uid) {
                             if *offset > identity.key_offset {
@@ -653,7 +658,7 @@ impl App {
             number += 1;
         };
         let nickname = self.default_nickname();
-        let identity = Identity::generate(&format!("PhishSpeak {number}"), &nickname);
+        let identity = Identity::generate(&format!("Parrotfish {number}"), &nickname);
         identity.save(&path).map_err(|e| format!("Could not save the new identity: {e}."))?;
         let uid = identity.uid();
         let name = identity.name.clone();
@@ -2587,9 +2592,9 @@ impl App {
             if !self.warned_codecs.contains(&codec) {
                 self.warned_codecs.push(codec);
                 let notice = if codec == CODEC_CELT_MONO {
-                    "Someone is talking with the old CELT voice format, which PhishSpeak cannot play."
+                    "Someone is talking with the old CELT voice format, which Parrotfish cannot play."
                 } else {
-                    "Someone is talking with a voice format PhishSpeak does not know."
+                    "Someone is talking with a voice format Parrotfish does not know."
                 };
                 w.main.set_notice(notice.into());
             }

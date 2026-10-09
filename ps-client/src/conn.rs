@@ -878,12 +878,6 @@ impl Conn {
 
     fn send_clientinit(&mut self) {
         let uid = self.opts.identity.uid();
-        let hw = |salt: &str| -> String {
-            let mut hasher = Sha1::new();
-            hasher.update(salt.as_bytes());
-            hasher.update(uid.as_bytes());
-            hasher.finalize().iter().take(16).map(|b| format!("{b:02x}")).collect()
-        };
         let mut cmd = Command::new("clientinit")
             .arg("client_nickname", &self.opts.nickname)
             .arg("client_version", CLIENT_VERSION)
@@ -898,7 +892,7 @@ impl Conn {
             .arg("client_key_offset", self.opts.identity.key_offset)
             .arg("client_nickname_phonetic", &self.opts.identity.phonetic_nickname)
             .arg("client_default_token", "")
-            .arg("hwid", format!("{},{}", hw("phishspeak-a"), hw("phishspeak-b")));
+            .arg("hwid", hardware_id(&uid));
         if self.opts.input_muted {
             cmd.push("client_input_muted", 1);
         }
@@ -1245,9 +1239,30 @@ impl Conn {
     }
 }
 
+const HARDWARE_ID_SALTS: [&str; 2] = ["phishspeak-a", "phishspeak-b"];
+
+fn hardware_id(uid: &str) -> String {
+    let part = |salt: &str| -> String {
+        let mut hasher = Sha1::new();
+        hasher.update(salt.as_bytes());
+        hasher.update(uid.as_bytes());
+        hasher.finalize().iter().take(16).map(|b| format!("{b:02x}")).collect()
+    };
+    format!("{},{}", part(HARDWARE_ID_SALTS[0]), part(HARDWARE_ID_SALTS[1]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hardware_id_a_server_sees_is_the_one_from_before_the_program_was_renamed() {
+        assert_eq!(
+            hardware_id("lks7QL5OVMKo4pZ79cEOI5r5oEA="),
+            "88cc6c41f29944f9b7a6685f94c62765,b7bfb74e990a727d790034b8bebf8761"
+        );
+        assert_ne!(hardware_id("lks7QL5OVMKo4pZ79cEOI5r5oEA="), hardware_id("test/9PZ9vww/Bpf5vJxtJhpz80="));
+    }
 
     #[test]
     fn a_voice_packet_older_than_the_end_packet_is_recognised() {
