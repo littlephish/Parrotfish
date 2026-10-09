@@ -165,6 +165,7 @@ copy, the seconds of the swap, what the user sees and presses).
   program again.
 - The settings file is written whole and swapped in, so that a program stopped in the middle
   cannot leave half a file.
+- Version 0.6.1 was built and published by the release workflow.
 
 Planned, not built: reading keys through Windows' Raw Input as a switch in settings
 (`docs/superpowers/plans/2026-10-07-raw-input-keys.md`).
@@ -693,6 +694,44 @@ ConnectOk", "level 213"). What is actually on the wire:
   byte for byte as the one in the zip; under About it read "Parrotfish 0.6.0" and "You have
   the newest version."
   Not done: the published installer run by hand on a PC.
+- The updater after the hunt for its bugs (0.6.1). Three readers went through the published
+  0.6.0 without running it; what they found and what was done about it stands under "Changed
+  on 2026-10-09, version 0.6.1" above. Checked live with the published 0.6.0 program as the
+  one that updates, in a folder of its own with stand-ins for the uninstaller's two files:
+  connected to the test server, a press on Update brought the new program back two to four
+  seconds later, the server logged the leave as `reasonmsg=leaving`, the stand-ins were kept,
+  and the update line read "Parrotfish was updated from 0.6.0 to 0.6.1." With today's program
+  as the one that updates: a window made 460 by 800 came back at 460 by 800, with that size in
+  the settings; a second start, made while the helper waited for a program file that a copy
+  under another profile kept busy, left after 0.1 s with exit code 0 and did not take the
+  running copy's place, and when the other copy was closed the helper finished and the
+  program came back, although it was the same version (the helper's own restart is told
+  apart by its working folder). The entry of the program that is really installed on the PC
+  still said 0.4.1 afterwards, so no test copy wrote into it. The tests were checked against
+  31 deliberate mistakes, made on a copy of the sources; two were not caught at first and
+  led to stronger tests. On GitHub's build machine the installer test passed its 120 checks:
+  48 for the PC that had PhishSpeak installed (the new Setup over the running program, the
+  first start with a newer stand-in release on offer and nothing installed unasked, then a
+  second start with `--update` that made the running, upgraded program replace itself, and
+  a removal that left nothing), 25 and 16 as before, and 31 for a fresh install (the
+  installed program put a wrong version in Windows' list right, a copy of it in another
+  folder left the wrong one alone, and the update of itself as before).
+  Not done: seeing the restarted window come to the front (the checks keep their windows
+  behind everything on purpose, `PARROTFISH_STAY_BACK`); security software taking an
+  unpacked file away (the check is tried with a file that changes by itself instead); an
+  installed copy on a PC with a person at it.
+- The published 0.6.1, taken from the release page: the installer and the zip match their
+  checksums, the zip holds the four files, neither program file needs a runtime library, and
+  the icon is there. The published 0.6.0 program, in a test folder and connected to the test
+  server, asked GitHub, showed "Parrotfish 0.6.1 is available. Updating restarts
+  Parrotfish.", and three seconds after the press on Update was the published 0.6.1, the
+  same file byte for byte as the one in the zip, saying "Parrotfish was updated from 0.6.0 to
+  0.6.1."; the server logged a proper leave.
+- The shared helper's limits, shown in scratch folders and not changed here: handed a new
+  folder that has lost the program file, the helper as shipped removed the installed program
+  and logged the run as done; a version with the changes proposed under "Known issues / decisions"
+  left the install as it was and said so in its log, and passed the helper's five tests and
+  two new ones.
 - Speex. The decoder's output is the same, sample for sample, as that of the reference library
   (libspeex 1.2.1 built without SSE) on 60 streams, 6.7 million samples: every quality from 0 to
   10 in all three kinds, changing bit rate, silence, several frames in a packet, and lost
