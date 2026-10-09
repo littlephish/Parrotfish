@@ -31,7 +31,7 @@ use crate::session::{
     DialogField, FoldMode, MicMove, Outcome, Peer, RowData, RowKind, Session,
 };
 use crate::settings::{self, Settings, Voice, MAX_REMEMBERED_VOICES};
-use crate::update::{self, Offer, Place};
+use crate::update::{self, Offer, Place, Press};
 use crate::whisper::{route, Route, WhisperKeys};
 use crate::{
     BookmarkRow, ChatRow, Icons, IdentityRow, ParrotfishApp, PickRow, ServerTile, SettingsWindow, SpeakerRow,
@@ -43,6 +43,7 @@ const MAIN_TITLE: &str = "Parrotfish";
 const SETTINGS_TITLE: &str = "Parrotfish settings";
 const ICON_EVERY: u32 = 30;
 const LEAVE_WITHIN: Duration = Duration::from_secs(10);
+const COME_FORWARD_AFTER: u32 = 12;
 
 mod shortcuts;
 
@@ -316,7 +317,11 @@ pub struct App {
     update_reports: Option<Receiver<update::Report>>,
     update_source: update::Source,
     update_hidden: bool,
+    update_news: String,
+    update_offer: Offer,
     install_updates: bool,
+    come_forward_in: u32,
+    stay_back: bool,
     trace: bool,
 }
 
@@ -423,7 +428,11 @@ impl App {
             update_reports: None,
             update_source: update::Source::chosen(std::env::var_os("PARROTFISH_UPDATE_FROM")),
             update_hidden: false,
+            update_news: String::new(),
+            update_offer: Offer::Nothing,
             install_updates: false,
+            come_forward_in: 0,
+            stay_back: std::env::var_os("PARROTFISH_STAY_BACK").is_some(),
             trace: std::env::var_os("PARROTFISH_TRACE").is_some(),
         }
     }
@@ -473,8 +482,15 @@ impl App {
         self.push_bindings();
         self.rebuild_lanes(true);
         if let Some(news) = update::after_restart(&std::mem::take(&mut self.settings.updated_from)) {
-            w.main.set_notice(news.into());
+            self.update_news = news;
+            self.come_forward_in = COME_FORWARD_AFTER;
+            let _ = self.settings.save();
         }
+        if let Some(program) = own_program() {
+            update::keep_listing_in_step(&mut update::Installed, Path::new(&program), update::Version::current());
+            update::forget_leftover(Path::new(&program), update::ANOTHER_UPDATE_TAKES);
+        }
+        self.publish_update(w);
         self.save_at = None;
         if self.settings.serialize() != stored {
             self.mark_settings_dirty();
@@ -515,19 +531,25 @@ impl App {
 
     pub fn update_acted(&mut self, w: &Windows) {
         let program = own_program().map(PathBuf::from);
-        match (self.update.clone(), program) {
-            (update::Step::Found(version), Some(program)) if update::place(&program) == Place::Ready => {
-                self.bring_update(w, version, &program);
+        let place = program.as_deref().map_or(Place::Shared(String::new()), update::place);
+        match (update::press(&self.update, self.update_offer, &place), program) {
+            (Press::Install(version), Some(program)) => self.bring_update(w, version, &program),
+            (Press::Page, _) => {
+                if !platform::open_link(update::PAGE) {
+                    w.main.set_notice(format!("Windows did not open the download page. It is {}", update::PAGE).into());
+                }
             }
-            (update::Step::Found(_) | update::Step::Failed(_), _) => {
-                platform::open_link(update::PAGE);
-            }
+            (Press::LookAtTheFolderAgain, _) => self.publish_update(w),
             _ => {}
         }
     }
 
     pub fn update_hidden(&mut self, w: &Windows) {
+        if !update::closable(&self.update) {
+            return;
+        }
         self.update_hidden = true;
+        self.update_news.clear();
         self.publish_update(w);
     }
 
@@ -602,19 +624,31 @@ impl App {
             (update::Report::Fetched(percent), update::Step::Bringing(version, _)) => {
                 self.update = update::Step::Bringing(version, percent);
             }
-            (update::Report::Staged(unpacked), update::Step::Bringing(..)) => self.finish_update(&unpacked),
+            (update::Report::Staged(unpacked), update::Step::Bringing(..)) => self.finish_update(w, &unpacked),
             _ => {}
         }
     }
 
-    fn finish_update(&mut self, unpacked: &Path) {
+    pub fn leave(&mut self, w: &Windows) {
+        let window = w.main.window();
+        let size = window.size().to_logical(window.scale_factor());
+        if size.width >= settings::MIN_WINDOW_WIDTH && size.height >= settings::MIN_WINDOW_HEIGHT {
+            self.settings.window_width = size.width;
+            self.settings.window_height = size.height;
+        }
+        self.close_settings(w);
+        self.park_speakers(w);
+    }
+
+    fn finish_update(&mut self, w: &Windows, unpacked: &Path) {
         let program = own_program().map(PathBuf::from).filter(|program| update::place(program) == Place::Ready);
         let handed = match program.as_deref().and_then(Path::parent) {
-            Some(folder) => update::hand_over(folder, unpacked),
+            Some(folder) => update::hand_over(folder, unpacked, !self.stay_back),
             None => Err("the program's folder changed while the update was fetched".to_string()),
         };
         match handed {
             Ok(()) => {
+                self.leave(w);
                 self.settings.updated_from = update::Version::current().to_string();
                 let _ = self.settings.save();
                 self.update = update::Step::Restarting;
@@ -639,14 +673,16 @@ impl App {
             _ => Place::Ready,
         };
         let shown = update::wording(&self.update, &place, self.update_source.folder());
+        self.update_offer = shown.offer;
         let offer = match shown.offer {
             Offer::Nothing => 0,
             Offer::Install => 1,
             Offer::Page => 2,
         };
         let closed = self.update_hidden && matches!(self.update, update::Step::Found(_) | update::Step::Failed(_));
-        w.main.set_update_text(if closed { "".into() } else { shown.banner.as_str().into() });
-        w.main.set_update_offer(offer);
+        w.main.set_update_text(update::banner(&self.update_news, &shown, closed).into());
+        w.main.set_update_offer(if closed { 0 } else { offer });
+        w.main.set_update_closable(update::closable(&self.update));
         w.settings.set_update_status(shown.about.as_str().into());
         w.settings.set_update_offer(offer);
     }
@@ -698,7 +734,9 @@ impl App {
         for wish in wishes {
             self.grant(w, wish);
         }
-        platform::show_own_window(MAIN_TITLE);
+        if !self.stay_back {
+            platform::show_own_window(MAIN_TITLE);
+        }
     }
 
     pub fn open_link(&mut self, w: &Windows, text: &str) {
@@ -2675,6 +2713,12 @@ impl App {
         self.poll_level_jobs(w);
         self.poll_capture(w);
         self.poll_update(w);
+        if self.come_forward_in > 0 {
+            self.come_forward_in -= 1;
+            if self.come_forward_in == 0 && !self.stay_back {
+                platform::show_own_window(MAIN_TITLE);
+            }
+        }
         if self.icon_ticks % ICON_EVERY == 0 {
             for title in [MAIN_TITLE, SETTINGS_TITLE, SPEAKERS_TITLE] {
                 platform::adopt_icon(title);

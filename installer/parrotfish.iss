@@ -67,6 +67,7 @@ Type: files; Name: "{app}\PhishSpeak.exe.old*"
 Type: files; Name: "{app}\update.exe.old*"
 Type: files; Name: "{app}\README.md.old*"
 Type: files; Name: "{app}\THIRD-PARTY-NOTICES.txt.old*"
+Type: files; Name: "{app}\unins000.msg.old*"
 Type: filesandordirs; Name: "{app}\update\unpacked"
 Type: dirifempty; Name: "{app}\update"
 

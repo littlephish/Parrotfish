@@ -210,6 +210,7 @@ mod imp {
             data: *mut core::ffi::c_void,
             size: *mut u32,
         ) -> i32;
+        fn RegOpenKeyExW(key: isize, sub: *const u16, options: u32, access: u32, result: *mut isize) -> i32;
         fn RegDeleteTreeW(key: isize, sub: *const u16) -> i32;
         fn RegCloseKey(key: isize) -> i32;
     }
@@ -228,8 +229,11 @@ mod imp {
 
     const CURRENT_USER: isize = 0x8000_0001u32 as i32 as isize;
     const MAY_WRITE: u32 = 0x0002_0006;
+    const MAY_SET: u32 = 0x0002;
     const PLAIN_TEXT: u32 = 1;
+    const A_NUMBER: u32 = 4;
     const ANY_TEXT_AS_STORED: u32 = 0x1000_0006;
+    const ONLY_A_NUMBER: u32 = 0x0000_0010;
     const NOT_THERE: i32 = 2;
     const ASSOCIATIONS_CHANGED: i32 = 0x0800_0000;
     const RESTORE: i32 = 9;
@@ -274,14 +278,16 @@ mod imp {
         unsafe { SHChangeNotify(ASSOCIATIONS_CHANGED, 0, std::ptr::null(), std::ptr::null()) };
     }
 
-    pub fn link_handler(scheme: &str) -> Option<String> {
-        let path = wide(&format!("{}\\shell\\open\\command", scheme_key(scheme)));
+    fn text_at(path: &str, name: Option<&str>) -> Option<String> {
+        let path = wide(path);
+        let name = name.map(wide);
+        let name_ptr = name.as_ref().map_or(std::ptr::null(), |name| name.as_ptr());
         let mut size = 0u32;
         let asked = unsafe {
             RegGetValueW(
                 CURRENT_USER,
                 path.as_ptr(),
-                std::ptr::null(),
+                name_ptr,
                 ANY_TEXT_AS_STORED,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
@@ -297,7 +303,7 @@ mod imp {
             RegGetValueW(
                 CURRENT_USER,
                 path.as_ptr(),
-                std::ptr::null(),
+                name_ptr,
                 ANY_TEXT_AS_STORED,
                 std::ptr::null_mut(),
                 data.as_mut_ptr().cast(),
@@ -308,8 +314,55 @@ mod imp {
             return None;
         }
         let end = data.iter().position(|unit| *unit == 0).unwrap_or(data.len());
-        let text = String::from_utf16_lossy(&data[..end]);
-        (!text.trim().is_empty()).then_some(text)
+        Some(String::from_utf16_lossy(&data[..end]))
+    }
+
+    pub fn link_handler(scheme: &str) -> Option<String> {
+        text_at(&format!("{}\\shell\\open\\command", scheme_key(scheme)), None).filter(|text| !text.trim().is_empty())
+    }
+
+    pub fn stored_text(path: &str, name: &str) -> Option<String> {
+        text_at(path, Some(name))
+    }
+
+    pub fn stored_number(path: &str, name: &str) -> Option<u32> {
+        let path = wide(path);
+        let name = wide(name);
+        let mut value = 0u32;
+        let mut size = 4u32;
+        let read = unsafe {
+            RegGetValueW(
+                CURRENT_USER,
+                path.as_ptr(),
+                name.as_ptr(),
+                ONLY_A_NUMBER,
+                std::ptr::null_mut(),
+                (&mut value as *mut u32).cast(),
+                &mut size,
+            )
+        };
+        (read == 0 && size == 4).then_some(value)
+    }
+
+    fn change_stored(path: &str, name: &str, kind: u32, data: &[u8]) -> bool {
+        let path = wide(path);
+        let mut key = 0isize;
+        if unsafe { RegOpenKeyExW(CURRENT_USER, path.as_ptr(), 0, MAY_SET, &mut key) } != 0 {
+            return false;
+        }
+        let name = wide(name);
+        let done = unsafe { RegSetValueExW(key, name.as_ptr(), 0, kind, data.as_ptr(), data.len() as u32) } == 0;
+        unsafe { RegCloseKey(key) };
+        done
+    }
+
+    pub fn change_stored_text(path: &str, name: &str, value: &str) -> bool {
+        let data: Vec<u8> = wide(value).iter().flat_map(|unit| unit.to_le_bytes()).collect();
+        change_stored(path, name, PLAIN_TEXT, &data)
+    }
+
+    pub fn change_stored_number(path: &str, name: &str, value: u32) -> bool {
+        change_stored(path, name, A_NUMBER, &value.to_le_bytes())
     }
 
     pub fn set_link_handler(scheme: &str, command: &str) -> bool {
@@ -733,6 +786,51 @@ mod imp {
             assert!(!adopt_icon("a window this test does not have"));
         }
 
+        struct ScratchKey(String);
+
+        impl ScratchKey {
+            fn named(name: &str) -> Self {
+                let key = ScratchKey(format!("Software\\Parrotfish-test-{}-{name}", std::process::id()));
+                key.forget();
+                key
+            }
+
+            fn forget(&self) {
+                let path = wide(&self.0);
+                unsafe { RegDeleteTreeW(CURRENT_USER, path.as_ptr()) };
+            }
+        }
+
+        impl Drop for ScratchKey {
+            fn drop(&mut self) {
+                self.forget();
+            }
+        }
+
+        #[test]
+        fn values_are_changed_only_in_a_key_that_is_already_there() {
+            let key = ScratchKey::named("listing");
+            let path = key.0.as_str();
+            assert!(!change_stored_text(path, "DisplayVersion", "0.6.1"), "a key that is not there was written to");
+            assert!(!change_stored_number(path, "VersionMinor", 6), "a key that is not there was written to");
+            assert_eq!(stored_text(path, "DisplayVersion"), None, "the key was made on the way");
+            assert!(set_text(path, Some("DisplayVersion"), "0.6.0"));
+            assert!(set_text(path, Some("Publisher"), ""));
+            assert_eq!(stored_text(path, "DisplayVersion").as_deref(), Some("0.6.0"));
+            assert_eq!(stored_text(path, "Publisher").as_deref(), Some(""));
+            assert_eq!(stored_text(path, "InstallLocation"), None);
+            assert_eq!(stored_number(path, "DisplayVersion"), None, "a text is not a number");
+            assert!(change_stored_text(path, "DisplayVersion", "0.6.1"));
+            assert!(change_stored_number(path, "VersionMinor", 6));
+            assert_eq!(stored_text(path, "DisplayVersion").as_deref(), Some("0.6.1"));
+            assert_eq!(stored_number(path, "VersionMinor"), Some(6));
+            assert_eq!(stored_text(path, "VersionMinor"), None, "a number is not a text");
+            assert!(change_stored_number(path, "VersionMinor", 0x0102_0304));
+            assert_eq!(stored_number(path, "VersionMinor"), Some(0x0102_0304));
+            key.forget();
+            assert_eq!(stored_text(path, "DisplayVersion"), None);
+        }
+
         #[test]
         fn only_secure_addresses_are_opened_in_the_browser() {
             assert!(!open_link("http://example.org/"));
@@ -790,6 +888,22 @@ mod imp {
         false
     }
 
+    pub fn stored_text(_path: &str, _name: &str) -> Option<String> {
+        None
+    }
+
+    pub fn stored_number(_path: &str, _name: &str) -> Option<u32> {
+        None
+    }
+
+    pub fn change_stored_text(_path: &str, _name: &str, _value: &str) -> bool {
+        false
+    }
+
+    pub fn change_stored_number(_path: &str, _name: &str, _value: u32) -> bool {
+        false
+    }
+
     pub fn allow_front(_process: u32) {}
 
     pub fn show_own_window(_title: &str) -> bool {
@@ -831,8 +945,9 @@ mod imp {
 }
 
 pub use imp::{
-    adopt_icon, allow_front, bring_front, clear_link_handler, key_char, key_down, link_handler, local_hms, on_a_screen,
-    open_link, overlay_style, own_front_window, protect, set_link_handler, show_own_window, unprotect, web_get,
+    adopt_icon, allow_front, bring_front, change_stored_number, change_stored_text, clear_link_handler, key_char, key_down,
+    link_handler, local_hms, on_a_screen, open_link, overlay_style, own_front_window, protect, set_link_handler,
+    show_own_window, stored_number, stored_text, unprotect, web_get,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

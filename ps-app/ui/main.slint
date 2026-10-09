@@ -178,6 +178,7 @@ export component ParrotfishApp inherits Window {
     in-out property <string> notice;
     in property <string> update-text;
     in property <int> update-offer;
+    in property <bool> update-closable: true;
     in property <string> nickname;
     in property <string> initials;
     in property <string> status-text: "Not connected";
@@ -477,7 +478,7 @@ export component ParrotfishApp inherits Window {
                         }
                     }
 
-                    VerticalLayout {
+                    if root.update-closable: VerticalLayout {
                         alignment: center;
 
                         IconButton {

@@ -11,6 +11,7 @@ pub const PROGRAM: &str = "Parrotfish.exe";
 pub const HELPER: &str = "update.exe";
 pub const PAGE: &str = "https://github.com/littlephish/Parrotfish/releases/latest";
 const REPOSITORY: &str = "https://github.com/littlephish/Parrotfish";
+const LISTING: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{B21EECED-B833-438E-BA5E-C0C98D9278CD}_is1";
 const SUMS: &str = "SHA256SUMS.txt";
 const STAGING: &str = "update";
 const UNPACKED: &str = "unpacked";
@@ -23,7 +24,10 @@ const MAX_ARCHIVE: usize = 300 * 1024 * 1024;
 const MAX_UNPACKED: usize = 600 * 1024 * 1024;
 const MAX_ENTRIES: usize = 64;
 const MAX_NAME: usize = 80;
-const ANOTHER_UPDATE_TAKES: Duration = Duration::from_secs(180);
+pub const ANOTHER_UPDATE_TAKES: Duration = Duration::from_secs(180);
+const HELPER_TAKES: Duration = Duration::from_secs(30);
+const SEAT: &str = "Parrotfish-updater";
+const ANY_PROCESS: u32 = u32::MAX;
 const OWN_FILES: [&str; 9] = [
     "parrotfish.exe",
     "update.exe",
@@ -127,11 +131,20 @@ pub fn fetch(
         match reply.status {
             200 => return Ok(reply.body),
             301 | 302 | 303 | 307 | 308 if !reply.location.is_empty() => url = onward(&url, &reply.location),
-            404 => return Err("GitHub does not have that file".to_string()),
+            404 => return Err("GitHub does not have that file; if the release is new, try again in a few minutes".to_string()),
             status => return Err(format!("GitHub answered with status {status}")),
         }
     }
     Err("the download was passed on too many times".to_string())
+}
+
+pub fn said(problem: &std::io::Error) -> String {
+    let text = problem.to_string();
+    let plain = match text.rfind(" (os error ") {
+        Some(at) if text.ends_with(')') => &text[..at],
+        _ => text.as_str(),
+    };
+    plain.trim().trim_end_matches('.').to_string()
 }
 
 pub fn newest(web: &dyn Web) -> Result<Version, String> {
@@ -170,7 +183,7 @@ impl Source {
         match self {
             Source::GitHub => newest(web),
             Source::Folder(folder) => {
-                let text = fs::read_to_string(folder.join(NEWEST_NOTE)).map_err(|e| format!("{NEWEST_NOTE} could not be read: {e}"))?;
+                let text = fs::read_to_string(folder.join(NEWEST_NOTE)).map_err(|e| format!("{NEWEST_NOTE} could not be read: {}", said(&e)))?;
                 let text = text.trim();
                 Version::parse(text.strip_prefix('v').unwrap_or(text)).ok_or_else(|| format!("{NEWEST_NOTE} does not name a version"))
             }
@@ -188,7 +201,7 @@ impl Source {
         match self {
             Source::GitHub => fetch(web, &format!("{REPOSITORY}/releases/download/v{version}/{name}"), limit, progress),
             Source::Folder(folder) => {
-                let data = fs::read(folder.join(name)).map_err(|e| format!("{name} could not be read: {e}"))?;
+                let data = fs::read(folder.join(name)).map_err(|e| format!("{name} could not be read: {}", said(&e)))?;
                 if data.len() > limit {
                     return Err("the file is larger than it should be".to_string());
                 }
@@ -328,6 +341,11 @@ pub enum Place {
     Shared(String),
 }
 
+fn left_by_setup(name: &str) -> bool {
+    let middle = name.strip_prefix("is-").and_then(|rest| rest.strip_suffix(".tmp"));
+    middle.is_some_and(|middle| middle.len() == 5 && middle.bytes().all(|b| b.is_ascii_alphanumeric()))
+}
+
 pub fn own_file(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     let stamped = |stamp: &str| stamp.len() > 1 && stamp.starts_with('-') && stamp[1..].bytes().all(|b| b.is_ascii_digit());
@@ -335,7 +353,7 @@ pub fn own_file(name: &str) -> bool {
         Some((base, stamp)) if stamp.is_empty() || stamped(stamp) => base,
         _ => name.as_str(),
     };
-    OWN_FILES.contains(&base)
+    OWN_FILES.contains(&base) || left_by_setup(&name)
 }
 
 pub fn stranger(listing: &[(String, bool)]) -> Option<String> {
@@ -380,30 +398,82 @@ pub fn unstage(unpacked: &Path) {
     }
 }
 
+fn cannot_write(what: &str, problem: &std::io::Error) -> String {
+    format!("the program's folder could not be written to ({what}: {})", said(problem))
+}
+
+fn staged_for(unpacked: &Path) -> Option<Duration> {
+    fs::metadata(unpacked).and_then(|found| found.modified()).ok().and_then(|at| at.elapsed().ok())
+}
+
 pub fn stage_unless_busy(folder: &Path, entries: &[Entry], busy_for: Duration) -> Result<PathBuf, String> {
     let unpacked = folder.join(STAGING).join(UNPACKED);
-    let cannot = |what: &str, problem: std::io::Error| format!("the program's folder could not be written to ({what}: {problem})");
     if unpacked.exists() {
-        let age = fs::metadata(&unpacked).and_then(|found| found.modified()).ok().and_then(|at| at.elapsed().ok());
-        if age.is_some_and(|age| age < busy_for) {
-            return Err("another copy of Parrotfish seems to be updating this folder right now; try again in a few minutes".to_string());
+        if staged_for(&unpacked).is_some_and(|age| age < busy_for) {
+            return Err(
+                "an update of this folder was begun a moment ago, by this copy of Parrotfish or another; try again in a few minutes"
+                    .to_string(),
+            );
         }
-        fs::remove_dir_all(&unpacked).map_err(|e| cannot("clearing an earlier download", e))?;
+        fs::remove_dir_all(&unpacked).map_err(|e| cannot_write("clearing an earlier download", &e))?;
     }
-    fs::create_dir_all(&unpacked).map_err(|e| cannot("making room for the download", e))?;
+    let laid_out = lay_out(folder, &unpacked, entries);
+    if laid_out.is_err() {
+        unstage(&unpacked);
+    }
+    laid_out.map(|()| unpacked)
+}
+
+fn lay_out(folder: &Path, unpacked: &Path, entries: &[Entry]) -> Result<(), String> {
+    fs::create_dir_all(unpacked).map_err(|e| cannot_write("making room for the download", &e))?;
     for entry in entries {
-        fs::write(unpacked.join(&entry.name), &entry.data).map_err(|e| cannot(&entry.name, e))?;
+        fs::write(unpacked.join(&entry.name), &entry.data).map_err(|e| cannot_write(&entry.name, &e))?;
     }
     let carried = folder.join(CARRIED_ALONG);
     if carried.is_file() && !entries.iter().any(|entry| entry.name.eq_ignore_ascii_case(CARRIED_ALONG)) {
-        fs::copy(&carried, unpacked.join(CARRIED_ALONG)).map_err(|e| cannot(CARRIED_ALONG, e))?;
+        fs::copy(&carried, unpacked.join(CARRIED_ALONG)).map_err(|e| cannot_write(CARRIED_ALONG, &e))?;
     }
-    Ok(unpacked)
+    for entry in entries {
+        if !fs::read(unpacked.join(&entry.name)).is_ok_and(|kept| kept == entry.data) {
+            return Err(taken_away(&entry.name));
+        }
+    }
+    Ok(())
+}
+
+fn taken_away(name: &str) -> String {
+    format!("{name} was changed or taken away right after it was unpacked, perhaps by security software")
+}
+
+pub fn forget_leftover(program: &Path, older_than: Duration) -> bool {
+    let Some(folder) = program.parent() else {
+        return false;
+    };
+    let unpacked = folder.join(STAGING).join(UNPACKED);
+    let stale = staged_for(&unpacked).is_some_and(|age| age >= older_than);
+    if !stale || place(program) != Place::Ready {
+        return false;
+    }
+    unstage(&unpacked);
+    !unpacked.exists()
+}
+
+pub fn in_flight(handed_over_from: &str, now: Version, staged: Option<Duration>, started_by_the_helper: bool) -> bool {
+    !started_by_the_helper && Version::parse(handed_over_from) == Some(now) && staged.is_some_and(|age| age < HELPER_TAKES)
+}
+
+pub fn seat_name(folder: &Path) -> bool {
+    folder.file_name().is_some_and(|name| name.to_string_lossy().starts_with(SEAT))
+}
+
+pub fn waits_for_the_helper(program: &Path, handed_over_from: &str, working_folder: Option<&Path>) -> bool {
+    let staged = program.parent().and_then(|folder| staged_for(&folder.join(STAGING).join(UNPACKED)));
+    in_flight(handed_over_from, Version::current(), staged, working_folder.is_some_and(seat_name))
 }
 
 fn seat_for(helper: &Path) -> Result<PathBuf, String> {
     let base = std::env::temp_dir();
-    for name in ["Parrotfish-updater".to_string(), format!("Parrotfish-updater-{}", std::process::id())] {
+    for name in [SEAT.to_string(), format!("{SEAT}-{}", std::process::id())] {
         let seat = base.join(name).join(HELPER);
         let made = seat.parent().is_some_and(|folder| fs::create_dir_all(folder).is_ok());
         if made && fs::copy(helper, &seat).is_ok() {
@@ -439,9 +509,15 @@ pub fn helper_for(folder: &Path, unpacked: &Path) -> Option<PathBuf> {
     [unpacked.join(HELPER), folder.join(HELPER)].into_iter().find(|path| path.is_file())
 }
 
-pub fn hand_over(folder: &Path, unpacked: &Path) -> Result<(), String> {
+pub fn hand_over(folder: &Path, unpacked: &Path, to_the_front: bool) -> Result<(), String> {
     let helper = helper_for(folder, unpacked).ok_or_else(|| format!("{HELPER} is missing, so this copy cannot replace itself"))?;
+    if !fs::metadata(unpacked.join(PROGRAM)).is_ok_and(|found| found.is_file() && found.len() > 0) {
+        return Err(taken_away(PROGRAM));
+    }
     let seat = seat_for(&helper)?;
+    if to_the_front {
+        platform::allow_front(ANY_PROCESS);
+    }
     if launch(&seat, unpacked, folder) {
         Ok(())
     } else {
@@ -493,7 +569,7 @@ pub fn wording(step: &Step, place: &Place, from: Option<&Path>) -> Wording {
                 None => format!("Parrotfish {version} is available."),
             };
             match place {
-                Place::Ready => both(format!("{found} Updating restarts Parrotfish."), Offer::Install),
+                Place::Ready => both(format!("{found} Updating closes your connections and restarts Parrotfish."), Offer::Install),
                 Place::OtherName(name) => both(format!("{found} This copy is called {name}, so it will not replace itself."), Offer::Page),
                 Place::Shared(name) if name.is_empty() => {
                     both(format!("{found} This copy could not look at its own folder, so it will not replace itself."), Offer::Page)
@@ -510,6 +586,32 @@ pub fn wording(step: &Step, place: &Place, from: Option<&Path>) -> Wording {
     }
 }
 
+pub fn banner(news: &str, shown: &Wording, closed: bool) -> String {
+    let said = if closed { "" } else { shown.banner.as_str() };
+    [news, said].into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ")
+}
+
+pub fn closable(step: &Step) -> bool {
+    !matches!(step, Step::Bringing(..) | Step::Restarting)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Press {
+    Nothing,
+    Install(Version),
+    Page,
+    LookAtTheFolderAgain,
+}
+
+pub fn press(step: &Step, offered: Offer, place: &Place) -> Press {
+    match (step, offered) {
+        (Step::Found(version), Offer::Install) if *place == Place::Ready => Press::Install(*version),
+        (Step::Found(_), Offer::Install) => Press::LookAtTheFolderAgain,
+        (Step::Found(_) | Step::Failed(_), Offer::Page) => Press::Page,
+        _ => Press::Nothing,
+    }
+}
+
 pub fn after_restart(from: &str) -> Option<String> {
     let before = Version::parse(from)?;
     let now = Version::current();
@@ -518,6 +620,60 @@ pub fn after_restart(from: &str) -> Option<String> {
     } else {
         "The update did not go through. The file update-log.txt in the program's folder says what happened.".to_string()
     })
+}
+
+pub trait Listing {
+    fn text(&self, name: &str) -> Option<String>;
+    fn number(&self, name: &str) -> Option<u32>;
+    fn set_text(&mut self, name: &str, value: &str) -> bool;
+    fn set_number(&mut self, name: &str, value: u32) -> bool;
+}
+
+pub struct Installed;
+
+impl Listing for Installed {
+    fn text(&self, name: &str) -> Option<String> {
+        platform::stored_text(LISTING, name)
+    }
+
+    fn number(&self, name: &str) -> Option<u32> {
+        platform::stored_number(LISTING, name)
+    }
+
+    fn set_text(&mut self, name: &str, value: &str) -> bool {
+        platform::change_stored_text(LISTING, name, value)
+    }
+
+    fn set_number(&mut self, name: &str, value: u32) -> bool {
+        platform::change_stored_number(LISTING, name, value)
+    }
+}
+
+pub fn same_folder(listed: &str, folder: &Path) -> bool {
+    let plain = |text: &str| text.trim().replace('/', "\\").trim_end_matches('\\').to_lowercase();
+    let listed = plain(listed);
+    !listed.is_empty() && listed == plain(&folder.to_string_lossy())
+}
+
+pub fn keep_listing_in_step(listing: &mut dyn Listing, program: &Path, now: Version) -> bool {
+    let named = program.file_name().is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case(PROGRAM));
+    let Some(folder) = program.parent().filter(|_| named) else {
+        return false;
+    };
+    let listed = listing.text("InstallLocation").or_else(|| listing.text("Inno Setup: App Path"));
+    if !listed.is_some_and(|listed| same_folder(&listed, folder)) {
+        return false;
+    }
+    let version = now.to_string();
+    if listing.text("DisplayVersion").as_deref() == Some(version.as_str()) || !listing.set_text("DisplayVersion", &version) {
+        return false;
+    }
+    for (name, value) in [("MajorVersion", now.0), ("MinorVersion", now.1), ("VersionMajor", now.0), ("VersionMinor", now.1)] {
+        if listing.number(name).is_some() {
+            listing.set_number(name, value);
+        }
+    }
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -688,7 +844,8 @@ mod tests {
         assert_eq!(circle.asked.borrow().len(), MAX_HOPS + 1);
 
         let gone = Scripted::new(&[(FILE, 404, "", b"")]);
-        assert_eq!(fetch(&gone, FILE, 100, &mut |_, _| {}), Err("GitHub does not have that file".to_string()));
+        let missing = fetch(&gone, FILE, 100, &mut |_, _| {}).expect_err("a file GitHub does not have");
+        assert!(missing.starts_with("GitHub does not have that file") && missing.contains("try again"), "{missing}");
         let odd = Scripted::new(&[(FILE, 503, "", b"")]);
         assert_eq!(fetch(&odd, FILE, 100, &mut |_, _| {}), Err("GitHub answered with status 503".to_string()));
         let nowhere = Scripted::new(&[(FILE, 302, "", b"")]);
@@ -963,6 +1120,8 @@ mod tests {
             "PhishSpeak.exe",
             "Parrotfish.exe.old",
             "update.exe.old-1787363793",
+            "is-B7D3A.tmp",
+            "IS-0T9K4.TMP",
         ] {
             assert!(own_file(own), "{own}");
         }
@@ -977,6 +1136,13 @@ mod tests {
             "unins001.exe",
             "desktop.ini",
             "ps-app.exe",
+            "notes.tmp",
+            "is-B7D3.tmp",
+            "is-B7D3A0.tmp",
+            "is-B7_3A.tmp",
+            "is-B7D3A.txt",
+            "this-B7D3A.tmp",
+            "is-B7D3A.tmp.bak",
             "",
         ] {
             assert!(!own_file(other), "{other}");
@@ -1041,7 +1207,7 @@ mod tests {
 
         fs::remove_file(folder.join("unins000.msg")).unwrap();
         let busy = stage(&folder, &entries);
-        assert!(busy.is_err_and(|problem| problem.contains("another copy of Parrotfish")), "two copies staged into one folder at once");
+        assert!(busy.is_err_and(|problem| problem.contains("was begun a moment ago")), "two copies staged into one folder at once");
         assert!(unpacked.join("Parrotfish.exe").is_file(), "and the first one's files were pulled from under it");
         let again = stage_unless_busy(&folder, &entries, Duration::ZERO).unwrap();
         assert!(!again.join("unins000.msg").exists() && !again.join("stale.txt").exists());
@@ -1053,7 +1219,15 @@ mod tests {
         assert_eq!(helper_for(&folder, &again), Some(folder.join("update.exe")), "a release without one falls back on the installed one");
         fs::remove_file(folder.join("update.exe")).unwrap();
         assert_eq!(helper_for(&folder, &again), None);
-        assert!(hand_over(&folder, &again).is_err_and(|problem| problem.contains("update.exe is missing")));
+        assert!(hand_over(&folder, &again, false).is_err_and(|problem| problem.contains("update.exe is missing")));
+        fs::write(folder.join("update.exe"), "the helper that was installed").unwrap();
+        fs::remove_file(again.join("Parrotfish.exe")).unwrap();
+        let gone = hand_over(&folder, &again, false).expect_err("the new program is not there any more");
+        assert!(gone.starts_with("Parrotfish.exe was changed or taken away"), "{gone}");
+        fs::write(again.join("Parrotfish.exe"), "").unwrap();
+        let empty = hand_over(&folder, &again, false).expect_err("an empty file is not a program");
+        assert!(empty.starts_with("Parrotfish.exe was changed or taken away"), "an empty file was handed over as the new program: {empty}");
+        fs::remove_file(folder.join("update.exe")).unwrap();
         unstage(&again);
         assert!(!folder.join("update").exists(), "a failed hand-over leaves nothing staged");
         fs::create_dir_all(folder.join("update").join("unpacked")).unwrap();
@@ -1064,6 +1238,129 @@ mod tests {
         fs::write(&blocked, "a file where the folder should be").unwrap();
         assert!(stage(&blocked, &entries).is_err_and(|problem| problem.contains("could not be written to")));
         let _ = fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_download_that_cannot_be_laid_out_whole_leaves_nothing_behind() {
+        let folder = scratch("halfway");
+        fs::write(folder.join("Parrotfish.exe"), "old program").unwrap();
+        let entry = |name: &str, data: &[u8]| Entry { name: name.to_string(), data: data.to_vec() };
+
+        let unwritable = [entry("Parrotfish.exe", b"new program"), entry("what?.txt", b"a name Windows will not write")];
+        let refused = stage_unless_busy(&folder, &unwritable, Duration::ZERO).expect_err("one of the files cannot be written");
+        assert!(refused.contains("could not be written to (what?.txt: "), "{refused}");
+        assert!(!refused.contains("os error") && !refused.contains(".)"), "Windows' own wording was passed on as it came: {refused}");
+        assert!(!folder.join("update").exists(), "the files written before the failure were left lying");
+        let at_once = stage(&folder, &[entry("Parrotfish.exe", b"new program")]);
+        assert!(at_once.is_ok(), "after a failure the next try was sent away as if another copy were at work: {at_once:?}");
+        unstage(&folder.join("update").join("unpacked"));
+
+        let swapped = [entry("Parrotfish.exe", b"what was downloaded"), entry("PARROTFISH.EXE", b"what is there a moment later")];
+        let changed = stage_unless_busy(&folder, &swapped, Duration::ZERO).expect_err("the file does not hold what was written");
+        assert!(changed.starts_with("Parrotfish.exe was changed or taken away"), "{changed}");
+        assert!(!folder.join("update").exists(), "files that are not what was downloaded were left for the helper");
+        assert_eq!(fs::read_to_string(folder.join("Parrotfish.exe")).unwrap(), "old program");
+        let _ = fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn what_an_update_that_never_finished_left_is_cleared_once_it_is_old() {
+        let folder = scratch("leftover");
+        let program = folder.join("Parrotfish.exe");
+        fs::write(&program, "program").unwrap();
+        let unpacked = folder.join("update").join("unpacked");
+        let leave = |unpacked: &Path| {
+            fs::create_dir_all(unpacked).unwrap();
+            fs::write(unpacked.join("Parrotfish.exe"), "never installed").unwrap();
+        };
+        assert!(!forget_leftover(&program, Duration::ZERO), "nothing was there to clear");
+        leave(&unpacked);
+        assert!(!forget_leftover(&program, Duration::from_secs(3600)), "an update that may still be under way was cleared");
+        assert!(unpacked.join("Parrotfish.exe").is_file());
+        fs::write(folder.join("holiday.jpg"), "somebody's").unwrap();
+        assert!(!forget_leftover(&program, Duration::ZERO), "a folder that is not the program's own was cleaned up");
+        fs::remove_file(folder.join("holiday.jpg")).unwrap();
+        assert!(!forget_leftover(&folder.join("ps-app.exe"), Duration::ZERO), "a copy under another name cleaned up");
+        assert!(unpacked.join("Parrotfish.exe").is_file());
+        assert!(forget_leftover(&program, Duration::ZERO));
+        assert!(!folder.join("update").exists() && program.is_file());
+        let _ = fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn a_copy_started_while_its_own_update_is_being_put_in_gets_out_of_the_way() {
+        let now = Version(0, 6, 1);
+        let just = Some(Duration::from_secs(2));
+        assert!(in_flight("0.6.1", now, just, false), "the old program, started again during the swap");
+        assert!(!in_flight("0.6.1", now, just, true), "the helper starts the old program again when the swap failed");
+        assert!(!in_flight("0.6.0", now, just, false), "the new program, started after the swap");
+        assert!(!in_flight("", now, just, false), "no update was handed over");
+        assert!(!in_flight("soon", now, just, false));
+        assert!(!in_flight("0.6.1", now, None, false), "nothing is unpacked, so the helper has finished or never ran");
+        assert!(in_flight("0.6.1", now, Some(HELPER_TAKES - Duration::from_millis(1)), false));
+        assert!(!in_flight("0.6.1", now, Some(HELPER_TAKES), false), "a helper that died must not keep the program from starting");
+        assert!(seat_name(&std::env::temp_dir().join(SEAT)) && seat_name(&std::env::temp_dir().join(format!("{SEAT}-4242"))));
+        for other in ["", "Parrotfish", "updater", "Programs\\Parrotfish"] {
+            assert!(!seat_name(Path::new(other)), "{other:?}");
+        }
+
+        let folder = scratch("inflight");
+        let program = folder.join("Parrotfish.exe");
+        fs::write(&program, "program").unwrap();
+        let own = Version::current().to_string();
+        assert!(!waits_for_the_helper(&program, &own, None), "nothing is unpacked");
+        fs::create_dir_all(folder.join("update").join("unpacked")).unwrap();
+        assert!(waits_for_the_helper(&program, &own, None));
+        assert!(waits_for_the_helper(&program, &own, Some(&folder)), "started from its own folder, as a shortcut does");
+        assert!(!waits_for_the_helper(&program, &own, Some(&std::env::temp_dir().join(SEAT))), "started by the helper");
+        assert!(!waits_for_the_helper(&program, "0.0.0", None), "the update it was handed over from is an older one");
+        let _ = fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn a_button_does_what_it_said_when_it_was_shown() {
+        let version = Version(0, 7, 0);
+        let found = Step::Found(version);
+        let shared = Place::Shared("holiday.jpg".to_string());
+        assert_eq!(press(&found, Offer::Install, &Place::Ready), Press::Install(version));
+        assert_eq!(press(&found, Offer::Install, &shared), Press::LookAtTheFolderAgain, "the folder changed after Update was shown");
+        assert_eq!(press(&found, Offer::Page, &Place::Ready), Press::Page, "a button that said Get it installed and restarted");
+        assert_eq!(press(&found, Offer::Page, &shared), Press::Page);
+        assert_eq!(press(&Step::Failed("no".to_string()), Offer::Page, &Place::Ready), Press::Page);
+        assert_eq!(press(&Step::Failed("no".to_string()), Offer::Install, &Place::Ready), Press::Nothing);
+        assert_eq!(press(&found, Offer::Nothing, &Place::Ready), Press::Nothing);
+        for busy in [Step::Unknown, Step::Looking, Step::Newest, Step::Bringing(version, 3), Step::Restarting, Step::Unreachable(String::new())] {
+            for offered in [Offer::Nothing, Offer::Install, Offer::Page] {
+                assert_eq!(press(&busy, offered, &Place::Ready), Press::Nothing, "{busy:?} {offered:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn what_happened_at_the_last_restart_stays_in_the_line_until_it_is_closed() {
+        let version = Version(0, 7, 0);
+        let news = "Parrotfish was updated from 0.6.0 to 0.6.1.";
+        let quiet = wording(&Step::Newest, &Place::Ready, None);
+        let offer = wording(&Step::Found(version), &Place::Ready, None);
+        assert_eq!(banner(news, &quiet, false), news);
+        assert_eq!(banner(news, &wording(&Step::Looking, &Place::Ready, None), false), news);
+        assert_eq!(banner("", &quiet, false), "");
+        assert_eq!(banner(news, &offer, false), format!("{news} {}", offer.banner));
+        assert_eq!(banner("", &offer, false), offer.banner);
+        assert_eq!(banner("", &offer, true), "", "a line that was closed came back");
+        assert_eq!(banner(news, &offer, true), news);
+        assert!(closable(&Step::Found(version)) && closable(&Step::Failed(String::new())) && closable(&Step::Newest));
+        assert!(!closable(&Step::Bringing(version, 10)) && !closable(&Step::Restarting), "a cross that cannot stop the download");
+    }
+
+    #[test]
+    fn what_windows_says_about_a_file_fits_into_a_sentence() {
+        let refused = said(&std::io::Error::from_raw_os_error(5));
+        assert!(!refused.is_empty() && !refused.contains("os error") && !refused.ends_with('.') && !refused.ends_with(' '), "{refused:?}");
+        assert_eq!(said(&std::io::Error::other("the disk is full.")), "the disk is full");
+        assert_eq!(said(&std::io::Error::other("it ends in a bracket (os error 5)")), "it ends in a bracket");
+        assert_eq!(said(&std::io::Error::other("no (os error here")), "no (os error here");
     }
 
     #[test]
@@ -1086,7 +1383,7 @@ mod tests {
     fn what_is_shown_says_what_can_be_done_from_where_the_copy_sits() {
         let version = Version(0, 7, 0);
         let ready = wording(&Step::Found(version), &Place::Ready, None);
-        assert_eq!(ready.banner, "Parrotfish 0.7.0 is available. Updating restarts Parrotfish.");
+        assert_eq!(ready.banner, "Parrotfish 0.7.0 is available. Updating closes your connections and restarts Parrotfish.");
         assert_eq!((ready.about.as_str(), ready.offer), (ready.banner.as_str(), Offer::Install));
         let shared = wording(&Step::Found(version), &Place::Shared("holiday.jpg".to_string()), None);
         assert!(shared.banner.contains("holiday.jpg") && shared.banner.contains("will not replace itself"));
@@ -1094,7 +1391,10 @@ mod tests {
         assert_eq!(wording(&Step::Found(version), &Place::OtherName("ps-app.exe".to_string()), None).offer, Offer::Page);
         assert_eq!(wording(&Step::Found(version), &Place::Shared(String::new()), None).offer, Offer::Page);
         let local = wording(&Step::Found(version), &Place::Ready, Some(Path::new("D:\\release")));
-        assert_eq!(local.banner, "Parrotfish 0.7.0 is available, not from GitHub but from the folder D:\\release. Updating restarts Parrotfish.");
+        assert_eq!(
+            local.banner,
+            "Parrotfish 0.7.0 is available, not from GitHub but from the folder D:\\release. Updating closes your connections and restarts Parrotfish."
+        );
         for silent in [Step::Unknown, Step::Looking, Step::Newest, Step::Unreachable("the server took too long to answer".to_string())] {
             let shown = wording(&silent, &Place::Ready, None);
             assert_eq!((shown.banner.as_str(), shown.offer), ("", Offer::Nothing), "{silent:?}");
@@ -1122,8 +1422,124 @@ mod tests {
         let unchanged = after_restart(&now.to_string()).expect("a version it can read");
         assert!(unchanged.starts_with("The update did not go through."), "{unchanged}");
         assert!(after_restart(&Version(now.0 + 1, 0, 0).to_string()).is_some_and(|text| text.starts_with("The update did not go through.")));
+        assert_eq!(after_restart("0.0.0"), Some(format!("Parrotfish was updated from 0.0.0 to {now}.")));
         assert_eq!(after_restart(""), None);
         assert_eq!(after_restart("soon"), None);
+    }
+
+    #[derive(Default)]
+    struct Shelf {
+        texts: HashMap<String, String>,
+        numbers: HashMap<String, u32>,
+        written: usize,
+        locked: bool,
+    }
+
+    impl Shelf {
+        fn installed(location: &str, version: &str) -> Self {
+            let mut shelf = Shelf::default();
+            shelf.texts.insert("InstallLocation".to_string(), location.to_string());
+            shelf.texts.insert("DisplayVersion".to_string(), version.to_string());
+            shelf.texts.insert("DisplayName".to_string(), "Parrotfish".to_string());
+            for name in ["MajorVersion", "MinorVersion", "VersionMajor", "VersionMinor"] {
+                shelf.numbers.insert(name.to_string(), 99);
+            }
+            shelf
+        }
+
+        fn says(&self) -> (Option<&str>, Vec<Option<u32>>) {
+            let numbers = ["MajorVersion", "MinorVersion", "VersionMajor", "VersionMinor"];
+            (self.texts.get("DisplayVersion").map(String::as_str), numbers.iter().map(|name| self.numbers.get(*name).copied()).collect())
+        }
+    }
+
+    impl Listing for Shelf {
+        fn text(&self, name: &str) -> Option<String> {
+            self.texts.get(name).cloned()
+        }
+
+        fn number(&self, name: &str) -> Option<u32> {
+            self.numbers.get(name).copied()
+        }
+
+        fn set_text(&mut self, name: &str, value: &str) -> bool {
+            if self.locked {
+                return false;
+            }
+            self.written += 1;
+            self.texts.insert(name.to_string(), value.to_string());
+            true
+        }
+
+        fn set_number(&mut self, name: &str, value: u32) -> bool {
+            if self.locked {
+                return false;
+            }
+            self.written += 1;
+            self.numbers.insert(name.to_string(), value);
+            true
+        }
+    }
+
+    #[test]
+    fn an_installed_copy_puts_its_own_version_into_windows_list_of_programs() {
+        let home = "D:\\Programs\\PhishSpeak";
+        let program = PathBuf::from(format!("{home}\\Parrotfish.exe"));
+        let now = Version(2, 7, 1);
+
+        let mut stale = Shelf::installed(&format!("{home}\\"), "0.6.0");
+        assert!(keep_listing_in_step(&mut stale, &program, now));
+        assert_eq!(stale.says(), (Some("2.7.1"), vec![Some(2), Some(7), Some(2), Some(7)]));
+        assert_eq!(stale.texts.get("DisplayName").map(String::as_str), Some("Parrotfish"), "nothing else is touched");
+        assert_eq!(stale.texts.len(), 3);
+        let written = stale.written;
+        assert!(!keep_listing_in_step(&mut stale, &program, now), "it was already right");
+        assert_eq!(stale.written, written, "and was written again all the same");
+
+        let mut bare = Shelf::default();
+        bare.texts.insert("Inno Setup: App Path".to_string(), "d:/programs/phishspeak".to_string());
+        assert!(keep_listing_in_step(&mut bare, &PathBuf::from("D:\\Programs\\PhishSpeak\\PARROTFISH.EXE"), now));
+        assert_eq!(bare.says(), (Some("2.7.1"), vec![None, None, None, None]), "numbers that were not there are not added");
+
+        for elsewhere in [
+            "D:\\Portable\\Parrotfish.exe",
+            "D:\\Programs\\PhishSpeak2\\Parrotfish.exe",
+            "D:\\Programs\\PhishSpeak\\copy\\Parrotfish.exe",
+            "D:\\Programs\\Parrotfish.exe",
+            "D:\\Programs\\PhishSpeak\\ps-app.exe",
+            "D:\\Programs\\PhishSpeak\\PhishSpeak.exe",
+            "Parrotfish.exe",
+            "",
+        ] {
+            let mut theirs = Shelf::installed(&format!("{home}\\"), "0.6.0");
+            assert!(!keep_listing_in_step(&mut theirs, Path::new(elsewhere), now), "{elsewhere:?}");
+            assert_eq!((theirs.written, theirs.says().0), (0, Some("0.6.0")), "{elsewhere:?} wrote into an entry that is not its own");
+        }
+
+        let mut nothing = Shelf::default();
+        assert!(!keep_listing_in_step(&mut nothing, &program, now));
+        assert!(nothing.texts.is_empty() && nothing.written == 0, "an entry was made up for a copy nobody installed");
+        let mut nowhere = Shelf::installed("", "0.6.0");
+        assert!(!keep_listing_in_step(&mut nowhere, Path::new("\\Parrotfish.exe"), now));
+        assert_eq!(nowhere.written, 0, "an entry that names no folder was taken for this copy's");
+
+        let mut locked = Shelf::installed(home, "0.6.0");
+        locked.locked = true;
+        assert!(!keep_listing_in_step(&mut locked, &program, now));
+        assert_eq!(locked.says(), (Some("0.6.0"), vec![Some(99); 4]));
+    }
+
+    #[test]
+    fn a_folder_is_the_listed_one_whatever_its_case_and_slashes() {
+        let folder = Path::new("D:\\Programs\\PhishSpeak");
+        for same in ["D:\\Programs\\PhishSpeak", "D:\\Programs\\PhishSpeak\\", "d:\\programs\\phishspeak\\\\", " D:/Programs/PhishSpeak/ "] {
+            assert!(same_folder(same, folder), "{same:?}");
+        }
+        for other in ["", " ", "\\", "D:\\Programs", "D:\\Programs\\PhishSpeak2", "D:\\Programs\\PhishSpeak\\update", "E:\\Programs\\PhishSpeak"] {
+            assert!(!same_folder(other, folder), "{other:?}");
+        }
+        assert!(!same_folder("", Path::new("")), "no folder is not the same folder");
+        assert!(same_folder("C:\\", Path::new("C:\\")));
     }
 
     #[test]

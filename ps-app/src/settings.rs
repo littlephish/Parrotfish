@@ -183,6 +183,17 @@ fn number(value: &str, fallback: f32, low: f32, high: f32) -> f32 {
     }
 }
 
+pub fn write_whole(path: &Path, text: &str) -> std::io::Result<()> {
+    let mut draft = path.as_os_str().to_os_string();
+    draft.push(format!(".{}", std::process::id()));
+    let draft = PathBuf::from(draft);
+    if fs::write(&draft, text).and_then(|()| fs::rename(&draft, path)).is_ok() {
+        return Ok(());
+    }
+    let _ = fs::remove_file(&draft);
+    fs::write(path, text)
+}
+
 fn settings_path() -> PathBuf {
     config_dir().join("settings.ini")
 }
@@ -442,7 +453,7 @@ impl Settings {
 
     pub fn save(&self) -> std::io::Result<()> {
         fs::create_dir_all(config_dir())?;
-        fs::write(settings_path(), self.serialize())
+        write_whole(&settings_path(), &self.serialize())
     }
 }
 
@@ -511,6 +522,36 @@ mod tests {
         assert_eq!(folder_in(&root), root.join("Parrotfish"));
         assert!(!take_over_earlier_folder(&root));
         assert!(root.join("PhishSpeak").is_file() && !root.join("Parrotfish").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_file_is_swapped_in_whole_and_written_in_place_only_when_it_cannot_be() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = scratch_root("whole");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("settings.ini");
+        let alone = |root: &Path| fs::read_dir(root).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect::<Vec<_>>();
+        write_whole(&path, "nickname=Minnow\n").expect("a new file");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "nickname=Minnow\n");
+        write_whole(&path, "nickname=Pike\n").expect("over the one that is there");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "nickname=Pike\n");
+        assert_eq!(alone(&root), vec!["settings.ini".to_string()], "a draft was left beside the file");
+        let read_by_another = fs::OpenOptions::new().read(true).share_mode(3).open(&path).unwrap();
+        write_whole(&path, "nickname=Tetra\n").expect("a file somebody is reading cannot be swapped, so it is written in place");
+        drop(read_by_another);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "nickname=Tetra\n");
+        assert_eq!(alone(&root), vec!["settings.ini".to_string()], "a draft was left beside the file");
+        let mut opened_before = fs::File::open(&path).unwrap();
+        write_whole(&path, "nickname=Wrasse\nwindow_width=460\n").expect("beside a reader that lets the file be replaced");
+        let mut still_seen = String::new();
+        std::io::Read::read_to_string(&mut opened_before, &mut still_seen).unwrap();
+        assert_eq!(still_seen, "nickname=Tetra\n", "the file was rewritten under a reader instead of being swapped in whole");
+        drop(opened_before);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "nickname=Wrasse\nwindow_width=460\n");
+        assert_eq!(alone(&root), vec!["settings.ini".to_string()], "a draft was left beside the file");
+        assert!(write_whole(&root.join("no-such-folder").join("settings.ini"), "x").is_err());
         let _ = fs::remove_dir_all(&root);
     }
 

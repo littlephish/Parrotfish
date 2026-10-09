@@ -94,7 +94,9 @@ When it starts, Parrotfish asks GitHub which release is the newest; it sends not
 name and version. If there is a newer one, a line in the window says so. Nothing is installed
 until you press Update: Parrotfish then downloads the release, checks it against the checksum
 published with it, and hands over to `update.exe`, which swaps the files once Parrotfish has
-closed and starts it again. `Parrotfish.exe --update` looks once and installs what it finds
+closed and starts it again. That ends your connections: after the restart the same line says
+whether the update went through, and Parrotfish connects again only to bookmarks that are set
+to connect at start. `Parrotfish.exe --update` looks once and installs what it finds
 without asking, also when Parrotfish is already running. Settings, About has the switch for
 the asking and a button to look right away. The checksum catches a download that is broken or
 mixed up; it is not a signature, and the files are not signed.
@@ -106,7 +108,8 @@ Parrotfish only replaces itself in a folder of its own. `update.exe` makes the f
 the new release, which means it removes every file the release does not have, so a copy that
 shares its folder with anything else (a copy on the desktop, say) only offers the download
 page. Give a portable copy a folder of its own, or use the installer, and do not keep files of
-your own in the program's folder.
+your own in the program's folder. An installed copy also puts its version into Windows' list
+of installed apps after it has updated itself.
 
 `update.exe` is not specific to Parrotfish. The `updater` folder is the same, byte for byte, as
 the one in [Eve-Strait](https://github.com/littlephish/eve-strait/tree/main/updater) and Ore
@@ -127,13 +130,25 @@ program with the C runtime linked in, tries the installer on the build machine
 (`tools/installer_test.py`: over an installed PhishSpeak, on its own, and the installed
 program updating itself from a stand-in release), and publishes an
 installer (`Parrotfish-<version>-setup.exe`, per user, no administrator prompt), a zip of the
-program with `update.exe`, and `SHA256SUMS.txt` on the repository's Releases page. The zip
-must keep its name and stay flat, and the checksum list must stay, because installed copies
-update themselves from exactly these two files. Both carry
+program with `update.exe`, and `SHA256SUMS.txt` on the repository's Releases page. Both carry
 `THIRD-PARTY-NOTICES.txt`, the licence texts of every library in the program, collected at build
 time. Ordinary pushes and pull requests only run the tests (the `Check` workflow); a push that
 changes the installer also runs the `Installer` workflow, which builds it and tries it the same
 way without publishing anything.
+
+Installed copies read a release with the code they already have, so these can never change:
+
+- the repository's owner and name;
+- tags of the form `v<a>.<b>.<c>` and no others: a tag such as `v0.7.0-rc1` would become the
+  newest release, and no installed copy could read it;
+- the zip's name, `Parrotfish-<version>-windows-x64.zip`, and what it is: `Parrotfish.exe` and
+  `update.exe` with no folders, at most 64 files with plain names (letters, digits, dot, dash,
+  underscore and space, 80 characters at most), at most 300 MB packed and 600 MB unpacked;
+- `SHA256SUMS.txt`, with one line for the zip: its SHA-256, two spaces, its name.
+
+A file that is new in the zip also needs a line under `[UninstallDelete]` in
+`installer/parrotfish.iss` and a place in `OWN_FILES` in `ps-app/src/update.rs`; without them a
+copy that updated itself leaves the file behind when it is removed, and stops updating itself.
 
 To make the same files on your own PC, install [Inno Setup 6](https://jrsoftware.org/isinfo.php)
 and run `python tools/package_release.py`; they land in `dist/`. Add `--skip-installer` for the

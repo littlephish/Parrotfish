@@ -7,7 +7,7 @@ joins a server, shows the channel tree, chats, and does voice (Opus) both ways.
 
 Working end to end against a real TeamSpeak 3.13.8 server: login, channel tree, channel
 switching (incl. password channels), text chat, microphone capture → Opus → server, and
-server → Opus → speakers, with and without voice encryption. 423 unit tests green.
+server → Opus → speakers, with and without voice encryption. 433 unit tests green.
 
 The window is the compact tree layout in the Twilight reef palette (design:
 `docs/superpowers/specs/2026-10-06-compact-window-design.md`): spacer channels are drawn as
@@ -142,6 +142,30 @@ Added on 2026-10-09, version 0.6.0: Parrotfish updates itself.
 - Version 0.6.0 was built and published by the release workflow. It is the first version that
   updates itself; 0.5.0 and the versions before it have to be replaced by hand once.
 
+Changed on 2026-10-09, version 0.6.1: what a hunt for bugs in the updater turned up. Three
+readers went through the published 0.6.0, each from another side (the life of an installed
+copy, the seconds of the swap, what the user sees and presses).
+
+- After an update the program asks Windows to bring its window to the front, and the old
+  program gives up its own right to the front for that. Before, the new window opened behind
+  whatever else was on the screen.
+- Whether the update went through is said in the update line and stays until it is closed.
+  Before, it stood in the ordinary notice line, where a server's message or the microphone
+  notice replaced it a second later.
+- Updating while connected leaves the servers properly; the line now says "Updating closes
+  your connections and restarts Parrotfish."
+- The window's size and the speaking window's place are kept when the program restarts for an
+  update, as when it is closed.
+- An installed copy corrects the version in Windows' list of installed apps.
+- A download that cannot be laid out whole, or that is not on the disk as it was downloaded,
+  leaves nothing behind and is not handed over; what an update that never finished left is
+  cleared at a later start.
+- A button does what it said when it was shown: one that read "Get it" can no longer install.
+- A second start in the seconds of the swap gets out of the way instead of running the old
+  program again.
+- The settings file is written whole and swapped in, so that a program stopped in the middle
+  cannot leave half a file.
+
 Planned, not built: reading keys through Windows' Raw Input as a switch in settings
 (`docs/superpowers/plans/2026-10-07-raw-input-keys.md`).
 
@@ -198,7 +222,7 @@ order against the test server, not by ear and not with an official client talkin
 | `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client/group book, voice and whispers in/out, events; `spacer` recognises spacer channels, `filetransfer` fetches icons over the server's file port, `resolve` finds a server through SRV, TSDNS or its plain name | done, 35 tests + live tests |
 | `ps-oldcodecs` | Speex decoder (8, 16 and 32 kHz) in safe Rust, no dependencies | done, 27 tests + 3 run by hand |
 | `ps-voice` | Opus codec, Speex playback at 48 kHz, resampler, jitter buffer + mixer (talkers keyed by connection and client, a volume per talker, lowering for priority speakers), evening out how loud talkers are (`level.rs`), VAD/PTT gate, lanes (which key is held decides where a frame goes), echo canceller (`echo.rs`), noise suppression (`denoise.rs`), automatic gain (`agc.rs`), event sounds (`cues.rs`), cpal device I/O (WASAPI) | done, 127 tests + live tests |
-| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `mic.rs` what each server is told about the microphone and when, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` keeping a window's size across displays, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 170 tests + live tests |
+| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `mic.rs` what each server is told about the microphone and when, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` keeping a window's size across displays, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 180 tests + live tests |
 | `ps-serverquery` | Text protocol over TCP 10011 | not started |
 
 Threads: UI thread (Slint, 33 ms timer drains client events) · `ps-client` actor + UDP reader ·
@@ -713,6 +737,8 @@ who-hears-what table and fails if a server behaves differently).
 `PARROTFISH_TRACE=1` makes the GUI show every command in the chat drawer.
 `PARROTFISH_LINK_SCHEME=<name>` makes the links switch and the link reader use another scheme
 than `ts3server`, so that links can be tried without touching the PC's real entry.
+`PARROTFISH_STAY_BACK=1` keeps the program from asking Windows for the front (after an update,
+and when a second start reaches it), for trying things on a PC somebody is working at.
 `PARROTFISH_UPDATE_FROM=<folder>` makes the program look for releases in a folder instead of on
 GitHub: `latest.txt` there names the newest version (`v1.2.3`), and beside it lie
 `Parrotfish-1.2.3-windows-x64.zip` and `SHA256SUMS.txt`. Everything after the fetching is the
@@ -738,15 +764,19 @@ it to the sizes Windows uses (needs numpy);
 release program with the C runtime linked in and writes the zip, the installer (needs Inno
 Setup 6) and their checksums to `dist/`; `installer_test.py` is for a build machine. It
 installs the program as PhishSpeak with the installer script from before the rename
-(`installer/upgrade-test/`) and then goes through four cases: the new installer over it
-while the program runs, followed by the first start of the new program (settings folder
-moved, links entry corrected and written to the settings, a second start handed over) and
-its removal; the new installer over it and removal before the program ever ran; a first
-install beside shortcuts named PhishSpeak that the installer never made; and the installed
-program updating itself from a stand-in release made of the build's own zip (with somebody's
-file in its folder, and then with a checksum that does not match, it must leave everything as
-it is; then the update has to go through, the program has to come back, and the uninstaller
-has to be there still and remove everything). After each step it
+(`installer/upgrade-test/`) and then goes through four cases. One: the new installer over it
+while the program runs, followed by the first start of the new program with a newer stand-in
+release on offer (settings folder moved, links entry corrected and written to the settings,
+a second start handed over, nothing installed unasked), then a second start with `--update`
+that makes the running, upgraded program replace itself, and its removal. Two: the new
+installer over it and removal before the program ever ran. Three: a first install beside
+shortcuts named PhishSpeak that the installer never made. Four: a fresh install whose entry
+in Windows' list is given a wrong version, which the installed program has to correct and a
+copy of it in another folder has to leave alone; then the installed program updating itself
+from a stand-in release made of the build's own zip (with somebody's file in its folder, and
+then with a checksum that does not match, it must leave everything as it is; then the update
+has to go through, the program has to come back, and the uninstaller has to be there still
+and remove everything). After each step it
 checks files, shortcuts, what Windows lists and a stand-in links entry. It installs and
 removes for the current user, so it refuses to run outside GitHub Actions without
 `--this-pc`, and anywhere the program is already installed.
@@ -1094,8 +1124,70 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
     to close, up to a minute if another copy keeps the program file busy. A file that lands
     in the program's folder in that time is removed with the rest. The README says not to
     keep files there.
-  - After the program has updated itself, Windows' list of installed programs still shows the
-    version the installer put there.
+  - Windows' list of installed apps. The installer writes the version there, and after the
+    program has replaced itself that entry would be old. So at every start the program looks
+    at the entry of its own installer (`keep_listing_in_step`): if the entry names the folder
+    this program runs from and the program is called `Parrotfish.exe`, it writes its version
+    into `DisplayVersion` and into the four version numbers that are there. It never makes an
+    entry and never writes into one that names another folder, which is what keeps a copy on
+    the desktop or a build under `target` away from the entry of an installed copy.
+  - The window after the restart. The helper starts the new program from a process without a
+    window, and Windows does not let such a program take the front by itself. Two things are
+    done: the program that hands over gives the right to the front to anyone
+    (`AllowSetForegroundWindow` for any process, good until the user touches mouse or
+    keyboard), and the program that finds it was just updated asks for the front a third of
+    a second after its start. Where Windows still refuses, the taskbar button flashes. The
+    first half only helps from 0.6.1 on as the program that hands over.
+  - What the restart has to say goes into the update line (`update_news`), not the notice
+    line, which has one place and is written by servers, by connecting and by the microphone
+    check. It stays until the line is closed, and the settings are saved at once so that it
+    is not said twice.
+  - Leaving. Quitting for an update goes through `App::leave`, the same steps as closing the
+    window: the window's size and the speaking window's place are noted before the settings
+    are saved. `shutdown` then leaves every server and waits up to 0.9 s for that.
+  - What is unpacked is read back and compared with what was downloaded before the helper
+    is started, and the new program file is looked for once more at the hand-over. Security
+    software that takes a fresh program file away does it when the file is closed or first
+    read, so this is when it shows; without the check the helper would have made the folder
+    equal to an unpacked folder that lacks the program, and removed the program. A failure
+    while unpacking takes away what was unpacked so far. This does not cover a file that
+    disappears after the hand-over; see the helper's limits below.
+  - A leftover `update\unpacked` that is older than three minutes is removed at the next start
+    of a copy whose folder is its own (`forget_leftover`). Younger than that it may belong to
+    an update under way, and a new update is refused with words that say so.
+  - A button acts on what it showed (`update::press`). The folder is looked at when the line
+    is drawn and again when the button is pressed; if it has changed in between, a button
+    that read Update only redraws the line, with the reason, and one that read "Get it" opens
+    the download page and never installs.
+  - A start during the swap (`update::in_flight`, asked in `main` before anything else). A
+    copy that finds the settings saying an update was handed over from its own version,
+    unpacked files younger than thirty seconds beside it, and a working folder that is not
+    the helper's, is the old program started again while the helper works: it leaves at once.
+    Running on, it would keep the program file busy, the helper would wait a minute and then
+    swap the file under it, and the new program, started by the helper, would hand over to
+    the old one and leave. The helper's own restart is told apart by its working folder,
+    `%TEMP%\Parrotfish-updater`, which the program it starts inherits; that matters when the
+    swap failed and the helper starts the old program again. After this check the program
+    makes its own folder the working folder.
+  - The settings file is written to a draft beside it and renamed over it
+    (`settings::write_whole`); if somebody is reading the file just then and the rename is
+    refused, it is written in place as before.
+  - Names Inno Setup uses while it replaces files (`is-` + five characters + `.tmp`) count as
+    the program's own, so a Setup that was stopped half way does not end self-updating; the
+    helper removes them with the next update. A second uninstaller (`unins001.*`) stays a
+    stranger, because the helper would delete it.
+  - The helper's limits, which are not Parrotfish's to change alone because `updater/` is
+    shared: it makes the program folder equal to the unpacked folder as that folder is when
+    it gets to it, so an unpacked folder that has lost the program by then costs the installed
+    program too; and a file it had to move aside because it was in use stays moved aside if
+    the copy into its place then fails. Both need something to interfere in the seconds
+    between the hand-over and the swap. Proposed for the shared helper: do nothing unless the
+    unpacked folder holds the program, and put a file back when the copy into its place
+    fails. The helper that came with the new release does the swap, so such a fix would
+    protect copies that are already installed.
+  - Not done: connecting again after the restart to the servers that were open. A password
+    typed for one connection is not kept, so that could only work for bookmarks and for
+    servers without a password.
 - The icon (`ps-app/ui/app-icon.ico`). The picture it was made from held a large fish and,
   beside it, the finished tile; `tools/make_icon.py` takes the tile, the one connected shape
   that fills a square, makes its inside fully solid (the picture was a shade see-through) and

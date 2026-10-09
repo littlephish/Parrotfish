@@ -24,7 +24,7 @@ use slint::{CloseRequestResponse, ComponentHandle, LogicalSize, Timer, TimerMode
 
 use app::{with_app, App};
 use instance::Wish;
-use settings::{Settings, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
+use settings::Settings;
 
 slint::include_modules!();
 
@@ -67,6 +67,15 @@ fn main() -> Result<(), slint::PlatformError> {
     if arguments.iter().any(|arg| arg == "--forget-links") {
         app::forget_links(&scheme);
         return Ok(());
+    }
+    if let Ok(program) = std::env::current_exe() {
+        let working = std::env::current_dir().ok();
+        if update::waits_for_the_helper(&program, &Settings::load().updated_from, working.as_deref()) {
+            return Ok(());
+        }
+        if let Some(folder) = program.parent() {
+            let _ = std::env::set_current_dir(folder);
+        }
     }
     let wishes = start_wishes(&arguments, &scheme);
     let to_hand_over = if wishes.is_empty() { vec![Wish::Show] } else { wishes.clone() };
@@ -233,16 +242,7 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     let a = app.clone();
     ui.window().on_close_requested(move || {
-        with_app(&a, |s, w| {
-            let window = w.main.window();
-            let size = window.size().to_logical(window.scale_factor());
-            if size.width >= MIN_WINDOW_WIDTH && size.height >= MIN_WINDOW_HEIGHT {
-                s.settings.window_width = size.width;
-                s.settings.window_height = size.height;
-            }
-            s.close_settings(w);
-            s.park_speakers(w);
-        });
+        with_app(&a, |s, w| s.leave(w));
         CloseRequestResponse::HideWindow
     });
 

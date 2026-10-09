@@ -31,6 +31,8 @@ STAND_IN = b"a shortcut somebody made themselves"
 STAND_IN_VERSION = "99.0.0"
 NOTHING_HAPPENS_FOR = 20.0
 OLD_README = b"the read-me from before the update\n"
+WRONG_VERSION = "0.0.1"
+WRONG_MINOR = 77
 
 problems = []
 checked = 0
@@ -59,7 +61,7 @@ def uninstall_entry():
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, UNINSTALL) as key:
             found = {}
-            for name in ("DisplayName", "DisplayVersion", "InstallLocation"):
+            for name in ("DisplayName", "DisplayVersion", "InstallLocation", "VersionMinor"):
                 try:
                     found[name] = winreg.QueryValueEx(key, name)[0]
                 except OSError:
@@ -67,6 +69,17 @@ def uninstall_entry():
             return found
     except OSError:
         return None
+
+
+def listed():
+    entry = uninstall_entry() or {}
+    return entry.get("DisplayVersion"), entry.get("VersionMinor")
+
+
+def list_wrongly():
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, UNINSTALL, 0, winreg.KEY_SET_VALUE) as key:
+        winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, WRONG_VERSION)
+        winreg.SetValueEx(key, "VersionMinor", 0, winreg.REG_DWORD, WRONG_MINOR)
 
 
 def links_command():
@@ -164,6 +177,7 @@ def program_env(profile, source=None):
         os.environ,
         APPDATA=str(profile),
         PARROTFISH_LINK_SCHEME=SCHEME,
+        PARROTFISH_STAY_BACK="1",
         PARROTFISH_UPDATE_FROM=str(release),
         SLINT_BACKEND="winit-software",
     )
@@ -299,8 +313,51 @@ def removed(places, folder):
     check(links_command() is None and not links_key_exists(), "the links entry is gone")
 
 
-def upgrade_while_running(places, earlier_setup, setup, version, work):
-    print("== an upgrade while the earlier program runs, then the first start of the new one")
+def replaces_itself(folder, profile, published, release, running=None, within=None):
+    program = folder / f"{NOW}.exe"
+    with zipfile.ZipFile(published) as bundle:
+        new_readme = bundle.read("README.md")
+    (folder / "README.md").write_bytes(OLD_README)
+    began = time.time()
+    if running is not None and running.poll() is None:
+        messenger = start_program(program, profile, "--update", source=release)
+        left = wait_until(lambda: messenger.poll() is not None, 30)
+        check(left and messenger.returncode == 0, "a second start with --update passes the wish on to the running program and leaves")
+        if not left:
+            messenger.kill()
+        asked = running
+    else:
+        asked = start_program(program, profile, "--update", source=release)
+    held = sorted(path.name for path in folder.iterdir())
+    handed = wait_until(lambda: "updater started" in log_text(folder), 150)
+    took = time.time() - began
+    check(handed, f"the program handed over to update.exe, {took:.1f} s after it was asked to update (its folder held {held})")
+    if within is not None:
+        check(took < within, f"which is soon enough for the {NOTHING_HAPPENS_FOR:.0f} s waited above to mean something")
+    check(wait_until(lambda: "done" in log_text(folder), 150), "update.exe ran to its end")
+    check(wait_until(lambda: asked.poll() is not None, 30), "the program that was asked to update has ended")
+    back = wait_until(lambda: card_pid(profile) not in (None, asked.pid) and alive(card_pid(profile)), START_WAIT)
+    check(back, "the program came back by itself")
+    check((folder / "README.md").read_bytes() == new_readme, "the files of the release are in place")
+    put_in = re.search(r"copied/updated (\d+) file", log_text(folder))
+    check(put_in is not None and int(put_in.group(1)) >= 4, "the four files of the release were put in")
+    check((folder / "unins000.exe").is_file() and (folder / "unins000.dat").is_file(), "the uninstaller was kept")
+    check(wait_until(lambda: not (folder / "update").exists(), 20), "the folder the download was unpacked in is gone")
+    check(
+        wait_until(lambda: setting(profile / NOW / "settings.ini", "updated_from") is None, 20),
+        "no update is marked as under way any more",
+    )
+    returned = card_pid(profile)
+    if returned is not None and returned != asked.pid:
+        strays.append(returned)
+        stop_pid(returned, "the program that came back")
+    stop_whatever_runs_from(folder)
+    for line in log_text(folder).splitlines():
+        print("    update-log: " + line.split("] ", 1)[-1])
+
+
+def upgrade_while_running(places, earlier_setup, setup, published, version, work):
+    print("== an upgrade while the earlier program runs, the first start of the new one, and its first update of itself")
     profile = work / "appdata-a"
     install_earlier(places, earlier_setup, work / "a-earlier-install.log", desktop=True)
     earlier_program = places.earlier_folder / f"{EARLIER}.exe"
@@ -330,7 +387,9 @@ def upgrade_while_running(places, earlier_setup, setup, version, work):
     program = places.earlier_folder / f"{NOW}.exe"
     if not program.is_file():
         return
-    first = start_program(program, profile)
+    release = stand_in_release(work / "release-a", published, STAND_IN_VERSION)
+    first_started = time.time()
+    first = start_program(program, profile, source=release)
     moved = wait_until(lambda: (profile / NOW / "instance").is_file() or first.poll() is not None, START_WAIT)
     check(moved and first.poll() is None, f"the new program started and listens in the folder named {NOW}")
     check(not (profile / EARLIER).exists(), f"the settings folder named {EARLIER} is gone")
@@ -347,6 +406,13 @@ def upgrade_while_running(places, earlier_setup, setup, version, work):
         check(first.poll() is None, "and the first one keeps running")
         if not left:
             second.kill()
+    time.sleep(max(0.0, NOTHING_HAPPENS_FOR - (time.time() - first_started)))
+    check(
+        first.poll() is None and not (places.earlier_folder / "update-log.txt").exists() and not (places.earlier_folder / "update").exists(),
+        f"with a newer release on offer since its start {NOTHING_HAPPENS_FOR:.0f} s ago, the program installed nothing unasked",
+    )
+    replaces_itself(places.earlier_folder, profile, published, release, running=first, within=NOTHING_HAPPENS_FOR - 2)
+    check(listed()[0] == version, f"Windows still lists version {version} (it says {listed()[0]!r})")
     stop_program(first, f"{NOW}")
 
     uninstall(places.earlier_folder, profile, work / "a-uninstall.log")
@@ -407,7 +473,7 @@ def first_install(places, setup, work):
         drop_links()
 
 
-def updates_itself(places, setup, published, work):
+def updates_itself(places, setup, published, version, work):
     print("== the installed program replacing itself with the very zip that is to be published")
     profile = work / "appdata-d"
     code = quiet_run([setup, *SETUP_QUIET], work / "d-install.log")
@@ -419,8 +485,32 @@ def updates_itself(places, setup, published, work):
         return
     with zipfile.ZipFile(published) as bundle:
         shipped = sorted(bundle.namelist())
-        new_readme = bundle.read("README.md")
     check(shipped == sorted([f"{NOW}.exe", "update.exe", "README.md", "THIRD-PARTY-NOTICES.txt"]), f"the zip holds the four files and no folder (it holds {shipped})")
+
+    right = (version, int(version.split(".")[1]))
+    check(listed() == right, f"Windows lists version {version} after the install (it says {listed()})")
+    list_wrongly()
+    began = time.time()
+    plain = start_program(program, profile)
+    corrected = wait_until(lambda: listed() == right or plain.poll() is not None, START_WAIT)
+    took = time.time() - began
+    check(corrected and listed() == right, f"the installed program put its own version back into Windows' list of programs (it says {listed()})")
+    stop_program(plain, NOW)
+    list_wrongly()
+    apart = work / "appdata-portable"
+    elsewhere = work / "portable" / f"{NOW}.exe"
+    elsewhere.parent.mkdir()
+    shutil.copyfile(program, elsewhere)
+    copy = start_program(elsewhere, apart)
+    up = wait_until(lambda: card_pid(apart) == copy.pid or copy.poll() is not None, START_WAIT)
+    time.sleep(NOTHING_HAPPENS_FOR)
+    check(
+        up and copy.poll() is None and took < NOTHING_HAPPENS_FOR - 2,
+        f"a copy of the program in another folder ran for {NOTHING_HAPPENS_FOR:.0f} s (the installed one had needed {took:.1f} s to correct the list)",
+    )
+    check(listed() == (WRONG_VERSION, WRONG_MINOR), f"and it left Windows' list of programs alone (it says {listed()})")
+    stop_program(copy, "the copy in another folder")
+
     (folder / "README.md").write_bytes(OLD_README)
     release = stand_in_release(work / "release", published, STAND_IN_VERSION)
     untouched = lambda: (
@@ -445,34 +535,8 @@ def updates_itself(places, setup, published, work):
     check(untouched(), "and nothing in the folder was touched")
     stop_program(second, NOW)
 
-    began = time.time()
-    third = start_program(program, profile, "--update", source=release)
-    handed = wait_until(lambda: "updater started" in log_text(folder), 150)
-    took = time.time() - began
-    check(
-        handed and took < NOTHING_HAPPENS_FOR - 2,
-        f"the program handed over to update.exe after {took:.1f} s, so the {NOTHING_HAPPENS_FOR:.0f} s waited above were enough to mean something",
-    )
-    check(wait_until(lambda: "done" in log_text(folder), 150), "update.exe ran to its end")
-    check(wait_until(lambda: third.poll() is not None, 30), "the program that asked for the update has ended")
-    back = wait_until(lambda: card_pid(profile) not in (None, third.pid) and alive(card_pid(profile)), START_WAIT)
-    check(back, "the program came back by itself")
-    check((folder / "README.md").read_bytes() == new_readme, "the files of the release are in place")
-    put_in = re.search(r"copied/updated (\d+) file", log_text(folder))
-    check(put_in is not None and int(put_in.group(1)) >= 4, "the four files of the release were put in")
-    check((folder / "unins000.exe").is_file() and (folder / "unins000.dat").is_file(), "the uninstaller was kept")
-    check(wait_until(lambda: not (folder / "update").exists(), 20), "the folder the download was unpacked in is gone")
-    check(
-        wait_until(lambda: setting(profile / NOW / "settings.ini", "updated_from") is None, 20),
-        "no update is marked as under way any more",
-    )
-    returned = card_pid(profile)
-    if returned is not None and returned != third.pid:
-        strays.append(returned)
-        stop_pid(returned, "the program that came back")
-    stop_whatever_runs_from(folder)
-    for line in log_text(folder).splitlines():
-        print("    update-log: " + line.split("] ", 1)[-1])
+    replaces_itself(folder, profile, published, release, within=NOTHING_HAPPENS_FOR - 2)
+    check(listed() == right, f"and Windows' list of programs says version {version} again (it says {listed()})")
 
     uninstall(folder, profile, work / "d-uninstall.log")
     left = sorted(path.name for path in folder.iterdir()) if folder.exists() else []
@@ -482,7 +546,7 @@ def updates_itself(places, setup, published, work):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Install the earlier PhishSpeak, put the new installer over it, start and remove it, and install fresh. For a build machine."
+        description="Install the earlier PhishSpeak, put the new installer over it, start it, let it update itself and remove it, and the same for a fresh install. For a build machine."
     )
     parser.add_argument("--setup", help="the new installer; dist/Parrotfish-<version>-setup.exe if not given")
     parser.add_argument("--program", help="the built program that the earlier installer is made from")
@@ -540,10 +604,10 @@ def main():
 
         counts = []
         for case in (
-            lambda: upgrade_while_running(places, earlier_setup, setup, version, work),
+            lambda: upgrade_while_running(places, earlier_setup, setup, published, version, work),
             lambda: upgrade_never_started(places, earlier_setup, setup, version, work),
             lambda: first_install(places, setup, work),
-            lambda: updates_itself(places, setup, published, work),
+            lambda: updates_itself(places, setup, published, version, work),
         ):
             before = checked
             case()
@@ -577,9 +641,10 @@ def main():
     if problems:
         fail(f"{len(problems)} of {checked} installer checks went wrong")
     note(
-        f"installer test passed: {checked} checks ({counts[0]} for an upgrade while the earlier program runs and the first start, "
-        f"{counts[1]} for an upgrade removed before a first start, {counts[2]} for a first install, "
-        f"{counts[3]} for the installed program replacing itself)"
+        f"installer test passed: {checked} checks ({counts[0]} for an upgrade while the earlier program runs, the first start "
+        f"and the upgraded program replacing itself, {counts[1]} for an upgrade removed before a first start, "
+        f"{counts[2]} for a first install, {counts[3]} for a freshly installed program replacing itself and keeping "
+        f"Windows' list of programs right)"
     )
 
 
