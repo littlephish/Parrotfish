@@ -133,9 +133,9 @@ Added on 2026-10-09, version 0.6.0: Parrotfish updates itself.
   button to look at once). A newer one is announced in the window; pressing Update downloads
   it, checks it, hands over to `update.exe` and restarts. `--update` does it unasked, for
   the one look it starts.
-- `update.exe` is the updater from Eve-Strait and Ore Hold Watcher, taken over unchanged
-  (`updater/`), built with the C runtime linked in and shipped beside `Parrotfish.exe` in the
-  zip and by the installer.
+- `update.exe` is the updater from Eve-Strait, taken over unchanged (`updater/`); Ore Hold
+  Watcher carries an earlier version of it. It is built with the C runtime linked in and
+  shipped beside `Parrotfish.exe` in the zip and by the installer.
 - A copy only replaces itself in a folder that holds nothing but its own files.
 - The program has an icon, a parrotfish on a blue tile: on the program file, in the title bar
   and the taskbar, on the installer and its shortcuts.

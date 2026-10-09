@@ -112,8 +112,9 @@ your own in the program's folder. An installed copy also puts its version into W
 of installed apps after it has updated itself.
 
 `update.exe` is not specific to Parrotfish. The `updater` folder is the same, byte for byte, as
-the one in [Eve-Strait](https://github.com/littlephish/eve-strait/tree/main/updater) and Ore
-Hold Watcher; fix a bug in one and carry it to the others.
+the one in [Eve-Strait](https://github.com/littlephish/eve-strait/tree/main/updater); Ore Hold
+Watcher carries an earlier version of the same helper. Fix a bug in one and carry it to the
+others.
 
 ## Releases
 
