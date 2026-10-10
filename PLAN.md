@@ -77,6 +77,7 @@ Added on 2026-10-07:
   pass through it and it is invisible until someone speaks. It can stay above other windows
   while the main window does not, and can be made see-through.
 - A window dragged to a display with another scale keeps its size and its limits.
+- The main window opens where it was closed, on whichever display that was.
 - Speex, the voice format of old TeamSpeak channels, is played in all its three kinds.
   Parrotfish itself always talks in Opus. CELT, the other old format, is not played.
 - `ts3server://` links: a switch under Settings, Bookmarks makes Parrotfish the program that
@@ -225,7 +226,7 @@ order against the test server, not by ear and not with an official client talkin
 | `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client/group book, voice and whispers in/out, events; `spacer` recognises spacer channels, `filetransfer` fetches icons over the server's file port, `resolve` finds a server through SRV, TSDNS or its plain name | done, 35 tests + live tests |
 | `ps-oldcodecs` | Speex decoder (8, 16 and 32 kHz) in safe Rust, no dependencies | done, 27 tests + 3 run by hand |
 | `ps-voice` | Opus codec, Speex playback at 48 kHz, resampler, jitter buffer + mixer (talkers keyed by connection and client, a volume per talker, lowering for priority speakers), evening out how loud talkers are (`level.rs`), VAD/PTT gate, lanes (which key is held decides where a frame goes), echo canceller (`echo.rs`), noise suppression (`denoise.rs`), automatic gain (`agc.rs`), event sounds (`cues.rs`), cpal device I/O (WASAPI) | done, 127 tests + live tests |
-| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `mic.rs` what each server is told about the microphone and when, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` a window's limits and where it lands when it crosses to a display with another scale, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 182 tests + live tests |
+| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `mic.rs` what each server is told about the microphone and when, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` a window's limits and where it lands when it crosses to a display with another scale, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 183 tests + live tests |
 | `ps-serverquery` | Text protocol over TCP 10011 | not started |
 
 Threads: UI thread (Slint, 33 ms timer drains client events) · `ps-client` actor + UDP reader ·
@@ -576,6 +577,11 @@ ConnectOk", "level 213"). What is actually on the wire:
   and size survive a restart; closing the main window ends the program with the speaking
   window open; and the window did not become the active window when it was shown from the menu,
   clicked, dragged or locked. Moving and sizing were done with mouse messages sent by program.
+- The main window's place, on a 150 % display with a 100 % one to its right: closed and
+  opened again on each, twice in a row when started straight onto the 100 % one (the same
+  place and the same size each time); a place in the empty area under the smaller display
+  was left alone and Windows chose; closed while minimised it came back where it was last
+  seen. The window was moved, minimised and closed by program, not by hand.
 - Links, with a stand-in scheme so that the PC's own `ts3server` entry was never touched
   (`PARROTFISH_LINK_SCHEME=ts3server-test`): the switch wrote the per-user entry and Windows
   named Parrotfish as the program it would run for such a link; a second start with a link
@@ -1016,6 +1022,14 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   inside differs by a pixel or two between the displays and comes back the same.
 - The size is not set back after a change of scale, as it was until 0.6.1: the timer does not
   run while a window is dragged, so that ran after the drop and undid a snap.
+- The main window's place is kept as `window_place` in `settings.ini`, the corner of the
+  whole window in the desktop's own pixels, as the speaking window's is. The program notes
+  it on every tick while the window is shown and not minimised and writes it when the
+  window is closed, so a window closed from the taskbar while minimised comes back where it
+  was last seen. At the start the place is used only if a spot on the title bar (40 right
+  and 20 down from the corner) is on a display; otherwise Windows chooses, as on a first
+  start. A window closed while maximised comes back with that size and place, filling the
+  display, but not as a maximised window.
 - Links (`links.rs`, `instance.rs`). A link is `ts3server://host[:port]` with the optional parts
   TeamSpeak documents: `port`, `nickname`, `password`, `channel`, `cid`, `channelpassword`,
   `token`, `addbookmark` (a `cid` wins over a `channel`; a `+` stays a plus sign). A link is
@@ -1196,8 +1210,8 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
     check. It stays until the line is closed, and the settings are saved at once so that it
     is not said twice.
   - Leaving. Quitting for an update goes through `App::leave`, the same steps as closing the
-    window: the window's size and the speaking window's place are noted before the settings
-    are saved. `shutdown` then leaves every server and waits up to 0.9 s for that.
+    window: the window's size and place and the speaking window's place are noted before the
+    settings are saved. `shutdown` then leaves every server and waits up to 0.9 s for that.
   - What is unpacked is read back and compared with what was downloaded before the helper
     is started, and the new program file is looked for once more at the hand-over. Security
     software that takes a fresh program file away does it when the file is closed or first
@@ -1397,7 +1411,9 @@ Learned while building the compact window:
 - `PopupWindow` (`popup.show()` / `popup.close()`) is enough for a themed dropdown; `@image-url`
   needs literal paths, so icons live in a global (`Icons.mic`), tinted with `colorize`.
 - Window size: `window().set_size(LogicalSize)` before `run()`, and
-  `window().size().to_logical(window().scale_factor())` in the close handler.
+  `window().size().to_logical(window().scale_factor())` in the close handler. Its place the
+  same way, with `set_position(PhysicalPosition)` and `position()`; a place given before
+  `run()` on a display with another scale than the main one still gets the right size.
 - A test script can drive the window by posting `WM_MOUSEMOVE`, `WM_LBUTTONDOWN/UP` and
   `WM_KEYDOWN/UP` to it (lower-case letters, digits and unshifted punctuation only), which
   works while the window is behind others.

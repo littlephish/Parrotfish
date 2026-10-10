@@ -89,6 +89,9 @@ fn main() -> Result<(), slint::PlatformError> {
     let speakers_window = SpeakersWindow::new()?;
     let settings = Settings::load();
     ui.window().set_size(LogicalSize::new(settings.window_width, settings.window_height));
+    if let Some((x, y)) = settings.start_place(platform::on_a_screen) {
+        ui.window().set_position(slint::PhysicalPosition::new(x, y));
+    }
 
     let app = Rc::new(RefCell::new(App::new(&ui, &settings_window, &speakers_window, settings)));
     if let (Some(listener), Ok(mut state)) = (listener, app.try_borrow_mut()) {

@@ -13,6 +13,7 @@ pub const DEFAULT_WINDOW_WIDTH: f32 = 400.0;
 pub const DEFAULT_WINDOW_HEIGHT: f32 = 740.0;
 pub const MIN_WINDOW_WIDTH: f32 = 340.0;
 pub const MIN_WINDOW_HEIGHT: f32 = 520.0;
+const TITLE_BAR_SPOT: (i32, i32) = (40, 20);
 const MAX_WINDOW_SIDE: f32 = 8000.0;
 pub const MAX_REMEMBERED_FOLDS: usize = 512;
 pub const MAX_REMEMBERED_SERVERS: usize = 64;
@@ -86,6 +87,7 @@ pub struct Settings {
     pub voices: BTreeMap<String, Voice>,
     pub window_width: f32,
     pub window_height: f32,
+    pub window_place: Option<(i32, i32)>,
     pub key_offsets: BTreeMap<String, u64>,
 }
 
@@ -131,6 +133,7 @@ impl Default for Settings {
             voices: BTreeMap::new(),
             window_width: DEFAULT_WINDOW_WIDTH,
             window_height: DEFAULT_WINDOW_HEIGHT,
+            window_place: None,
             key_offsets: BTreeMap::new(),
         }
     }
@@ -199,6 +202,11 @@ fn settings_path() -> PathBuf {
 }
 
 impl Settings {
+    pub fn start_place(&self, on_a_screen: impl Fn(i32, i32) -> bool) -> Option<(i32, i32)> {
+        self.window_place
+            .filter(|(x, y)| on_a_screen(x.saturating_add(TITLE_BAR_SPOT.0), y.saturating_add(TITLE_BAR_SPOT.1)))
+    }
+
     pub fn parse(text: &str) -> Self {
         let mut s = Self::default();
         let mut legacy: Option<usize> = None;
@@ -326,6 +334,10 @@ impl Settings {
                 "window_height" => {
                     s.window_height = number(value, DEFAULT_WINDOW_HEIGHT, MIN_WINDOW_HEIGHT, MAX_WINDOW_SIDE)
                 }
+                "window_place" => {
+                    let parts: Vec<i32> = value.split(',').filter_map(|part| part.trim().parse().ok()).collect();
+                    s.window_place = if parts.len() == 2 { Some((parts[0], parts[1])) } else { None };
+                }
                 _ => {}
             }
         }
@@ -393,6 +405,9 @@ impl Settings {
         put("speakers_size", format!("{:.0},{:.0}", self.speakers_size.0, self.speakers_size.1));
         put("window_width", format!("{:.0}", self.window_width));
         put("window_height", format!("{:.0}", self.window_height));
+        if let Some((x, y)) = self.window_place {
+            put("window_place", format!("{x},{y}"));
+        }
         for (uid, offset) in &self.key_offsets {
             put(&format!("key_offset.{uid}"), offset.to_string());
         }
@@ -881,5 +896,29 @@ mod tests {
         assert_eq!((huge.window_width, huge.window_height), (MAX_WINDOW_SIDE, DEFAULT_WINDOW_HEIGHT));
         let junk = Settings::parse("window_width=wide\nwindow_height=\n");
         assert_eq!((junk.window_width, junk.window_height), (DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT));
+    }
+
+    #[test]
+    fn the_window_opens_where_it_was_closed_if_that_is_still_on_a_display() {
+        let mut s = Settings::default();
+        assert_eq!(s.window_place, None);
+        assert_eq!(s.start_place(|_, _| true), None, "a first start has no place to go back to");
+        assert!(!s.serialize().contains("window_place"), "and writes none");
+        s.window_place = Some((-1931, 68));
+        let back = Settings::parse(&s.serialize());
+        assert_eq!(back.window_place, Some((-1931, 68)), "a display to the left has places below zero");
+        assert_eq!(back.start_place(|_, _| true), Some((-1931, 68)));
+        assert_eq!(back.start_place(|_, _| false), None, "that display is gone");
+        let asked = std::cell::Cell::new((0, 0));
+        back.start_place(|x, y| {
+            asked.set((x, y));
+            true
+        });
+        assert_eq!(asked.get(), (-1891, 88), "the spot looked at is on the title bar, not the corner");
+        for odd in ["window_place=7\n", "window_place=4,x\n", "window_place=1,2,3\n", "window_place=\n"] {
+            assert_eq!(Settings::parse(odd).window_place, None, "{odd:?}");
+        }
+        let far = Settings::parse(&format!("window_place={},{}\n", i32::MAX, i32::MAX));
+        assert_eq!(far.start_place(|_, _| false), None, "a place at the end of the numbers is looked at without overflowing");
     }
 }

@@ -299,6 +299,7 @@ pub struct App {
     key_prompt: Option<u16>,
     channel_sheet: Option<(u16, u64)>,
     scales: [ScaleWatch; 3],
+    main_place: Option<(i32, i32)>,
     instance: Option<instance::Listener>,
     pending_link: Option<Link>,
     link_scheme: String,
@@ -410,6 +411,7 @@ impl App {
             key_prompt: None,
             channel_sheet: None,
             scales: [ScaleWatch::default(), ScaleWatch::default(), ScaleWatch::default()],
+            main_place: None,
             instance: None,
             pending_link: None,
             link_scheme: links::scheme(),
@@ -636,8 +638,20 @@ impl App {
             self.settings.window_width = size.width;
             self.settings.window_height = size.height;
         }
+        self.note_place(w);
+        if self.main_place.is_some() {
+            self.settings.window_place = self.main_place;
+        }
         self.close_settings(w);
         self.park_speakers(w);
+    }
+
+    fn note_place(&mut self, w: &Windows) {
+        let window = w.main.window();
+        if window.is_visible() && !window.is_minimized() {
+            let at = window.position();
+            self.main_place = Some((at.x, at.y));
+        }
     }
 
     fn finish_update(&mut self, w: &Windows, unpacked: &Path) {
@@ -2699,6 +2713,7 @@ impl App {
             }
         }
         self.take_wishes(w);
+        self.note_place(w);
         self.follow_scale(w);
         self.watch_speakers(w);
         self.retry_lost_connections(w);
