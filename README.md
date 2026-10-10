@@ -192,6 +192,24 @@ explains how to use them.
 | `ps-app` | The window |
 | `updater` | `update.exe`, which swaps the files of a new release in; a project of its own, not part of the workspace |
 
+## Licence
+
+Parrotfish is licensed under either of
+
+- the Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE)), or
+- the MIT licence ([LICENSE-MIT](LICENSE-MIT)),
+
+at your option.
+
+Two parts carry more than that. `ps-oldcodecs` follows the Speex decoder step by step, so the
+Speex licence (BSD-3-Clause, `ps-oldcodecs/LICENSE-speex.txt`) applies to it as well. `updater/`
+is a project of its own under the MIT licence (`updater/LICENSE`). The libraries a release is
+built from keep their own licences; `THIRD-PARTY-NOTICES.txt` in every release carries their texts.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in
+the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without
+any additional terms or conditions.
+
 ## Credits
 
 Parrotfish exists because other people worked out and published how the TeamSpeak 3 protocol
