@@ -167,6 +167,114 @@ mod imp {
         unsafe { MonitorFromPoint(Point { x, y }, 0) != 0 }
     }
 
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Edges {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+
+    #[repr(C)]
+    struct Placing {
+        window: isize,
+        after: isize,
+        x: i32,
+        y: i32,
+        wide: i32,
+        high: i32,
+        flags: u32,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn CallWindowProcW(procedure: isize, window: isize, message: u32, first: usize, second: isize) -> isize;
+        fn DefWindowProcW(window: isize, message: u32, first: usize, second: isize) -> isize;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentThreadId() -> u32;
+    }
+
+    const PROCEDURE: i32 = -4;
+    const PLACING: u32 = 0x0046;
+    const GONE: u32 = 0x0082;
+    const DRAG_BEGINS: u32 = 0x0231;
+    const DRAG_ENDS: u32 = 0x0232;
+    const SCALE_CHANGES: u32 = 0x02E0;
+    const KEEPS_SIZE: u32 = 0x0001;
+    const KEEPS_PLACE: u32 = 0x0002;
+
+    struct Settled {
+        window: isize,
+        earlier: isize,
+        landing: crate::scale::Landing,
+    }
+
+    thread_local! {
+        static SETTLED: std::cell::RefCell<Vec<Settled>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn settled<T>(window: isize, with: impl FnOnce(&mut Settled) -> T) -> Option<T> {
+        SETTLED.with(|all| all.borrow_mut().iter_mut().find(|one| one.window == window).map(with))
+    }
+
+    unsafe extern "system" fn settling(window: isize, message: u32, first: usize, second: isize) -> isize {
+        let Some(earlier) = settled(window, |one| one.earlier) else {
+            return unsafe { DefWindowProcW(window, message, first, second) };
+        };
+        match message {
+            DRAG_BEGINS | DRAG_ENDS => {
+                settled(window, |one| one.landing.drag(message == DRAG_BEGINS));
+            }
+            SCALE_CHANGES if second != 0 => {
+                let edges = unsafe { *(second as *const Edges) };
+                let suggested = (edges.left, edges.top, edges.right - edges.left, edges.bottom - edges.top);
+                settled(window, |one| one.landing.scale_changes(suggested));
+                let result = unsafe { CallWindowProcW(earlier, window, message, first, second) };
+                settled(window, |one| one.landing.scale_changed());
+                return result;
+            }
+            PLACING if second != 0 => {
+                let placing = unsafe { &mut *(second as *mut Placing) };
+                let whole = placing.flags & (KEEPS_SIZE | KEEPS_PLACE) == 0;
+                let asked = (placing.x, placing.y, placing.wide, placing.high);
+                if let Some(place) = settled(window, |one| one.landing.place(asked, whole)) {
+                    (placing.x, placing.y, placing.wide, placing.high) = place;
+                }
+            }
+            GONE => {
+                let result = unsafe { CallWindowProcW(earlier, window, message, first, second) };
+                SETTLED.with(|all| all.borrow_mut().retain(|one| one.window != window));
+                return result;
+            }
+            _ => {}
+        }
+        unsafe { CallWindowProcW(earlier, window, message, first, second) }
+    }
+
+    pub fn settle_scale_changes(title: &str) -> bool {
+        let Some(window) = own_window(title) else {
+            return false;
+        };
+        if settled(window, |_| ()).is_some() {
+            return true;
+        }
+        let mut owner = 0u32;
+        if unsafe { GetWindowThreadProcessId(window, &mut owner) } != unsafe { GetCurrentThreadId() } {
+            return false;
+        }
+        let earlier = unsafe { GetWindowLongPtrW(window, PROCEDURE) };
+        if earlier == 0 {
+            return false;
+        }
+        SETTLED.with(|all| all.borrow_mut().push(Settled { window, earlier, landing: crate::scale::Landing::default() }));
+        unsafe { SetWindowLongPtrW(window, PROCEDURE, settling as *const () as usize as isize) };
+        true
+    }
+
     pub fn own_front_window() -> isize {
         let window = unsafe { GetForegroundWindow() };
         if window == 0 {
@@ -866,6 +974,10 @@ mod imp {
         false
     }
 
+    pub fn settle_scale_changes(_title: &str) -> bool {
+        false
+    }
+
     pub fn on_a_screen(_x: i32, _y: i32) -> bool {
         true
     }
@@ -947,7 +1059,7 @@ mod imp {
 pub use imp::{
     adopt_icon, allow_front, bring_front, change_stored_number, change_stored_text, clear_link_handler, key_char, key_down,
     link_handler, local_hms, on_a_screen, open_link, overlay_style, own_front_window, protect, set_link_handler,
-    show_own_window, stored_number, stored_text, unprotect, web_get,
+    settle_scale_changes, show_own_window, stored_number, stored_text, unprotect, web_get,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

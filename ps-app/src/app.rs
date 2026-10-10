@@ -24,7 +24,7 @@ use crate::platform;
 use crate::instance::{self, Wish};
 use crate::links::{self, Link};
 use crate::mic;
-use crate::scale::{ScaleWatch, Step};
+use crate::scale::ScaleWatch;
 use crate::speakers::{self, Member, Room, Roster};
 use crate::session::{
     self, build_rows_folded, connect_failure, mic_move, next_view, ChannelIcon, ChatKind, ChatLine, ConnectRequest,
@@ -2617,20 +2617,13 @@ impl App {
     fn follow_scale(&mut self, w: &Windows) {
         let windows = [w.main.window(), w.settings.window(), w.speakers.window()];
         for (index, window) in windows.into_iter().enumerate() {
-            let scale = window.scale_factor();
-            let size = window.size().to_logical(scale);
-            let free = !window.is_maximized() && !window.is_fullscreen() && !window.is_minimized();
-            match self.scales[index].step(scale, size.width, size.height, free) {
-                Step::Nothing => {}
-                Step::Refresh => {
-                    let nudge = self.scales[index].nudge();
-                    match index {
-                        0 => w.main.set_scale_nudge(nudge),
-                        1 => w.settings.set_scale_nudge(nudge),
-                        _ => w.speakers.set_scale_nudge(nudge),
-                    }
+            if self.scales[index].changed(window.scale_factor()) {
+                let nudge = self.scales[index].nudge();
+                match index {
+                    0 => w.main.set_scale_nudge(nudge),
+                    1 => w.settings.set_scale_nudge(nudge),
+                    _ => w.speakers.set_scale_nudge(nudge),
                 }
-                Step::Restore(width, height) => window.set_size(slint::LogicalSize::new(width, height)),
             }
         }
     }
@@ -2722,6 +2715,9 @@ impl App {
         if self.icon_ticks % ICON_EVERY == 0 {
             for title in [MAIN_TITLE, SETTINGS_TITLE, SPEAKERS_TITLE] {
                 platform::adopt_icon(title);
+            }
+            for title in [MAIN_TITLE, SETTINGS_TITLE] {
+                platform::settle_scale_changes(title);
             }
         }
         self.icon_ticks = self.icon_ticks.wrapping_add(1);

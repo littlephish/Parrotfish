@@ -192,9 +192,11 @@ Also unverified: sound by ear (which includes the event sounds, noise suppressio
 gain), a talk key held on a real keyboard or mouse (the checks pressed F13 to F24 by program),
 keys while a game running as administrator has the focus, two different servers at once (the
 multi-server tests used two connections to one server), the speaking window over a game, the
-look with any renderer but the software one, a window dragged between two displays with
-different scales (both displays of this PC have the same one, so that change was made from
-reading the toolkit's code), and SRV and TSDNS lookups against a domain that publishes such
+look with any renderer but the software one, the program's own windows dragged by hand between
+two displays with different scales (checked instead with `ps-app/examples/scaledrag.rs`: a
+window with the main window's limits and the program's own code, dragged by the mouse under a
+script between a 150 % and a 100 % display of different heights, held at three places on the
+title bar), and SRV and TSDNS lookups against a domain that publishes such
 records (the tests feed made-up answers), a `ts3server://` link clicked in a browser, and
 Speex made by a TeamSpeak client. Echo cancelling has been measured on simulated rooms
 and on a sound device's own digital loopback, never in a real room with loudspeakers, never
@@ -223,7 +225,7 @@ order against the test server, not by ear and not with an official client talkin
 | `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client/group book, voice and whispers in/out, events; `spacer` recognises spacer channels, `filetransfer` fetches icons over the server's file port, `resolve` finds a server through SRV, TSDNS or its plain name | done, 35 tests + live tests |
 | `ps-oldcodecs` | Speex decoder (8, 16 and 32 kHz) in safe Rust, no dependencies | done, 27 tests + 3 run by hand |
 | `ps-voice` | Opus codec, Speex playback at 48 kHz, resampler, jitter buffer + mixer (talkers keyed by connection and client, a volume per talker, lowering for priority speakers), evening out how loud talkers are (`level.rs`), VAD/PTT gate, lanes (which key is held decides where a frame goes), echo canceller (`echo.rs`), noise suppression (`denoise.rs`), automatic gain (`agc.rs`), event sounds (`cues.rs`), cpal device I/O (WASAPI) | done, 127 tests + live tests |
-| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `mic.rs` what each server is told about the microphone and when, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` keeping a window's size across displays, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 180 tests + live tests |
+| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `mic.rs` what each server is told about the microphone and when, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` a window's limits and where it lands when it crosses to a display with another scale, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 182 tests + live tests |
 | `ps-serverquery` | Text protocol over TCP 10011 | not started |
 
 Threads: UI thread (Slint, 33 ms timer drains client events) · `ps-client` actor + UDP reader ·
@@ -1000,8 +1002,20 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   does not turn up while you are silent. The order is echo cancelling, noise suppression,
   automatic gain, then the microphone boost.
 - When a window lands on a display with another scale, the toolkit keeps the smallest allowed
-  size in the old display's pixels. Parrotfish has the limits worked out again and then puts
-  the window back to the size it had, measured in the new scale (`scale.rs`).
+  size in the old display's pixels, so Parrotfish has the limits worked out again (`scale.rs`).
+  The size needs no help: the toolkit keeps it, and it does not ask for the limits when it
+  places a window, so they never squeeze it there.
+- A window dragged across by its title bar is put where Windows suggests (`scale.rs` decides,
+  `platform.rs` wraps the window's procedure to do it). Left alone, the toolkit (winit 0.30.13)
+  moves the window towards the display the window is on when the scale changes, taking that
+  for the new one. With displays of different heights and a tall window that is the display
+  being left: Windows switches the scale back inside the same call, and its drag then sizes
+  the window once more. Measured on a 150 % display beside a 100 % one, a 385 by 1073 window
+  held a third of the way along its title bar went through five changes of scale in one
+  crossing and ended 885 by 2463. Windows' suggestion scales the outside of the window, so the
+  inside differs by a pixel or two between the displays and comes back the same.
+- The size is not set back after a change of scale, as it was until 0.6.1: the timer does not
+  run while a window is dragged, so that ran after the drop and undid a snap.
 - Links (`links.rs`, `instance.rs`). A link is `ts3server://host[:port]` with the optional parts
   TeamSpeak documents: `port`, `nickname`, `password`, `channel`, `cid`, `channelpassword`,
   `token`, `addbookmark` (a `cid` wins over a `channel`; a `+` stays a plus sign). A link is
