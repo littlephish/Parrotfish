@@ -12,6 +12,20 @@ the first time it starts, so identities, bookmarks, saved passwords and keys car
 its installer replaces an installed PhishSpeak. Close PhishSpeak first, and do not go back to
 old copies afterwards: they would start empty, in a folder of their own.
 
+<p align="center">
+  <img src="docs/screenshots/main-window.png" width="280" align="top" alt="The main window on a server: the channel tree with two dividers, a folded channel, a person talking and one whose microphone is off, a chat line, and the dock with the mute buttons">
+  &nbsp;
+  <img src="docs/screenshots/settings-shortcuts.png" width="490" align="top" alt="The Shortcuts tab of the settings: talk keys, whisper keys, the reply key and the mute keys">
+</p>
+<p align="center">
+  <img src="docs/screenshots/speaking-window.png" width="154" align="top" alt="The speaking window, unlocked, with the name of the person talking">
+  &nbsp;
+  <img src="docs/screenshots/settings-channels.png" width="490" align="top" alt="The Channels tab of the settings: how channels start, folded or open, and the speaking window">
+</p>
+
+The main window, the Shortcuts tab of the settings, the speaking window, and the Channels tab
+that sets it up. The server in the pictures is a test server; its channels and people are made up.
+
 - A compact window: the channel tree, a chat drawer, and a dock with mute buttons and the
   microphone level. Spacer channels such as `[cspacer]Games` are drawn as dividers.
 - Channels fold and open from an arrow. A setting chooses how they start (all open, empty ones
