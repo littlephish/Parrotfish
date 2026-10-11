@@ -117,15 +117,16 @@ def build_updater(skip):
     return built
 
 
-def shipped_packages():
-    listed = capture(
-        ["cargo", "tree", "--locked", "-p", "ps-app", "-e", "normal", "--target", TRIPLE, "--prefix", "none", "--format", "{p}"]
-    )
+def shipped_packages(triples=(TRIPLE,)):
     wanted = set()
-    for line in listed.splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and parts[1].startswith("v"):
-            wanted.add((parts[0], parts[1][1:]))
+    for triple in triples:
+        listed = capture(
+            ["cargo", "tree", "--locked", "-p", "ps-app", "-e", "normal", "--target", triple, "--prefix", "none", "--format", "{p}"]
+        )
+        for line in listed.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].startswith("v"):
+                wanted.add((parts[0], parts[1][1:]))
     meta = json.loads(capture(["cargo", "metadata", "--locked", "--format-version", "1"]))
     found = [p for p in meta["packages"] if (p["name"], p["version"]) in wanted and p.get("source")]
     if len(found) < 50:
@@ -152,11 +153,11 @@ def licence_texts(package):
     return texts
 
 
-def write_notices(path, version):
-    packages = shipped_packages()
+def write_notices(path, version, triples=(TRIPLE,), ported=PORTED):
+    packages = shipped_packages(triples)
     by_text = {}
     bare = []
-    for label, licence in PORTED:
+    for label, licence in ported:
         if not licence.is_file():
             fail(f"the licence text {licence.name} is missing")
         body = licence.read_text(encoding="utf-8").replace("\r\n", "\n").strip()

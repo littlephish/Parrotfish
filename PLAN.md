@@ -175,7 +175,12 @@ Not done yet: ServerQuery browser (v1.1), tabs for several private chats (one is
 time), permissions UI, channel create/edit, file browser and avatars, keeping the microphone
 on one server while looking at another,
 the old CELT codec (see below), pre-3.1 servers (`initivexpand`),
-hotkeys other than talk, whisper and mute keys, game controller buttons, and an overlay inside
+hotkeys other than talk, whisper and mute keys, game controller buttons, anything that
+`platform.rs` does through Windows when the program is built for another system (there, keys
+are never seen as held, so talk, whisper and mute keys do nothing; the speaking window is
+neither see-through nor passes clicks; bookmark passwords are not kept; nothing is fetched,
+so there is no look for updates and no updating; links are not claimed or opened; a second
+start cannot bring the first to the front; and the clock in the chat is UTC), and an overlay inside
 games that run in exclusive full screen (the speaking window is an ordinary window on top).
 Also missing next to the TeamSpeak client, listed on 2026-10-08 and not planned yet: changing
 your nickname while connected; contacts (friends and blocked people); links you can click,
@@ -197,7 +202,12 @@ look with any renderer but the software one, the program's own windows dragged b
 two displays with different scales (checked instead with `ps-app/examples/scaledrag.rs`: a
 window with the main window's limits and the program's own code, dragged by the mouse under a
 script between a 150 % and a 100 % display of different heights, held at three places on the
-title bar), and SRV and TSDNS lookups against a domain that publishes such
+title bar), the program on a Mac (it has never been started on one: it was built on Linux
+and what came out was read back there, which showed both processors in the program, macOS
+11.0 as the oldest system it asks for, nothing linked but Apple's own libraries, an ad hoc
+signature on each half, and the expected files with the expected rights in the zip, the
+disk image and the package; whether macOS mounts the image, installs the package or runs
+the program is not known), and SRV and TSDNS lookups against a domain that publishes such
 records (the tests feed made-up answers), a `ts3server://` link clicked in a browser, and
 Speex made by a TeamSpeak client. Echo cancelling has been measured on simulated rooms
 and on a sound device's own digital loopback, never in a real room with loudspeakers, never
@@ -838,6 +848,34 @@ and remove everything). After each step it
 checks files, shortcuts, what Windows lists and a stand-in links entry. It installs and
 removes for the current user, so it refuses to run outside GitHub Actions without
 `--this-pc`, and anywhere the program is already installed.
+
+For Macs: `macos_build.sh` builds the program for both kinds of Mac and packages it. It runs
+inside the image `joseluisq/rust-linux-darwin-builder` (osxcross with the macOS 13.3 SDK, which
+Apple licenses for use on Apple hardware), with the repository as the working folder:
+`docker run --rm -v "$PWD":/root/src -w /root/src joseluisq/rust-linux-darwin-builder:1.89.0 sh
+tools/macos_build.sh`. It installs the current stable Rust first, because the 1.89 in the image
+is older than Slint 1.18 accepts (1.92), builds `x86_64-apple-darwin` and
+`aarch64-apple-darwin` (seven and six minutes on four cores), fetches `rcodesign` 0.29.0 and
+checks its SHA-256, builds `mkbom` from bomutils at a fixed commit, installs `xorriso`, and
+runs `package_macos.py`; those tools are kept in `target/macos-tools`. `package_macos.py`
+joins the two programs with `lipo`; makes `Parrotfish.app` from `installer/macos/Info.plist`
+(identifier `io.github.littlephish.Parrotfish`, which must not change once people have the
+app; macOS 11.0 or newer; the sentence macOS shows when it asks about the microphone), an
+`.icns` made from `ps-app/ui/app-icon.png` in sizes 16 to 256, both licence files and the
+third-party notices for the two Mac targets; signs it ad hoc, without which a Mac with an
+Apple processor will not start it; and writes into `dist/`
+`Parrotfish-<version>-macos-universal.zip`, `.dmg` (an uncompressed image from xorriso, with
+a link to Applications), `.pkg` (a component package for `/Applications`: Bom, PackageInfo and
+Payload in a xar) and `SHA256SUMS-macos.txt`. The `lsbom` of bomutils crashes on the Bom its
+own `mkbom` writes, so the script reads the Bom back itself and compares the number of
+entries. `--p12` with `--p12-password-file` signs with a Developer ID certificate instead,
+with the hardened runtime and `installer/macos/entitlements.plist`; that has never been run.
+Nothing is signed by a certificate or notarised, so macOS warns before it opens any of the
+three. `package_release.py` writes the notices for whatever targets it is given, which is
+all that changed in it; the Windows notices come out the same byte for byte. On a PC
+without Docker and without root, `udocker` 1.3.17 runs the same image from the home folder:
+`udocker pull`, `udocker create --name=macbuild`, then `udocker run -v <repository>:/root/src
+-w /root/src macbuild sh tools/macos_build.sh`. That is how it was run on 2026-10-10.
 
 A local test server: official `teamspeak3-server_linux_amd64` in WSL
 (`./ts3server license_accepted=1`, which accepts TeamSpeak's server license), reachable from
