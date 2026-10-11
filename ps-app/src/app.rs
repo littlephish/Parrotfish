@@ -25,7 +25,7 @@ use crate::instance::{self, Wish};
 use crate::links::{self, Link};
 use crate::mic;
 use crate::scale::ScaleWatch;
-use crate::speakers::{self, Member, Room, Roster};
+use crate::speakers::{self, Keeper, Member, Room, Roster, Seen};
 use crate::session::{
     self, build_rows_folded, connect_failure, mic_move, next_view, ChannelIcon, ChatKind, ChatLine, ConnectRequest,
     DialogField, FoldMode, MicMove, Outcome, Peer, RowData, RowKind, Session,
@@ -180,6 +180,10 @@ pub fn forget_links(scheme: &str) {
     }
 }
 
+fn speakers_place_usable((x, y): (i32, i32)) -> bool {
+    platform::on_a_screen(x.saturating_add(24), y.saturating_add(24))
+}
+
 fn own_program() -> Option<String> {
     std::env::current_exe().ok().and_then(|path| path.to_str().map(str::to_string))
 }
@@ -253,6 +257,7 @@ pub struct App {
     icon_ticks: u32,
     speakers_empty: bool,
     speakers_look: Option<(u8, bool)>,
+    keeper: Keeper,
     roster: Roster,
     engine: AudioEngine,
     watcher: KeyWatcher,
@@ -365,6 +370,7 @@ impl App {
             icon_ticks: 0,
             speakers_empty: true,
             speakers_look: None,
+            keeper: Keeper::default(),
             roster: Roster::default(),
             engine,
             watcher,
@@ -2477,10 +2483,14 @@ impl App {
     }
 
     fn speakers_start(&self, w: &Windows) -> Option<(i32, i32)> {
-        let kept = self.settings.speakers_place.filter(|(x, y)| platform::on_a_screen(x + 24, y + 24));
+        let kept = self.settings.speakers_place.filter(|place| speakers_place_usable(*place));
         if kept.is_some() {
             return kept;
         }
+        self.speakers_shelter(w)
+    }
+
+    fn speakers_shelter(&self, w: &Windows) -> Option<(i32, i32)> {
         let main = w.main.window();
         if !main.is_visible() {
             return None;
@@ -2516,9 +2526,11 @@ impl App {
             let front = platform::own_front_window();
             let _ = w.speakers.show();
             platform::bring_front(front);
+            self.keeper.settle();
         } else if !self.settings.speakers_shown && window.is_visible() {
             self.remember_speakers(w);
             let _ = w.speakers.hide();
+            self.keeper.settle();
         }
         self.speakers_ticks = 0;
         self.speakers_look = None;
@@ -2527,7 +2539,7 @@ impl App {
 
     fn remember_speakers(&mut self, w: &Windows) -> bool {
         let window = w.speakers.window();
-        if !window.is_visible() || window.is_minimized() {
+        if !window.is_visible() || window.is_minimized() || self.keeper.away() {
             return false;
         }
         let at = window.position();
@@ -2536,6 +2548,9 @@ impl App {
             return false;
         }
         let place = Some((at.x, at.y));
+        if place != self.settings.speakers_place && platform::overlay_seen(SPEAKERS_TITLE).is_some_and(|seen| !seen.on_a_display) {
+            return false;
+        }
         let kept = self.settings.speakers_size;
         let sized = (size.width - kept.0).abs() > 0.5 || (size.height - kept.1).abs() > 0.5;
         if place == self.settings.speakers_place && !sized {
@@ -2561,9 +2576,30 @@ impl App {
             let done = platform::overlay_style(SPEAKERS_TITLE, look.0, look.1);
             self.speakers_look = done.then_some(look);
         }
+        if self.speakers_ticks % 8 == 0 {
+            self.mend_speakers(w);
+        }
         self.speakers_ticks = self.speakers_ticks.wrapping_add(1);
         if self.speakers_ticks >= 16 && self.remember_speakers(w) {
             self.dirty.speakers = true;
+        }
+    }
+
+    fn mend_speakers(&mut self, w: &Windows) {
+        let Some(found) = platform::overlay_seen(SPEAKERS_TITLE) else {
+            return;
+        };
+        let seen = Seen { minimised: found.minimised, on_top: found.on_top, on_a_display: found.on_a_display, front: found.front };
+        let mend = self.keeper.look(seen, self.settings.speakers_on_top);
+        if mend.restore {
+            platform::overlay_restore(SPEAKERS_TITLE);
+        }
+        if mend.raise {
+            platform::overlay_raise(SPEAKERS_TITLE);
+        }
+        let shelter = if mend.lost { self.speakers_shelter(w) } else { None };
+        if let Some((x, y)) = self.keeper.rehome(mend.lost, self.settings.speakers_place, speakers_place_usable, shelter) {
+            w.speakers.window().set_position(slint::PhysicalPosition::new(x, y));
         }
     }
 
@@ -2575,6 +2611,7 @@ impl App {
         let scale = window.scale_factor();
         let (right, down) = ((dx * scale).round() as i32, (dy * scale).round() as i32);
         if (right, down) != (0, 0) {
+            self.keeper.settle();
             let at = window.position();
             window.set_position(slint::PhysicalPosition::new(at.x + right, at.y + down));
         }

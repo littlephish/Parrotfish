@@ -160,7 +160,37 @@ mod imp {
         if wanted != style {
             unsafe { SetWindowLongPtrW(window, EXTENDED_STYLE, wanted) };
         }
+        let frame = unsafe { GetWindowLongPtrW(window, STYLE) };
+        if frame & MINIMISE_BOX != 0 {
+            unsafe { SetWindowLongPtrW(window, STYLE, frame & !MINIMISE_BOX) };
+        }
         unsafe { SetLayeredWindowAttributes(window, 0, alpha, WHOLE_WINDOW_ALPHA) != 0 }
+    }
+
+    pub fn overlay_seen(title: &str) -> Option<super::Overlay> {
+        let window = own_window(title)?;
+        let mut edges = Edges { left: 0, top: 0, right: 0, bottom: 0 };
+        if unsafe { GetWindowRect(window, &mut edges) } == 0 {
+            return None;
+        }
+        Some(super::Overlay {
+            minimised: unsafe { IsIconic(window) } != 0,
+            on_top: unsafe { GetWindowLongPtrW(window, EXTENDED_STYLE) } & ON_TOP != 0,
+            on_a_display: unsafe { MonitorFromRect(&edges, 0) } != 0,
+            front: unsafe { GetForegroundWindow() },
+        })
+    }
+
+    pub fn overlay_restore(title: &str) {
+        if let Some(window) = own_window(title) {
+            unsafe { ShowWindow(window, SHOW_WITHOUT_FOCUS) };
+        }
+    }
+
+    pub fn overlay_raise(title: &str) {
+        if let Some(window) = own_window(title) {
+            unsafe { SetWindowPos(window, ABOVE_ALL, 0, 0, 0, 0, KEEPS_SIZE | KEEPS_PLACE | STAYS_INACTIVE) };
+        }
     }
 
     pub fn on_a_screen(x: i32, y: i32) -> bool {
@@ -191,6 +221,9 @@ mod imp {
     extern "system" {
         fn CallWindowProcW(procedure: isize, window: isize, message: u32, first: usize, second: isize) -> isize;
         fn DefWindowProcW(window: isize, message: u32, first: usize, second: isize) -> isize;
+        fn GetWindowRect(window: isize, edges: *mut Edges) -> i32;
+        fn MonitorFromRect(edges: *const Edges, flags: u32) -> isize;
+        fn SetWindowPos(window: isize, after: isize, x: i32, y: i32, wide: i32, high: i32, flags: u32) -> i32;
     }
 
     #[link(name = "kernel32")]
@@ -206,6 +239,12 @@ mod imp {
     const SCALE_CHANGES: u32 = 0x02E0;
     const KEEPS_SIZE: u32 = 0x0001;
     const KEEPS_PLACE: u32 = 0x0002;
+    const STAYS_INACTIVE: u32 = 0x0010;
+    const STYLE: i32 = -16;
+    const MINIMISE_BOX: isize = 0x0002_0000;
+    const ON_TOP: isize = 0x0000_0008;
+    const ABOVE_ALL: isize = -1;
+    const SHOW_WITHOUT_FOCUS: i32 = 4;
 
     struct Settled {
         window: isize,
@@ -974,6 +1013,14 @@ mod imp {
         false
     }
 
+    pub fn overlay_seen(_title: &str) -> Option<super::Overlay> {
+        None
+    }
+
+    pub fn overlay_restore(_title: &str) {}
+
+    pub fn overlay_raise(_title: &str) {}
+
     pub fn settle_scale_changes(_title: &str) -> bool {
         false
     }
@@ -1058,9 +1105,18 @@ mod imp {
 
 pub use imp::{
     adopt_icon, allow_front, bring_front, change_stored_number, change_stored_text, clear_link_handler, key_char, key_down,
-    link_handler, local_hms, on_a_screen, open_link, overlay_style, own_front_window, protect, set_link_handler,
-    settle_scale_changes, show_own_window, stored_number, stored_text, unprotect, web_get,
+    link_handler, local_hms, on_a_screen, open_link, overlay_raise, overlay_restore, overlay_seen, overlay_style,
+    own_front_window, protect, set_link_handler, settle_scale_changes, show_own_window, stored_number, stored_text,
+    unprotect, web_get,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Overlay {
+    pub minimised: bool,
+    pub on_top: bool,
+    pub on_a_display: bool,
+    pub front: isize,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WebReply {

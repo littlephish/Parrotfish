@@ -146,6 +146,73 @@ pub fn fit(lines: Vec<Line>, room: usize) -> Vec<Line> {
     fit(lines.into_iter().filter(|line| !line.caption).collect(), room)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Seen {
+    pub minimised: bool,
+    pub on_top: bool,
+    pub on_a_display: bool,
+    pub front: isize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Mend {
+    pub restore: bool,
+    pub raise: bool,
+    pub lost: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct Keeper {
+    front: isize,
+    away: Option<(i32, i32)>,
+}
+
+impl Keeper {
+    pub fn look(&mut self, seen: Seen, wants_top: bool) -> Mend {
+        let another_in_front = seen.front != self.front;
+        self.front = seen.front;
+        Mend {
+            restore: seen.minimised,
+            raise: wants_top && !seen.minimised && (!seen.on_top || another_in_front),
+            lost: !seen.minimised && !seen.on_a_display,
+        }
+    }
+
+    pub fn rehome(
+        &mut self,
+        lost: bool,
+        kept: Option<(i32, i32)>,
+        usable: impl Fn((i32, i32)) -> bool,
+        shelter: Option<(i32, i32)>,
+    ) -> Option<(i32, i32)> {
+        if let Some(home) = self.away.filter(|home| usable(*home)) {
+            self.away = None;
+            return Some(home);
+        }
+        if !lost {
+            return None;
+        }
+        if self.away.is_none() {
+            if let Some(home) = kept.filter(|home| usable(*home)) {
+                return Some(home);
+            }
+        }
+        let to = shelter?;
+        if self.away.is_none() {
+            self.away = kept;
+        }
+        Some(to)
+    }
+
+    pub fn away(&self) -> bool {
+        self.away.is_some()
+    }
+
+    pub fn settle(&mut self) {
+        self.away = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,5 +429,55 @@ mod tests {
         assert_eq!(fit(lines.clone(), 1), vec![and_more("Eel", 2)], "with one line the name matters more than the server");
         assert_eq!(fit(vec![heading("Reef"), person("Pike", false)], 1), vec![person("Pike", false)]);
         assert_eq!(fit(lines, 0), Vec::new());
+    }
+
+    fn seen(minimised: bool, on_top: bool, on_a_display: bool, front: isize) -> Seen {
+        Seen { minimised, on_top, on_a_display, front }
+    }
+
+    #[test]
+    fn a_minimised_window_is_brought_back_and_one_pushed_down_is_raised() {
+        let mut keeper = Keeper::default();
+        let first = keeper.look(seen(false, true, true, 71), true);
+        assert_eq!(first, Mend { raise: true, ..Mend::default() }, "the first look counts as a window coming to the front");
+        assert_eq!(keeper.look(seen(false, true, true, 71), true), Mend::default(), "nothing changed, nothing is done");
+        assert_eq!(keeper.look(seen(true, true, false, 71), true), Mend { restore: true, ..Mend::default() });
+        assert_eq!(keeper.look(seen(false, false, true, 71), true), Mend { raise: true, ..Mend::default() }, "the mark was taken away");
+        assert_eq!(keeper.look(seen(false, true, true, 90), true), Mend { raise: true, ..Mend::default() }, "another window came to the front");
+        assert_eq!(keeper.look(seen(false, true, true, 90), true), Mend::default(), "it is raised once, not on every look");
+        assert_eq!(keeper.look(seen(false, false, true, 12), false), Mend::default(), "not asked to stay above, it is left where it is");
+        assert_eq!(keeper.look(seen(true, false, true, 12), false), Mend { restore: true, ..Mend::default() });
+    }
+
+    #[test]
+    fn a_window_on_no_display_takes_shelter_and_goes_home_when_it_can() {
+        let (home, shelter) = ((3336, 1826), (660, 148));
+        let gone = |_: (i32, i32)| false;
+        let there = |_: (i32, i32)| true;
+        let mut keeper = Keeper::default();
+        assert!(keeper.look(seen(false, true, false, 5), true).lost);
+        assert!(!keeper.look(seen(true, true, false, 5), true).lost, "a minimised window is not lost, it is minimised");
+        assert_eq!(keeper.rehome(false, Some(home), gone, Some(shelter)), None, "a window on a display stays");
+        assert!(!keeper.away());
+        assert_eq!(keeper.rehome(true, Some(home), gone, None), None, "with nowhere to go it stays too");
+        assert!(!keeper.away());
+        assert_eq!(keeper.rehome(true, Some(home), gone, Some(shelter)), Some(shelter));
+        assert!(keeper.away(), "its own place is not forgotten meanwhile");
+        assert_eq!(keeper.rehome(false, Some(home), gone, Some(shelter)), None, "the display is still gone");
+        assert_eq!(keeper.rehome(true, Some(home), gone, Some((9, 9))), Some((9, 9)), "the shelter went as well");
+        assert_eq!(keeper.rehome(false, Some(home), there, None), Some(home), "the display is back");
+        assert!(!keeper.away());
+        assert_eq!(keeper.rehome(false, Some(home), there, None), None);
+
+        assert_eq!(keeper.rehome(true, Some(home), there, Some(shelter)), Some(home), "lost, but its place is fine: straight home");
+        assert!(!keeper.away());
+        assert_eq!(keeper.rehome(true, None, there, Some(shelter)), Some(shelter), "a window that never had a place");
+        assert!(!keeper.away(), "has none to go back to, so the shelter becomes its place");
+
+        keeper.rehome(true, Some(home), gone, Some(shelter));
+        assert!(keeper.away());
+        keeper.settle();
+        assert!(!keeper.away(), "moved by hand, where it is now is its place");
+        assert_eq!(keeper.rehome(false, Some(home), there, None), None);
     }
 }

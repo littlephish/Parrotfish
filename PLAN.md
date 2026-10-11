@@ -226,7 +226,7 @@ order against the test server, not by ear and not with an official client talkin
 | `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client/group book, voice and whispers in/out, events; `spacer` recognises spacer channels, `filetransfer` fetches icons over the server's file port, `resolve` finds a server through SRV, TSDNS or its plain name | done, 35 tests + live tests |
 | `ps-oldcodecs` | Speex decoder (8, 16 and 32 kHz) in safe Rust, no dependencies | done, 27 tests + 3 run by hand |
 | `ps-voice` | Opus codec, Speex playback at 48 kHz, resampler, jitter buffer + mixer (talkers keyed by connection and client, a volume per talker, lowering for priority speakers), evening out how loud talkers are (`level.rs`), VAD/PTT gate, lanes (which key is held decides where a frame goes), echo canceller (`echo.rs`), noise suppression (`denoise.rs`), automatic gain (`agc.rs`), event sounds (`cues.rs`), cpal device I/O (WASAPI) | done, 127 tests + live tests |
-| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `mic.rs` what each server is told about the microphone and when, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` a window's limits and where it lands when it crosses to a display with another scale, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 183 tests + live tests |
+| `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `mic.rs` what each server is told about the microphone and when, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` a window's limits and where it lands when it crosses to a display with another scale, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 185 tests + live tests |
 | `ps-serverquery` | Text protocol over TCP 10011 | not started |
 
 Threads: UI thread (Slint, 33 ms timer drains client events) · `ps-client` actor + UDP reader ·
@@ -582,6 +582,17 @@ ConnectOk", "level 213"). What is actually on the wire:
   place and the same size each time); a place in the empty area under the smaller display
   was left alone and Windows chose; closed while minimised it came back where it was last
   seen. The window was moved, minimised and closed by program, not by hand.
+- The speaking window closed, minimised and pushed aside from outside, all by program. A
+  close sent to it and to the main window, in either order, ended the program and left it
+  switched on (before, both orders left it switched off); a close sent to it alone did
+  nothing. Minimised, it was back within a quarter of a second and the window in front
+  stayed in front. With its mark for staying above taken away it was on top again as fast.
+  Put where no display is, it went back to its kept place and that place stayed in the
+  settings; started with a kept place on no display it opened by the main window. Locked at
+  41 %, with a second client talking for six seconds, it was invisible, visible and
+  invisible again at the same moments as before the change, and was minimised and brought
+  back in between. Not tried: a game in front of it, a window of another program coming to
+  the front over it, and a display that goes away and comes back.
 - Links, with a stand-in scheme so that the PC's own `ts3server` entry was never touched
   (`PARROTFISH_LINK_SCHEME=ts3server-test`): the switch wrote the per-user entry and Windows
   named Parrotfish as the program it would run for such a link; a second start with a link
@@ -992,6 +1003,20 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
   Transparency is for the whole window (20 to 100 %). The window is marked so that clicking it
   never makes it the active window, and showing it hands the focus back to the window that had
   it. Place and size are kept in `settings.ini`. It has a taskbar button of its own.
+- The speaking window is switched on and off in Parrotfish only: by its own button, the server
+  menu and the settings. A close that comes from outside, such as the taskbar's "Close all
+  windows", is left unanswered. Until 0.6.3 it switched the window off, so leaving the
+  program that way left the window off at the next start.
+- About four times a second the program looks at the speaking window as Windows has it and
+  mends what it finds (`Keeper` in `speakers.rs` decides, `platform.rs` asks and acts). A
+  minimised window is brought back without becoming the active window. One that is to stay
+  above the others is put on top again when its mark for that is gone or another window has
+  come to the front; it is raised once for each such change, not on every look, so that a
+  menu opened over it stays in front. One that touches no display goes to its kept place if
+  that is on a display, otherwise beside the main window, and from there back to its kept
+  place once that is on a display again; the kept place is not changed meanwhile, and a
+  place on no display is never written down. Dragging it by hand makes where it is its
+  place. The window has no minimise box.
 - What you set for a person is kept by their UID (`voice.<uid>=<percent>` followed by any of
   `,muted`, `,unleveled` and `,priority`; 256 people at most) and applied whenever that person
   is seen. The slider is squared before use, so half way is a quarter of the power.
