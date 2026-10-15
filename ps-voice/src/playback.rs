@@ -640,6 +640,7 @@ pub struct Playback {
     unleveled: HashSet<u32>,
     levelers: HashMap<u32, Leveler>,
     dims: HashMap<u16, Dim>,
+    muted: HashSet<u16>,
     leveling: bool,
     unsupported_codec: Option<u8>,
 }
@@ -662,6 +663,9 @@ impl Playback {
     }
 
     pub fn push_from(&mut self, session: u16, client_id: u16, voice_id: u16, codec: u8, data: &[u8], whisper: bool) {
+        if self.muted.contains(&session) {
+            return;
+        }
         let key = Self::key(session, client_id);
         if !is_supported_codec(codec) {
             if !is_end_marker(data) {
@@ -729,6 +733,15 @@ impl Playback {
         }
     }
 
+    pub fn set_session_muted(&mut self, session: u16, muted: bool) {
+        if muted {
+            self.muted.insert(session);
+            self.talkers.retain(|key, _| Self::session_of(*key) != session);
+        } else {
+            self.muted.remove(&session);
+        }
+    }
+
     pub fn set_leveling(&mut self, on: bool) {
         self.leveling = on;
     }
@@ -775,6 +788,7 @@ impl Playback {
         self.unleveled.retain(|key| Self::session_of(*key) != session);
         self.levelers.retain(|key, _| Self::session_of(*key) != session);
         self.dims.remove(&session);
+        self.muted.remove(&session);
     }
 
     pub fn clear(&mut self) {
@@ -1586,6 +1600,37 @@ mod tests {
         assert_eq!(p.talker(2, 7).unwrap().stats.decoded, 11);
         p.remove(2, 7);
         assert_eq!(p.mix(&mut out), 0);
+    }
+
+    #[test]
+    fn a_connection_with_its_sound_muted_is_not_heard_and_the_others_are() {
+        let a = packets(40, 440.0);
+        let b = packets(40, 880.0);
+        let mut p = Playback::new();
+        let mut out = vec![0f32; BLOCK];
+        for i in 0..20 {
+            p.push(1, 7, i as u16, CODEC_OPUS_VOICE, &a[i]);
+            p.push(2, 7, i as u16, CODEC_OPUS_VOICE, &b[i]);
+        }
+        assert_eq!(p.mix(&mut out), 2);
+        p.set_session_muted(1, true);
+        assert!(p.talker(1, 7).is_none(), "what was already coming in stops at once");
+        for i in 20..30 {
+            p.push(1, 7, i as u16, CODEC_OPUS_VOICE, &a[i]);
+            p.push_from(1, 8, i as u16, CODEC_OPUS_VOICE, &a[i], true);
+            p.push(2, 7, i as u16, CODEC_OPUS_VOICE, &b[i]);
+        }
+        assert!(p.talker(1, 7).is_none() && p.talker(1, 8).is_none(), "nothing new is taken, whispers included");
+        assert_eq!(p.mix(&mut out), 1, "the other connection is still heard");
+        p.set_session_muted(1, false);
+        for i in 30..40 {
+            p.push(1, 7, i as u16, CODEC_OPUS_VOICE, &a[i]);
+        }
+        assert!(p.talker(1, 7).is_some(), "heard again once its sound is back on");
+        p.set_session_muted(2, true);
+        p.clear_session(2);
+        p.push(2, 7, 0, CODEC_OPUS_VOICE, &b[0]);
+        assert!(p.talker(2, 7).is_some(), "a connection made again starts with its sound on");
     }
 
     fn tone_at(count: usize, freq: f32, amplitude: f32) -> Vec<Vec<u8>> {

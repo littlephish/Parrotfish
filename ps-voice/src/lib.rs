@@ -170,6 +170,12 @@ impl AudioEngine {
         }
     }
 
+    pub fn set_session_muted(&self, session: u16, muted: bool) {
+        if let Ok(mut playback) = self.shared.playback.lock() {
+            playback.set_session_muted(session, muted);
+        }
+    }
+
     pub fn set_leveling(&self, on: bool) {
         if let Ok(mut playback) = self.shared.playback.lock() {
             playback.set_leveling(on);

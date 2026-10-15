@@ -706,6 +706,8 @@ pub struct Session {
     pub dim_applied: Option<f32>,
     pub mic: Report,
     pub mic_seems_on: bool,
+    pub mic_muted: bool,
+    pub sound_muted: bool,
 }
 
 impl Session {
@@ -748,6 +750,8 @@ impl Session {
             dim_applied: None,
             mic: Report::new(true),
             mic_seems_on: true,
+            mic_muted: false,
+            sound_muted: false,
         }
     }
 

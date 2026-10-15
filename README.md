@@ -37,7 +37,9 @@ that sets it up. The server in the pictures is a test server; its channels and p
   server itself. PNG, JPEG, and GIF as a still picture.
 - Several servers at once. You hear all of them; your microphone goes to the one you are
   viewing, and on the others people see it switched off, as with the server tabs of the
-  TeamSpeak client.
+  TeamSpeak client. Muting the microphone or the sound, with the buttons or the keys, is for
+  the server you are viewing: leave one with its sound off and talk on another. Every server
+  starts with both on.
 - Click a person for private messages, a poke, their details, and a volume and mute that apply
   to that person only and are remembered. Right-click a channel for its topic and description.
 - A switch that evens out how loud people are: someone who comes in loud is turned down at

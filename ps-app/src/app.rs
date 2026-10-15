@@ -180,6 +180,14 @@ pub fn forget_links(scheme: &str) {
     }
 }
 
+fn with_mute(session: &Session, detail: String) -> String {
+    match (session.is_connected(), session.sound_muted, session.mic_muted) {
+        (true, true, _) => format!("{detail} · sound muted"),
+        (true, false, true) => format!("{detail} · microphone muted"),
+        _ => detail,
+    }
+}
+
 fn speakers_place_usable((x, y): (i32, i32)) -> bool {
     platform::on_a_screen(x.saturating_add(24), y.saturating_add(24))
 }
@@ -291,8 +299,7 @@ pub struct App {
     viewed: Option<u16>,
     mic_target: Option<u16>,
     own_talking: bool,
-    mic_muted: bool,
-    sound_muted: bool,
+    mic_gated: bool,
     tree: Rc<VecModel<TreeRow>>,
     chat: Rc<VecModel<ChatRow>>,
     chat_shown: Option<(u16, u64)>,
@@ -404,8 +411,7 @@ impl App {
             viewed: None,
             mic_target: None,
             own_talking: false,
-            mic_muted: false,
-            sound_muted: false,
+            mic_gated: false,
             tree: Rc::new(VecModel::default()),
             chat: Rc::new(VecModel::default()),
             chat_shown: None,
@@ -1469,8 +1475,9 @@ impl App {
         options.server_password = request.password.clone();
         options.default_channel = request.channel.clone();
         options.default_channel_password = request.channel_password.clone();
-        options.input_muted = self.mic_muted;
-        options.output_muted = self.sound_muted;
+        let (mic_muted, sound_muted) = self.session(id).map_or((false, false), |s| (s.mic_muted, s.sound_muted));
+        options.input_muted = mic_muted;
+        options.output_muted = sound_muted;
         options.input_hardware = fresh || self.viewed == Some(id);
         options.log_commands = self.trace;
         let mic_claimed = options.input_hardware;
@@ -1578,6 +1585,7 @@ impl App {
             let (codec, quality) = target.own_codec();
             self.engine.set_codec(codec, quality);
         }
+        self.gate_mic();
     }
 
     fn tell_mics(&mut self, now: Instant) {
@@ -1600,21 +1608,26 @@ impl App {
         self.dirty.sessions |= redraw;
     }
 
-    fn apply_mute(&mut self, w: &Windows) {
-        let (mic, sound) = (self.mic_muted, self.sound_muted);
+    fn mic_target_muted(&self) -> bool {
+        self.mic_target.and_then(|id| self.session(id)).is_some_and(|s| s.mic_muted || s.sound_muted)
+    }
+
+    fn gate_mic(&mut self) {
+        let muted = self.mic_target_muted();
+        if muted == self.mic_gated {
+            return;
+        }
+        self.mic_gated = muted;
         let target = self
             .mic_target
             .and_then(|id| self.session(id))
             .and_then(|s| s.client.clone().map(|client| (client, s.own_codec().0)));
-        let clients: Vec<ClientHandle> =
-            self.sessions.iter().filter(|s| s.is_connected()).filter_map(|s| s.client.clone()).collect();
         let engine = &self.engine;
         let lanes = &self.lanes;
         engine.pause_transmit(|| {
             let on_air = engine.shared().on_air_lane();
-            engine.set_mic_muted(mic);
-            engine.set_speaker_muted(sound);
-            if let (true, Some(lane), Some((client, codec))) = (mic || sound, on_air, &target) {
+            engine.set_mic_muted(muted);
+            if let (true, Some(lane), Some((client, codec))) = (muted, on_air, &target) {
                 if lane == 0 {
                     client.send_voice(*codec, &[]);
                 } else if let Ok(table) = lanes.lock() {
@@ -1623,24 +1636,40 @@ impl App {
                     }
                 }
             }
-            for client in &clients {
+        });
+    }
+
+    fn apply_mute(&mut self, id: u16) {
+        self.gate_mic();
+        if let Some(session) = self.session(id) {
+            let (mic, sound) = (session.mic_muted, session.sound_muted);
+            if let Some(client) = session.client.as_ref().filter(|_| session.is_connected()) {
                 client.set_mute_state(mic, sound);
             }
-        });
-        w.main.set_mic_muted(mic);
-        w.main.set_sound_muted(sound);
+            self.engine.set_session_muted(id, sound);
+        }
+        self.dirty.sessions = true;
+        self.dirty.speakers = true;
     }
 
-    pub fn toggle_mic(&mut self, w: &Windows) {
-        self.mic_muted = !self.mic_muted;
-        self.apply_mute(w);
-        self.engine.play_cue(if self.mic_muted { Cue::MicOff } else { Cue::MicOn });
+    pub fn toggle_mic(&mut self, _w: &Windows) {
+        let Some(session) = self.viewed.and_then(|id| self.sessions.iter_mut().find(|s| s.id == id)) else {
+            return;
+        };
+        session.mic_muted = !session.mic_muted;
+        let (id, muted) = (session.id, session.mic_muted);
+        self.apply_mute(id);
+        self.engine.play_cue(if muted { Cue::MicOff } else { Cue::MicOn });
     }
 
-    pub fn toggle_sound(&mut self, w: &Windows) {
-        self.sound_muted = !self.sound_muted;
-        self.apply_mute(w);
-        self.engine.play_cue(if self.sound_muted { Cue::SoundOff } else { Cue::SoundOn });
+    pub fn toggle_sound(&mut self, _w: &Windows) {
+        let Some(session) = self.viewed.and_then(|id| self.sessions.iter_mut().find(|s| s.id == id)) else {
+            return;
+        };
+        session.sound_muted = !session.sound_muted;
+        let (id, muted) = (session.id, session.sound_muted);
+        self.apply_mute(id);
+        self.engine.play_cue(if muted { Cue::SoundOff } else { Cue::SoundOn });
     }
 
     fn remember_folds(&mut self, id: u16) {
@@ -2389,9 +2418,12 @@ impl App {
         let token = std::mem::take(&mut session.request.token);
         let request = session.request.clone();
         let name = session.name.clone();
-        if let (true, Some(client)) = (self.mic_muted || self.sound_muted, self.session(id).and_then(|s| s.client.clone()))
-        {
-            client.set_mute_state(self.mic_muted, self.sound_muted);
+        if let Some(session) = self.session(id) {
+            let (mic, sound) = (session.mic_muted, session.sound_muted);
+            if let (true, Some(client)) = (mic || sound, session.client.as_ref()) {
+                client.set_mute_state(mic, sound);
+            }
+            self.engine.set_session_muted(id, sound);
         }
         if save {
             let kept = self.bookmarks.find_address(&request.address).map(|i| self.bookmarks.items[i].clone());
@@ -2427,12 +2459,12 @@ impl App {
     }
 
     fn status_allows_whisper(&self) -> bool {
-        self.viewed_session().is_some_and(|s| s.is_connected()) && !self.sound_muted && !self.mic_muted
+        self.viewed_session().is_some_and(|s| s.is_connected() && !s.sound_muted && !s.mic_muted)
     }
 
     fn speaker_rooms(&self) -> Vec<Room> {
         let mut rooms = Vec::new();
-        for session in self.sessions.iter().filter(|s| s.is_connected()) {
+        for session in self.sessions.iter().filter(|s| s.is_connected() && !s.sound_muted) {
             let Some(view) = &session.view else {
                 continue;
             };
@@ -2714,11 +2746,11 @@ impl App {
             let told = session.waiting_level.is_some() || session.retries > 0;
             return if told { session.state_text.clone() } else { "Connecting".to_string() };
         }
-        if self.sound_muted {
-            return "Sound muted".to_string();
+        if session.sound_muted {
+            return "Sound muted on this server".to_string();
         }
-        if self.mic_muted {
-            return "Microphone muted".to_string();
+        if session.mic_muted {
+            return "Microphone muted on this server".to_string();
         }
         if !session.mic_seems_on {
             return "Microphone not on here yet".to_string();
@@ -2828,7 +2860,7 @@ impl App {
 
         let devices = self.engine.status();
         let now = Instant::now();
-        let silent = devices.input_ok && !self.mic_muted && level <= SILENCE_DB;
+        let silent = devices.input_ok && !self.mic_target_muted() && level <= SILENCE_DB;
         if silent {
             self.silent_since.get_or_insert(now);
         } else {
@@ -2939,15 +2971,19 @@ impl App {
                 id: i32::from(s.id),
                 initials: initials(&s.name).into(),
                 name: s.name.as_str().into(),
-                detail: if !s.is_connected() {
-                    s.short_detail().into()
-                } else if self.viewed == Some(s.id) {
-                    "viewing".into()
-                } else if s.talkers > 0 {
-                    "someone is talking".into()
-                } else {
-                    s.short_detail().into()
-                },
+                detail: with_mute(
+                    s,
+                    if !s.is_connected() {
+                        s.short_detail()
+                    } else if self.viewed == Some(s.id) {
+                        "viewing".to_string()
+                    } else if s.talkers > 0 {
+                        "someone is talking".to_string()
+                    } else {
+                        s.short_detail()
+                    },
+                )
+                .into(),
                 viewed: self.viewed == Some(s.id),
                 connected: s.is_connected(),
                 talking: s.talkers > 0,
@@ -2963,6 +2999,9 @@ impl App {
         let others: Vec<ServerTile> = tiles.iter().filter(|t| !t.viewed).take(HEADER_TILES).cloned().collect();
         w.main.set_sessions(ModelRc::new(VecModel::from(tiles)));
         w.main.set_others(ModelRc::new(VecModel::from(others)));
+        let (mic_muted, sound_muted) = self.viewed_session().map_or((false, false), |s| (s.mic_muted, s.sound_muted));
+        w.main.set_mic_muted(mic_muted);
+        w.main.set_sound_muted(sound_muted);
         let own = self
             .viewed_session()
             .filter(|s| s.is_connected())

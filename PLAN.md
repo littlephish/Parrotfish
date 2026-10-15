@@ -235,7 +235,7 @@ order against the test server, not by ear and not with an official client talkin
 | `ps-protocol` | Packet headers, command escape/parse/build, QuickLZ + fragmentation, receive windows/generations, Init1 payloads, voice and whisper payloads | done, 34 tests |
 | `ps-client` | Connection actor thread: handshake, ack/resend, ping, command dispatch, channel/client/group book, voice and whispers in/out, events; `spacer` recognises spacer channels, `filetransfer` fetches icons over the server's file port, `resolve` finds a server through SRV, TSDNS or its plain name | done, 35 tests + live tests |
 | `ps-oldcodecs` | Speex decoder (8, 16 and 32 kHz) in safe Rust, no dependencies | done, 27 tests + 3 run by hand |
-| `ps-voice` | Opus codec, Speex playback at 48 kHz, resampler, jitter buffer + mixer (talkers keyed by connection and client, a volume per talker, lowering for priority speakers), evening out how loud talkers are (`level.rs`), VAD/PTT gate, lanes (which key is held decides where a frame goes), echo canceller (`echo.rs`), noise suppression (`denoise.rs`), automatic gain (`agc.rs`), event sounds (`cues.rs`), cpal device I/O (WASAPI) | done, 127 tests + live tests |
+| `ps-voice` | Opus codec, Speex playback at 48 kHz, resampler, jitter buffer + mixer (talkers keyed by connection and client, a volume per talker, lowering for priority speakers), evening out how loud talkers are (`level.rs`), VAD/PTT gate, lanes (which key is held decides where a frame goes), echo canceller (`echo.rs`), noise suppression (`denoise.rs`), automatic gain (`agc.rs`), event sounds (`cues.rs`), cpal device I/O (WASAPI) | done, 128 tests + live tests |
 | `ps-app` | The windows. `session.rs` one connection (events, tree rows and folding, chat history, reconnecting), `app.rs` all sessions, the viewed one and where the microphone goes, `mic.rs` what each server is told about the microphone and when, `app/shortcuts.rs` choosing keys, the whisper key editor and the lane table, `hotkeys.rs` key combinations and what counts as held, `keywatch.rs` the thread that reads the keys, `whisper.rs` whisper keys and their file, `speakers.rs` who is listed in the speaking window, `scale.rs` a window's limits and where it lands when it crosses to a display with another scale, `links.rs` reading `ts3server://` links and who opens them, `instance.rs` handing a second start over to the first, `bookmarks.rs`, `settings.rs`, `platform.rs`, `ui/` theme, widgets, main, settings and speaking windows, `icons.rs` checks, shrinks and caches icons | done, 185 tests + live tests |
 | `ps-serverquery` | Text protocol over TCP 10011 | not started |
 
@@ -935,7 +935,12 @@ Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood
 - One bookmark per server address. A second bookmark for the same server needs a different
   spelling of the address (for example with the port).
 - Several servers: every connection is heard; the microphone goes to the viewed one only. Mute
-  applies to all. When the view changes mid-sentence the server left behind gets an end-of-talk
+  belongs to each connection (`Session::mic_muted`, `sound_muted`): the dock's buttons and the
+  mute keys change the viewed one, the server list says which others have the microphone or
+  the sound muted, and a new connection starts with both on. With its sound muted a connection
+  is left out of the mix (`Playback::set_session_muted`, whispers included, what was already
+  playing stops) and out of the speaking window; the microphone is cut while the connection it
+  goes to has either muted, and each server is told only its own state. When the view changes mid-sentence the server left behind gets an end-of-talk
   packet, and on mute the end-of-talk packet is sent before the server is told we are muted
   (it drops voice from muted clients, so the other order leaves listeners waiting for a timeout).
 - The servers without the microphone are told so (`mic.rs`, one `Report` per connection, stepped
