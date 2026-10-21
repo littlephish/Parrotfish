@@ -52,8 +52,6 @@ const METER_FLOOR_DB: f32 = -70.0;
 const SILENCE_DB: f32 = -95.9;
 const SILENCE_HINT_AFTER: Duration = Duration::from_secs(3);
 const SILENCE_NEVER_HEARD_AFTER: Duration = Duration::from_secs(20);
-/// How much quieter people on a server that is not in focus are played.
-const UNFOCUSED_SERVER_DB: f32 = -9.0;
 const DEFAULT_NICKNAME: &str = "ParrotfishUser";
 const HEADER_TILES: usize = 3;
 
@@ -655,6 +653,7 @@ impl App {
         w.settings.set_auto_gain(self.settings.auto_gain);
         w.settings.set_even_voices(self.settings.even_voices);
         w.settings.set_priority_dim(self.settings.priority_dim);
+        w.settings.set_unfocused_db(self.settings.unfocused_db);
         w.settings.set_cue_volume(self.settings.cue_volume);
         w.settings.set_join_leave_cues(self.settings.join_leave_cues);
         w.settings.set_check_updates(self.settings.check_updates);
@@ -1285,6 +1284,11 @@ impl App {
         self.settings.even_voices = even_voices;
         let dim_changed = self.settings.priority_dim != priority_dim;
         self.settings.priority_dim = priority_dim;
+        let unfocused = w.settings.get_unfocused_db().clamp(0.0, 24.0);
+        if (self.settings.unfocused_db - unfocused).abs() > f32::EPSILON {
+            self.settings.unfocused_db = unfocused;
+            self.background_sent.clear();
+        }
         self.mark_settings_dirty();
         if dim_changed {
             let ids: Vec<u16> = self.sessions.iter().map(|s| s.id).collect();
@@ -1859,7 +1863,8 @@ impl App {
             return;
         }
         for (id, back) in &wanted {
-            self.engine.set_session_background(*id, back.then_some(UNFOCUSED_SERVER_DB));
+            let db = (*back && self.settings.unfocused_db >= 0.5).then(|| -self.settings.unfocused_db);
+            self.engine.set_session_background(*id, db);
         }
         for (id, _) in self.background_sent.iter().filter(|(id, _)| !connected.contains(id)) {
             self.engine.set_session_background(*id, None);
