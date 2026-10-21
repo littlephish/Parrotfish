@@ -6,6 +6,8 @@ pub const MAX_LINGER_SECONDS: u32 = 60;
 pub const ROW_HEIGHT: f32 = 22.0;
 pub const PADDING: f32 = 8.0;
 pub const MIN_WIDTH: f32 = 120.0;
+/// Room for an icon, a name of about 17 letters, the longest word ("dropped") and an age.
+pub const MIN_WIDTH_WITH_EVENTS: f32 = 230.0;
 pub const MIN_HEIGHT: f32 = 38.0;
 pub const MAX_SIDE: f32 = 2000.0;
 
@@ -103,8 +105,12 @@ impl Roster {
 /// How much of a line may be missing and still count as a whole line. At display scales such as
 /// 125% the window's height in pixels is rounded, which can take a fraction of a pixel off a
 /// height that was set to an exact number of lines.
+#[cfg(test)]
 const LINE_SLACK: f32 = 0.1;
 
+/// How many whole lines fit in a window this tall. The window itself counts them the same way
+/// (`capacity` in speakers.slint); this copy keeps the arithmetic under test.
+#[cfg(test)]
 pub fn capacity(height: f32) -> usize {
     ((height - 2.0 * PADDING) / ROW_HEIGHT + LINE_SLACK).floor().max(0.0) as usize
 }

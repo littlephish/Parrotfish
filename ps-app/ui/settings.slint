@@ -138,6 +138,8 @@ export component SettingsWindow inherits Window {
     in property <[ProgramRow]> sp-programs;
     in property <string> sp-front;
     in-out property <string> sp-program-typed;
+    in property <string> sp-front-seen;
+    in property <string> sp-program-note;
     callback program-add-front();
     callback program-add(string);
     callback program-remove(int);
@@ -1732,8 +1734,17 @@ export component SettingsWindow inherits Window {
                                         }
                                     }
 
+                                    if root.sp-program-note != "": Hint {
+                                        text: root.sp-program-note;
+                                    }
+
                                     Hint {
-                                        text: "Switch to the game, then come back and add it. The window shows only while one of these is in front, and remembers a place and size for each: unlock it with the game in front, then move and size it there.";
+                                        text: root.sp-front-seen;
+                                        color: Theme.foam;
+                                    }
+
+                                    Hint {
+                                        text: "Switch to the game, then come back and add it. Once the window is locked, it shows only while one of these is in front (while unlocked it always shows, so you can place it). It remembers a place and size for each: unlock it with the game in front, then move and size it there.";
                                     }
                                 }
 

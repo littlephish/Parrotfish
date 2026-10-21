@@ -528,24 +528,27 @@ pub fn connect_failure(reason: &str, address: &str, had_password: bool) -> (Dial
 pub struct ChannelEvent {
     pub name: String,
     pub joined: bool,
+    /// Whether it happened on the server (connecting, leaving it) rather than between
+    /// channels; the speaking window shows that with its icon, so the words can stay short.
+    pub server: bool,
     pub what: &'static str,
     pub at: Instant,
 }
 
-/// Short words for why someone left the server, as the speaking window shows them.
-fn leave_words(reason: &str) -> &'static str {
+/// One short word for why someone left, and whether they left the server or only the channel.
+fn leave_words(reason: &str) -> (&'static str, bool) {
     if reason.starts_with("kicked from the channel") {
-        "kicked from channel"
+        ("kicked", false)
     } else if reason.starts_with("kicked") {
-        "kicked from server"
+        ("kicked", true)
     } else if reason.starts_with("banned") {
-        "banned"
+        ("banned", true)
     } else if reason.starts_with("connection lost") {
-        "lost connection"
+        ("dropped", true)
     } else if reason.starts_with("left view") {
-        "left channel"
+        ("left", false)
     } else {
-        "disconnected"
+        ("offline", true)
     }
 }
 
@@ -918,8 +921,8 @@ impl Session {
             .unwrap_or_else(|| self.request.nickname.clone())
     }
 
-    fn note_channel_event(&mut self, name: &str, joined: bool, what: &'static str) {
-        self.channel_event = Some(ChannelEvent { name: name.to_string(), joined, what, at: Instant::now() });
+    fn note_channel_event(&mut self, name: &str, joined: bool, server: bool, what: &'static str) {
+        self.channel_event = Some(ChannelEvent { name: name.to_string(), joined, server, what, at: Instant::now() });
     }
 
     fn shown_count(&self, view: &ServerView) -> usize {
@@ -1115,7 +1118,7 @@ impl Session {
             Event::ClientEntered { client } => {
                 if !client.is_query && self.view.as_ref().is_some_and(|view| view.own_channel == client.channel) {
                     out.cue = Some(Cue::Joined);
-                    self.note_channel_event(&client.nickname, true, "connected");
+                    self.note_channel_event(&client.nickname, true, true, "online");
                 }
                 if !client.is_query {
                     self.system(&format!("{} connected", client.nickname));
@@ -1125,7 +1128,8 @@ impl Session {
                 out.forget.push(client.id);
                 if !client.is_query && self.view.as_ref().is_some_and(|view| view.own_channel == client.channel) {
                     out.cue = Some(Cue::Left);
-                    self.note_channel_event(&client.nickname, false, leave_words(&reason));
+                    let (what, server) = leave_words(&reason);
+                    self.note_channel_event(&client.nickname, false, server, what);
                 }
                 if !client.is_query {
                     self.system(&describe_leave(&client.nickname, &reason));
@@ -1141,8 +1145,8 @@ impl Session {
                     _ => None,
                 };
                 match out.cue {
-                    Some(Cue::Joined) => self.note_channel_event(&client.nickname, true, "joined channel"),
-                    Some(Cue::Left) => self.note_channel_event(&client.nickname, false, "left channel"),
+                    Some(Cue::Joined) => self.note_channel_event(&client.nickname, true, false, "joined"),
+                    Some(Cue::Left) => self.note_channel_event(&client.nickname, false, false, "left"),
                     _ => {}
                 }
                 if client.id == self.own_id {
@@ -1653,23 +1657,23 @@ mod tests {
         let mut s = session();
         s.apply(Event::Connected { client_id: 7, server: ServerInfo::default() });
         s.apply(Event::View(sample_view()));
-        let what = |s: &Session| s.channel_event.as_ref().map(|e| (e.name.clone(), e.joined, e.what));
+        let what = |s: &Session| s.channel_event.as_ref().map(|e| (e.name.clone(), e.joined, e.server, e.what));
         let here = person(30, 1, "Pike");
         s.apply(Event::ClientEntered { client: here.clone() });
-        assert_eq!(what(&s), Some(("Pike".to_string(), true, "connected")));
+        assert_eq!(what(&s), Some(("Pike".to_string(), true, true, "online")));
         s.apply(Event::ClientMoved { client: person(31, 4, "Bream"), from: 4, to: 1 });
-        assert_eq!(what(&s), Some(("Bream".to_string(), true, "joined channel")));
-        for (reason, words) in [
-            ("left", "disconnected"),
-            ("connection lost", "lost connection"),
-            ("kicked from the server by Admin (spam)", "kicked from server"),
-            ("kicked from the channel by Admin", "kicked from channel"),
-            ("banned from the server by Admin", "banned"),
-            ("left view", "left channel"),
-            ("server is shutting down", "disconnected"),
+        assert_eq!(what(&s), Some(("Bream".to_string(), true, false, "joined")));
+        for (reason, words, server) in [
+            ("left", "offline", true),
+            ("connection lost", "dropped", true),
+            ("kicked from the server by Admin (spam)", "kicked", true),
+            ("kicked from the channel by Admin", "kicked", false),
+            ("banned from the server by Admin", "banned", true),
+            ("left view", "left", false),
+            ("server is shutting down", "offline", true),
         ] {
             s.apply(Event::ClientLeft { client: here.clone(), reason: reason.into() });
-            assert_eq!(what(&s), Some(("Pike".to_string(), false, words)), "{reason}");
+            assert_eq!(what(&s), Some(("Pike".to_string(), false, server, words)), "{reason}");
         }
         s.channel_event = None;
         s.apply(Event::ClientEntered { client: person(32, 4, "Carp") });
@@ -1696,7 +1700,7 @@ mod tests {
         assert_eq!(s.apply(Event::ClientMoved { client: elsewhere, from: 4, to: 3 }).cue, None);
         assert_eq!(s.apply(Event::ClientMoved { client: person(7, 4, "Minnow"), from: 1, to: 4 }).cue, Some(Cue::Moved));
         let what = |s: &Session| s.channel_event.as_ref().map(|e| (e.name.clone(), e.joined, e.what));
-        assert_eq!(what(&s), Some(("Pike".to_string(), false, "left channel")), "your own move is not an event");
+        assert_eq!(what(&s), Some(("Pike".to_string(), false, "left")), "your own move is not an event");
         let mut robot = here;
         robot.is_query = true;
         assert_eq!(s.apply(Event::ClientEntered { client: robot }).cue, None);

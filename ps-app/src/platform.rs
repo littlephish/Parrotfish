@@ -129,6 +129,10 @@ mod imp {
     const LAYERED: isize = 0x0008_0000;
     const PASS_CLICKS: isize = 0x0000_0020;
     const NEVER_ACTIVE: isize = 0x0800_0000;
+    /// A tool window has no taskbar button and is left out of Alt+Tab.
+    const TOOL_WINDOW: isize = 0x0000_0080;
+    const APP_WINDOW: isize = 0x0004_0000;
+    const HIDE: i32 = 0;
     const WHOLE_WINDOW_ALPHA: u32 = 2;
     const SAME_TITLE_LIMIT: usize = 64;
 
@@ -150,15 +154,24 @@ mod imp {
         None
     }
 
-    pub fn overlay_style(title: &str, alpha: u8, pass_clicks: bool) -> bool {
+    pub fn overlay_style(title: &str, alpha: u8, pass_clicks: bool, refresh_taskbar: bool) -> bool {
         let Some(window) = own_window(title) else {
             return false;
         };
         let style = unsafe { GetWindowLongPtrW(window, EXTENDED_STYLE) };
-        let plain = style | LAYERED | NEVER_ACTIVE;
+        let plain = (style | LAYERED | NEVER_ACTIVE | TOOL_WINDOW) & !APP_WINDOW;
         let wanted = if pass_clicks { plain | PASS_CLICKS } else { plain & !PASS_CLICKS };
         if wanted != style {
+            // The taskbar only notices a window becoming a tool window when it is shown again, so
+            // that is done once, as the window opens, and never over and over.
+            let to_tool = refresh_taskbar && style & TOOL_WINDOW == 0;
+            if to_tool {
+                unsafe { ShowWindow(window, HIDE) };
+            }
             unsafe { SetWindowLongPtrW(window, EXTENDED_STYLE, wanted) };
+            if to_tool {
+                unsafe { ShowWindow(window, SHOW_WITHOUT_FOCUS) };
+            }
         }
         // winit keeps WS_CAPTION on frameless windows and hides it in WM_NCCALCSIZE, and Slint sets
         // the title again whenever a window property changes. Each of those makes Windows paint
@@ -252,19 +265,19 @@ mod imp {
         }
         let process = unsafe { OpenProcess(QUERY_LIMITED, 0, owner) };
         if process == 0 {
-            return super::Front::Unknown;
+            return super::Front::Unreadable;
         }
         let mut name = [0u16; 1024];
         let mut size = name.len() as u32;
         let found = unsafe { QueryFullProcessImageNameW(process, 0, name.as_mut_ptr(), &mut size) } != 0;
         unsafe { CloseHandle(process) };
         if !found {
-            return super::Front::Unknown;
+            return super::Front::Unreadable;
         }
         let path = String::from_utf16_lossy(&name[..size as usize]);
         match path.rsplit(['\\', '/']).next().map(str::to_lowercase) {
             Some(file) if !file.is_empty() => super::Front::Program(file),
-            _ => super::Front::Unknown,
+            _ => super::Front::Unreadable,
         }
     }
 
@@ -1124,7 +1137,7 @@ mod imp {
         None
     }
 
-    pub fn overlay_style(_title: &str, _alpha: u8, _pass_clicks: bool) -> bool {
+    pub fn overlay_style(_title: &str, _alpha: u8, _pass_clicks: bool, _refresh_taskbar: bool) -> bool {
         false
     }
 
@@ -1238,8 +1251,10 @@ pub enum Front {
     Own,
     /// Another program, by its file name in lower case.
     Program(String),
-    /// Nothing, or a program whose name could not be read.
+    /// No window is in front, such as while the desktop is.
     Unknown,
+    /// A program whose name Windows would not give out.
+    Unreadable,
 }
 
 pub use imp::{
