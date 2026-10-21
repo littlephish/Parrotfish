@@ -280,6 +280,16 @@ impl ServerView {
     pub fn client_count(&self) -> usize {
         self.channels.iter().map(|n| n.clients.len()).sum()
     }
+
+    /// Whether our own voice is dropped by the channel we are in: it needs more talk power than
+    /// we have and we were not made a talker. An AFK channel is usually set up this way.
+    pub fn muted_by_channel(&self) -> bool {
+        let (Some(own), Some(node)) = (self.client(self.own_id), self.own_channel_node()) else {
+            return false;
+        };
+        let needed = node.channel.needed_talk_power;
+        needed > 0 && own.talk_power < needed && !own.is_talker
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -845,6 +855,34 @@ mod tests {
         assert_eq!(s.virtual_server_id, 1);
         s.apply(&Command::parse("notifyserveredited virtualserver_hostmessage=Mind\\sthe\\scoral virtualserver_hostmessage_mode=2"));
         assert_eq!((s.host_message.as_str(), s.host_message_mode), ("Mind the coral", 2));
+    }
+
+    #[test]
+    fn a_channel_that_needs_more_talk_power_mutes_whoever_has_less() {
+        let mut book = book_from(
+            "channellist cid=1 cpid=0 channel_order=0 channel_name=Lobby channel_needed_talk_power=0|cid=2 cpid=0 channel_order=1 channel_name=AFK channel_needed_talk_power=75",
+        );
+        book.own_id = 3;
+        book.clients_entered(&Command::parse(
+            "notifycliententerview cfid=0 ctid=1 reasonid=0 clid=3 client_nickname=Me client_type=0 client_talk_power=50",
+        ));
+        assert!(!book.view().muted_by_channel(), "the lobby asks for nothing");
+
+        book.clients_moved(&Command::parse("notifyclientmoved ctid=2 reasonid=0 clid=3"));
+        assert!(book.view().muted_by_channel(), "50 is less than the 75 the AFK channel asks for");
+
+        book.clients_updated(&Command::parse("notifyclientupdated clid=3 client_is_talker=1"));
+        assert!(!book.view().muted_by_channel(), "a talker is let speak");
+        book.clients_updated(&Command::parse("notifyclientupdated clid=3 client_is_talker=0"));
+        assert!(book.view().muted_by_channel());
+
+        book.clients_updated(&Command::parse("notifyclientupdated clid=3 client_talk_power=75"));
+        assert!(!book.view().muted_by_channel(), "enough talk power");
+        book.clients_updated(&Command::parse("notifyclientupdated clid=3 client_talk_power=10"));
+        assert!(book.view().muted_by_channel());
+
+        book.upsert_channels(&Command::parse("notifychanneledited cid=2 reasonid=10 invokerid=1 channel_needed_talk_power=0"));
+        assert!(!book.view().muted_by_channel(), "an edit that lifts the rule is followed");
     }
 
     #[test]
