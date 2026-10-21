@@ -261,6 +261,7 @@ export component ParrotfishApp inherits Window {
     callback row-activated(row: TreeRow);
     callback join-with-password();
     callback send-chat();
+    callback open-url(url: string);
     callback toggle-mic();
     callback toggle-sound();
     callback open-settings(tab: int);
@@ -699,6 +700,9 @@ export component ParrotfishApp inherits Window {
 
                             for line in root.chat: ChatRowView {
                                 entry: line;
+                                open-url(url) => {
+                                    root.open-url(url);
+                                }
                             }
                         }
                     }

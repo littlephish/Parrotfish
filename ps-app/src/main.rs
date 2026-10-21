@@ -121,6 +121,9 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_join_with_password(move || with_app(&a, |s, w| s.join_with_password(w)));
     let a = app.clone();
     ui.on_send_chat(move || with_app(&a, |s, w| s.send_chat(w)));
+    ui.on_open_url(|url| {
+        platform::open_link(&url);
+    });
     let a = app.clone();
     ui.on_toggle_mic(move || with_app(&a, |s, w| s.toggle_mic(w)));
     let a = app.clone();
