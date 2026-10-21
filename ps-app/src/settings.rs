@@ -46,6 +46,47 @@ impl Voice {
     }
 }
 
+/// The program the speaking window is set to show over until the person changes the list.
+pub const DEFAULT_OVERLAY_PROGRAM: &str = "exefile.exe";
+
+/// A program the speaking window shows over, with the place and size it was given there.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProgramSpot {
+    pub exe: String,
+    pub place: Option<(i32, i32)>,
+    pub size: Option<(f32, f32)>,
+}
+
+impl ProgramSpot {
+    pub fn named(exe: &str) -> Self {
+        Self { exe: exe.trim().to_lowercase(), place: None, size: None }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        let mut parts = value.split('|');
+        let exe = parts.next()?.trim().to_lowercase();
+        if exe.is_empty() {
+            return None;
+        }
+        let numbers: Vec<f32> = parts.filter_map(|part| part.trim().parse().ok()).collect();
+        let (place, size) = match numbers[..] {
+            [x, y, width, height] => (
+                Some((x as i32, y as i32)),
+                Some((width.clamp(speakers::MIN_WIDTH, speakers::MAX_SIDE), speakers::snap_height(height))),
+            ),
+            _ => (None, None),
+        };
+        Some(Self { exe, place, size })
+    }
+
+    fn serialize(&self) -> String {
+        match (self.place, self.size) {
+            (Some((x, y)), Some((width, height))) => format!("{}|{x}|{y}|{width:.0}|{height:.0}", self.exe),
+            _ => self.exe.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub server_address: String,
@@ -66,6 +107,7 @@ pub struct Settings {
     pub check_updates: bool,
     pub updated_from: String,
     pub cue_volume: f32,
+    pub join_leave_cues: bool,
     pub talk_keys: Vec<Chord>,
     pub talk_release_ms: u32,
     pub reply_key: Chord,
@@ -74,10 +116,16 @@ pub struct Settings {
     pub links: Claim,
     pub allow_whispers: bool,
     pub fold_mode: i32,
+    pub column_view: bool,
+    pub show_queries: bool,
     pub speakers_shown: bool,
     pub speakers_locked: bool,
     pub speakers_on_top: bool,
     pub speakers_all: bool,
+    pub speakers_keep: bool,
+    pub speakers_events: bool,
+    pub speakers_only_programs: bool,
+    pub speakers_programs: Vec<ProgramSpot>,
     pub speakers_opacity: f32,
     pub speakers_linger: u32,
     pub speakers_place: Option<(i32, i32)>,
@@ -89,6 +137,7 @@ pub struct Settings {
     pub window_height: f32,
     pub window_place: Option<(i32, i32)>,
     pub key_offsets: BTreeMap<String, u64>,
+    pub hidden_identities: BTreeSet<String>,
 }
 
 impl Default for Settings {
@@ -112,6 +161,7 @@ impl Default for Settings {
             check_updates: true,
             updated_from: String::new(),
             cue_volume: 50.0,
+            join_leave_cues: true,
             talk_keys: Vec::new(),
             talk_release_ms: 0,
             reply_key: Chord::default(),
@@ -120,10 +170,16 @@ impl Default for Settings {
             links: Claim::default(),
             allow_whispers: true,
             fold_mode: 1,
+            column_view: false,
+            show_queries: false,
             speakers_shown: false,
             speakers_locked: false,
             speakers_on_top: true,
             speakers_all: false,
+            speakers_keep: false,
+            speakers_events: false,
+            speakers_only_programs: false,
+            speakers_programs: vec![ProgramSpot::named(DEFAULT_OVERLAY_PROGRAM)],
             speakers_opacity: 85.0,
             speakers_linger: speakers::DEFAULT_LINGER_SECONDS,
             speakers_place: None,
@@ -135,6 +191,7 @@ impl Default for Settings {
             window_height: DEFAULT_WINDOW_HEIGHT,
             window_place: None,
             key_offsets: BTreeMap::new(),
+            hidden_identities: BTreeSet::new(),
         }
     }
 }
@@ -210,6 +267,7 @@ impl Settings {
     pub fn parse(text: &str) -> Self {
         let mut s = Self::default();
         let mut legacy: Option<usize> = None;
+        let mut programs_listed = false;
         for line in text.lines() {
             if let Some(rest) = line.trim().strip_prefix("key_offset.") {
                 if let Some((uid, offset)) = rest.rsplit_once('=') {
@@ -290,6 +348,12 @@ impl Settings {
                 "check_updates" => s.check_updates = value != "0",
                 "updated_from" => s.updated_from = value.chars().filter(|c| c.is_ascii_digit() || *c == '.').take(20).collect(),
                 "cue_volume" => s.cue_volume = number(value, 50.0, 0.0, 100.0),
+                "join_leave_cues" => s.join_leave_cues = value != "0",
+                "hidden_identity" => {
+                    if !value.is_empty() {
+                        s.hidden_identities.insert(value.to_string());
+                    }
+                }
                 "ptt_key" => legacy = value.parse::<usize>().ok(),
                 "talk_key" => {
                     let chord = Chord::parse(value);
@@ -306,10 +370,32 @@ impl Settings {
                 "links_previous" => s.links.previous = value.to_string(),
                 "allow_whispers" => s.allow_whispers = value != "0",
                 "fold_mode" => s.fold_mode = value.parse().unwrap_or(1).clamp(0, 2),
+                "column_view" => s.column_view = value == "1",
+                "show_queries" => s.show_queries = value == "1",
                 "speakers_shown" => s.speakers_shown = value == "1",
                 "speakers_locked" => s.speakers_locked = value == "1",
                 "speakers_on_top" => s.speakers_on_top = value != "0",
                 "speakers_all" => s.speakers_all = value == "1",
+                "speakers_keep" => s.speakers_keep = value == "1",
+                "speakers_events" => s.speakers_events = value == "1",
+                "speakers_only_programs" => s.speakers_only_programs = value == "1",
+                "speakers_programs_listed" => {
+                    if !programs_listed {
+                        programs_listed = true;
+                        s.speakers_programs.clear();
+                    }
+                }
+                "speakers_program" => {
+                    if !programs_listed {
+                        programs_listed = true;
+                        s.speakers_programs.clear();
+                    }
+                    if let Some(spot) = ProgramSpot::parse(value) {
+                        if !s.speakers_programs.iter().any(|kept| kept.exe == spot.exe) {
+                            s.speakers_programs.push(spot);
+                        }
+                    }
+                }
                 "speakers_opacity" => s.speakers_opacity = number(value, 85.0, 20.0, 100.0),
                 "speakers_linger" => {
                     let seconds = value.parse().unwrap_or(speakers::DEFAULT_LINGER_SECONDS);
@@ -377,6 +463,10 @@ impl Settings {
             put("updated_from", self.updated_from.clone());
         }
         put("cue_volume", format!("{:.0}", self.cue_volume));
+        put("join_leave_cues", u8::from(self.join_leave_cues).to_string());
+        for uid in &self.hidden_identities {
+            put("hidden_identity", uid.clone());
+        }
         for chord in &self.talk_keys {
             put("talk_key", chord.to_text());
         }
@@ -393,10 +483,19 @@ impl Settings {
         }
         put("allow_whispers", u8::from(self.allow_whispers).to_string());
         put("fold_mode", self.fold_mode.to_string());
+        put("column_view", u8::from(self.column_view).to_string());
+        put("show_queries", u8::from(self.show_queries).to_string());
         put("speakers_shown", u8::from(self.speakers_shown).to_string());
         put("speakers_locked", u8::from(self.speakers_locked).to_string());
         put("speakers_on_top", u8::from(self.speakers_on_top).to_string());
         put("speakers_all", u8::from(self.speakers_all).to_string());
+        put("speakers_keep", u8::from(self.speakers_keep).to_string());
+        put("speakers_events", u8::from(self.speakers_events).to_string());
+        put("speakers_only_programs", u8::from(self.speakers_only_programs).to_string());
+        put("speakers_programs_listed", "1".to_string());
+        for spot in &self.speakers_programs {
+            put("speakers_program", spot.serialize());
+        }
         put("speakers_opacity", format!("{:.0}", self.speakers_opacity));
         put("speakers_linger", self.speakers_linger.to_string());
         if let Some((x, y)) = self.speakers_place {
@@ -618,6 +717,7 @@ mod tests {
     fn the_speaking_window_is_remembered() {
         let plain = Settings::default();
         assert!(!plain.speakers_shown && !plain.speakers_locked && plain.speakers_on_top && !plain.speakers_all);
+        assert!(!plain.speakers_keep, "a locked window hides while nobody speaks unless asked not to");
         assert_eq!((plain.speakers_opacity, plain.speakers_place, plain.speakers_size), (85.0, None, (220.0, 160.0)));
         assert_eq!(plain.speakers_linger, 10);
         let mut s = Settings::default();
@@ -625,6 +725,13 @@ mod tests {
         s.speakers_locked = true;
         s.speakers_on_top = false;
         s.speakers_all = true;
+        s.speakers_keep = true;
+        s.speakers_events = true;
+        s.speakers_only_programs = true;
+        s.speakers_programs = vec![
+            ProgramSpot { exe: "exefile.exe".into(), place: Some((-1900, 40)), size: Some((260.0, 104.0)) },
+            ProgramSpot::named("other game.exe"),
+        ];
         s.speakers_opacity = 40.0;
         s.speakers_linger = 0;
         s.speakers_place = Some((-1200, 64));
@@ -642,6 +749,23 @@ mod tests {
     }
 
     #[test]
+    fn overlay_programs_start_with_eve_and_keep_their_own_places() {
+        let plain = Settings::default();
+        assert!(!plain.speakers_only_programs && !plain.speakers_events);
+        assert_eq!(plain.speakers_programs, vec![ProgramSpot::named("exefile.exe")]);
+        assert_eq!(Settings::parse("").speakers_programs, plain.speakers_programs);
+        let mut none = Settings::default();
+        none.speakers_programs.clear();
+        assert!(Settings::parse(&none.serialize()).speakers_programs.is_empty(), "an emptied list stays empty");
+        let odd = Settings::parse("speakers_program=EXEFILE.EXE|1|2|300|60\nspeakers_program=exefile.exe\nspeakers_program=|\n");
+        assert_eq!(odd.speakers_programs.len(), 1, "names are kept once, in lower case");
+        assert_eq!(odd.speakers_programs[0].place, Some((1, 2)));
+        assert_eq!(odd.speakers_programs[0].size, Some((300.0, 60.0)));
+        let half = Settings::parse("speakers_program=game.exe|5|x\n");
+        assert_eq!((half.speakers_programs[0].place, half.speakers_programs[0].size), (None, None));
+    }
+
+    #[test]
     fn microphone_helpers_and_event_sounds_are_kept() {
         let plain = Settings::default();
         assert!(!plain.noise_suppression && !plain.auto_gain);
@@ -654,6 +778,13 @@ mod tests {
         assert!(back.noise_suppression && back.auto_gain);
         assert_eq!(back.cue_volume, 0.0);
         assert_eq!(Settings::parse("cue_volume=900\n").cue_volume, 100.0);
+        assert!(plain.join_leave_cues);
+        let mut quiet = Settings::default();
+        quiet.join_leave_cues = false;
+        quiet.hidden_identities.insert("lks7QL5OVMKo4pZ79cEOI5r5oEA=".into());
+        let back_quiet = Settings::parse(&quiet.serialize());
+        assert!(!back_quiet.join_leave_cues);
+        assert!(back_quiet.hidden_identities.contains("lks7QL5OVMKo4pZ79cEOI5r5oEA="));
         assert_eq!(Settings::parse("cue_volume=loud\nauto_gain=yes\n"), Settings::default());
     }
 
@@ -844,8 +975,13 @@ mod tests {
         assert_eq!(Settings::parse("fold_mode=2\n").fold_mode, 2);
         assert_eq!(Settings::parse("fold_mode=9\n").fold_mode, 2);
         assert_eq!(Settings::parse("fold_mode=x\n").fold_mode, 1);
+        assert!(!Settings::default().column_view);
+        assert!(Settings::parse("column_view=1\n").column_view);
+        assert!(!Settings::default().show_queries, "query logins are hidden unless asked for");
+        assert!(Settings::parse("show_queries=1\n").show_queries);
         let mut s = Settings::default();
         s.fold_mode = 2;
+        s.column_view = true;
         s.folds.insert("lks7QL5OVMKo4pZ79cEOI5r5oEA=".into(), BTreeMap::from([(4, true), (17, false)]));
         s.folds.insert("test/9PZ9vww/Bpf5vJxtJhpz80=".into(), BTreeMap::from([(1, false)]));
         s.folds.insert("nothing chosen".into(), BTreeMap::new());
@@ -854,6 +990,7 @@ mod tests {
         assert!(!text.contains("nothing chosen"));
         let back = Settings::parse(&text);
         assert_eq!(back.fold_mode, 2);
+        assert!(back.column_view);
         assert_eq!(back.folds.len(), 2);
         assert_eq!(back.folds["lks7QL5OVMKo4pZ79cEOI5r5oEA="], BTreeMap::from([(4, true), (17, false)]));
         assert_eq!(back.folds["test/9PZ9vww/Bpf5vJxtJhpz80="], BTreeMap::from([(1, false)]));

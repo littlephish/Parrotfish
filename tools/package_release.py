@@ -67,6 +67,11 @@ def capture(command):
 
 PORTED = [
     (
+        "Atkinson Hyperlegible Next, the typeface (SIL Open Font License 1.1)  "
+        "https://github.com/googlefonts/atkinson-hyperlegible-next",
+        ROOT / "ps-app" / "ui" / "fonts" / "OFL.txt",
+    ),
+    (
         "Speex 1.2.1, the decoder, rewritten in Rust for Parrotfish (ps-oldcodecs)  https://www.speex.org",
         ROOT / "ps-oldcodecs" / "LICENSE-speex.txt",
     ),

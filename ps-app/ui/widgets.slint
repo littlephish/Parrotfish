@@ -1,5 +1,10 @@
 import { ListView } from "std-widgets.slint";
-import { Theme, Icons, Frame } from "theme.slint";
+import { Theme, Icons, Frame, Tip } from "theme.slint";
+
+export struct BadgeTip {
+    title: string,
+    sub: string,
+}
 
 export struct TreeRow {
     kind: int,
@@ -27,6 +32,12 @@ export struct TreeRow {
     badge-b: image,
     badge-c: image,
     badge-d: image,
+    tips: [BadgeTip],
+    mic-disabled: bool,
+    sound-disabled: bool,
+    first: int,
+    cells: int,
+    columns: int,
 }
 
 export struct ServerTile {
@@ -90,6 +101,8 @@ export component Pressable inherits Rectangle {
     in property <bool> enabled: true;
     in property <bool> focusable: true;
     out property <bool> hovered: touch.has-hover && root.enabled;
+    out property <length> pointer-x: touch.mouse-x;
+    out property <length> pointer-y: touch.mouse-y;
     callback clicked();
     callback double-clicked();
     callback context();
@@ -214,6 +227,7 @@ export component Meter inherits Rectangle {
     in property <float> level;
     in property <float> marker: -1;
     in property <bool> active;
+    in property <bool> whisper;
 
     height: 6px;
     border-radius: 3px;
@@ -226,7 +240,7 @@ export component Meter inherits Rectangle {
         height: parent.height;
         width: parent.width * max(0, min(1, root.level));
         border-radius: 3px;
-        background: root.active ? Theme.lure : Theme.drift;
+        background: root.active ? (root.whisper ? Theme.whisper : Theme.lure) : Theme.drift;
     }
 
     if root.marker >= 0: Rectangle {
@@ -396,6 +410,7 @@ export component Check inherits Pressable {
 
     height: 30px;
     border-radius: 6px;
+    opacity: root.enabled ? 1 : 0.45;
     background: root.hovered ? Theme.current.with-alpha(0.35) : transparent;
     clicked => {
         root.checked = !root.checked;
@@ -746,26 +761,252 @@ export component Badge inherits Rectangle {
     }
 }
 
+// Asks for a tooltip while the pointer is over this element. The pointer position comes from
+// the row it sits in (in window coordinates), so the row keeps its own clicks and hover. The
+// window draws the tooltip after a short wait; see Tip in theme.slint.
+component TipSpot inherits Rectangle {
+    in property <bool> active;
+    in property <length> px;
+    in property <length> py;
+    in property <string> title;
+    in property <string> sub;
+    property <bool> over: root.active && root.title != ""
+        && root.px >= self.absolute-position.x && root.px < self.absolute-position.x + self.width
+        && root.py >= self.absolute-position.y && root.py < self.absolute-position.y + self.height;
+
+    changed over => {
+        if (self.over) {
+            Tip.title = root.title;
+            Tip.sub = root.sub;
+            Tip.ax = self.absolute-position.x;
+            Tip.ay = self.absolute-position.y;
+            Tip.aw = self.width;
+            Tip.ah = self.height;
+            Tip.wanted = true;
+        } else if (Tip.ax == self.absolute-position.x && Tip.ay == self.absolute-position.y) {
+            Tip.wanted = false;
+        }
+    }
+
+    @children
+}
+
 component BadgeStrip inherits HorizontalLayout {
     in property <TreeRow> entry;
+    in property <bool> active;
+    in property <length> px;
+    in property <length> py;
 
     spacing: 3px;
 
     for slot in root.entry.badges: VerticalLayout {
         alignment: center;
 
-        Badge {
-            picture: slot == 0 ? root.entry.badge-a : (slot == 1 ? root.entry.badge-b : (slot == 2 ? root.entry.badge-c : root.entry.badge-d));
-            tinted: Math.mod(Math.floor(root.entry.badge-tint / Math.pow(2, slot)), 2) >= 1;
+        TipSpot {
+            width: 16px;
+            height: 16px;
+            active: root.active;
+            px: root.px;
+            py: root.py;
+            title: root.entry.tips[slot].title;
+            sub: root.entry.tips[slot].sub;
+
+            Badge {
+                picture: slot == 0 ? root.entry.badge-a : (slot == 1 ? root.entry.badge-b : (slot == 2 ? root.entry.badge-c : root.entry.badge-d));
+                tinted: Math.mod(Math.floor(root.entry.badge-tint / Math.pow(2, slot)), 2) >= 1;
+            }
         }
+    }
+}
+
+export component PersonCell inherits Pressable {
+    in property <TreeRow> entry;
+    in property <length> indent;
+    in property <bool> divider;
+    callback activated();
+    callback context-clicked();
+    property <length> px: root.absolute-position.x + root.pointer-x;
+    property <length> py: root.absolute-position.y + root.pointer-y;
+
+    focusable: false;
+    border-radius: 6px;
+    background: root.entry.talking
+        ? (root.entry.whispering ? Theme.whisper.with-alpha(self.hovered ? 0.24 : 0.16) : Theme.lure.with-alpha(self.hovered ? 0.2 : 0.12))
+        : (self.hovered ? Theme.shoal : transparent);
+    animate background {
+        duration: 150ms;
+        easing: ease-out;
+    }
+    double-clicked => {
+        root.activated();
+    }
+    context => {
+        root.context-clicked();
+    }
+
+    HorizontalLayout {
+        padding-left: root.indent;
+        padding-right: 10px;
+        spacing: 6px;
+
+        VerticalLayout {
+            alignment: center;
+
+            Rectangle {
+                width: 17px;
+                height: 17px;
+
+                Rectangle {
+                    width: root.entry.talking ? 17px : 9px;
+                    height: self.width;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: self.width / 2;
+                    background: root.entry.whispering ? Theme.whisper : Theme.lure;
+                    opacity: root.entry.talking ? 0.3 : 0;
+                    animate width, opacity {
+                        duration: 250ms;
+                        easing: ease-out;
+                    }
+                }
+
+                Rectangle {
+                    x: 4px;
+                    y: 4px;
+                    width: 9px;
+                    height: 9px;
+                    border-radius: 4.5px;
+                    background: root.entry.talking ? (root.entry.whispering ? Theme.whisper : Theme.lure) : (root.entry.away ? Theme.drift : Theme.person-dot);
+                    opacity: root.entry.talking ? 1 : 0.55;
+                }
+            }
+        }
+
+        Text {
+            text: root.entry.text;
+            color: root.entry.talking ? (root.entry.whispering ? Theme.whisper-text : Theme.lure) : (root.entry.away ? Theme.drift : Theme.person);
+            font-size: Theme.text;
+            font-weight: root.entry.me ? 700 : (root.entry.away ? 400 : 600);
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 0;
+        }
+
+        if root.entry.talking && root.entry.whispering: VerticalLayout {
+            alignment: center;
+
+            TipSpot {
+                width: 14px;
+                height: 14px;
+                active: root.hovered;
+                px: root.px;
+                py: root.py;
+                title: "Whispering";
+
+                Icon {
+                    source: Icons.ear;
+                    tint: Theme.whisper-text;
+                    width: 14px;
+                    height: 14px;
+                }
+            }
+        }
+
+        if root.entry.mic-muted: VerticalLayout {
+            alignment: center;
+
+            TipSpot {
+                width: 14px;
+                height: 14px;
+                active: root.hovered;
+                px: root.px;
+                py: root.py;
+                title: root.entry.mic-disabled ? "Microphone Disabled" : "Microphone Muted";
+
+                Icon {
+                    source: Icons.mic-off;
+                    tint: root.entry.mic-disabled ? Theme.drift : Theme.coral;
+                    width: 14px;
+                    height: 14px;
+                }
+            }
+        }
+
+        if root.entry.sound-muted: VerticalLayout {
+            alignment: center;
+
+            TipSpot {
+                width: 14px;
+                height: 14px;
+                active: root.hovered;
+                px: root.px;
+                py: root.py;
+                title: root.entry.sound-disabled ? "Sound Disabled" : "Sound Muted";
+
+                Icon {
+                    source: Icons.ear-off;
+                    tint: root.entry.sound-disabled ? Theme.drift : Theme.coral;
+                    width: 14px;
+                    height: 14px;
+                }
+            }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+
+        if root.entry.badges > 0: BadgeStrip {
+            entry: root.entry;
+            active: root.hovered;
+            px: root.px;
+            py: root.py;
+        }
+
+        if root.entry.commander: VerticalLayout {
+            alignment: center;
+
+            TipSpot {
+                width: 14px;
+                height: 14px;
+                active: root.hovered;
+                px: root.px;
+                py: root.py;
+                title: "Channel Commander";
+
+                Icon {
+                    source: Icons.commander;
+                    width: 14px;
+                    height: 14px;
+                }
+            }
+        }
+
+        if root.entry.tag != "": Text {
+            text: root.entry.tag;
+            color: Theme.drift;
+            font-size: 11.5px;
+            vertical-alignment: center;
+        }
+    }
+
+    if root.divider: Rectangle {
+        x: 0px;
+        y: 5px;
+        width: 1px;
+        height: parent.height - 10px;
+        background: Theme.hairline;
     }
 }
 
 export component TreeRowView inherits Rectangle {
     in property <TreeRow> entry;
+    in property <[TreeRow]> people;
     callback activated();
     callback fold-clicked();
     callback context-clicked();
+    callback cell-activated(TreeRow);
+    callback cell-context(TreeRow);
 
     height: Theme.row;
 
@@ -855,16 +1096,16 @@ export component TreeRowView inherits Rectangle {
 
                     Icon {
                         source: root.entry.icon == 1 ? Icons.lock : (root.entry.icon == 2 ? Icons.note : Icons.speaker);
-                        tint: root.entry.talking ? Theme.lure : Theme.drift;
+                        tint: root.entry.talking ? (root.entry.whispering ? Theme.whisper : Theme.lure) : Theme.channel-icon;
                     }
                 }
             }
 
             Text {
                 text: root.entry.text;
-                color: Theme.foam;
-                font-size: Theme.text;
-                font-weight: 600;
+                color: Theme.channel;
+                font-size: Theme.small;
+                font-weight: 500;
                 vertical-alignment: center;
                 overflow: elide;
                 horizontal-stretch: 1;
@@ -883,106 +1124,32 @@ export component TreeRowView inherits Rectangle {
         }
     }
 
-    if root.entry.kind == 4: Pressable {
-        focusable: false;
-        border-radius: 6px;
-        background: self.hovered ? Theme.shoal : transparent;
-        double-clicked => {
+    if root.entry.kind == 4: PersonCell {
+        entry: root.entry;
+        indent: 44px + root.entry.depth * 16px;
+        activated => {
             root.activated();
         }
-        context => {
+        context-clicked => {
             root.context-clicked();
         }
+    }
 
-        HorizontalLayout {
-            padding-left: 44px + root.entry.depth * 16px;
-            padding-right: 10px;
-            spacing: 6px;
+    if root.entry.kind == 5: HorizontalLayout {
+        padding-left: 34px + root.entry.depth * 16px;
+        spacing: 0px;
+        alignment: start;
 
-            VerticalLayout {
-                alignment: center;
-
-                Rectangle {
-                    width: 17px;
-                    height: 17px;
-
-                    Rectangle {
-                        width: root.entry.talking ? 17px : 9px;
-                        height: self.width;
-                        x: (parent.width - self.width) / 2;
-                        y: (parent.height - self.height) / 2;
-                        border-radius: self.width / 2;
-                        background: Theme.lure;
-                        opacity: root.entry.talking ? 0.3 : 0;
-                        animate width, opacity {
-                            duration: 250ms;
-                            easing: ease-out;
-                        }
-                    }
-
-                    Rectangle {
-                        x: 4px;
-                        y: 4px;
-                        width: 9px;
-                        height: 9px;
-                        border-radius: 4.5px;
-                        background: root.entry.talking ? Theme.lure : Theme.drift;
-                        opacity: root.entry.talking ? 1 : 0.55;
-                    }
-                }
+        for i in root.entry.cells: PersonCell {
+            entry: root.people[root.entry.first + i];
+            width: (root.width - 34px - root.entry.depth * 16px) / max(1, root.entry.columns);
+            indent: 10px;
+            divider: i > 0;
+            activated => {
+                root.cell-activated(self.entry);
             }
-
-            Text {
-                text: root.entry.text;
-                color: root.entry.talking ? Theme.lure : (root.entry.away ? Theme.drift : Theme.foam);
-                font-size: Theme.text;
-                font-weight: root.entry.me ? 600 : 400;
-                vertical-alignment: center;
-                overflow: elide;
-                horizontal-stretch: 1;
-            }
-
-            if root.entry.badges > 0: BadgeStrip {
-                entry: root.entry;
-            }
-
-            if root.entry.commander: VerticalLayout {
-                alignment: center;
-
-                Icon {
-                    source: Icons.commander;
-                    width: 14px;
-                    height: 14px;
-                }
-            }
-
-            if root.entry.mic-muted: VerticalLayout {
-                alignment: center;
-
-                Icon {
-                    source: Icons.mic-off;
-                    tint: Theme.coral;
-                    width: 14px;
-                    height: 14px;
-                }
-            }
-
-            if root.entry.sound-muted: VerticalLayout {
-                alignment: center;
-
-                Icon {
-                    source: Icons.ear-off;
-                    tint: Theme.coral;
-                    width: 14px;
-                    height: 14px;
-                }
-            }
-
-            if root.entry.tag != "": Text {
-                text: root.entry.tag;
-                color: Theme.drift;
-                font-size: 11.5px;
-                vertical-alignment: center;
+            context-clicked => {
+                root.cell-context(self.entry);
             }
         }
     }
