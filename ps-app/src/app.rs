@@ -238,6 +238,7 @@ fn chat_row(line: &ChatLine) -> ChatRow {
         },
         name: line.name.as_str().into(),
         text: line.text.as_str().into(),
+        link: links::web_link_in(&line.text).unwrap_or_default().into(),
     }
 }
 
