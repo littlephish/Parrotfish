@@ -1562,32 +1562,18 @@ export component SettingsWindow inherits Window {
                                     }
                                 }
 
-                                Check {
-                                    text: "Keep it above other windows";
-                                    checked <=> root.sp-on-top;
-                                    toggled => {
-                                        root.speakers-changed();
-                                    }
-                                }
+                                VerticalLayout {
+                                    padding-top: 8px;
 
-                                Check {
-                                    text: "Lock its size and place, and let clicks pass through it";
-                                    checked <=> root.sp-locked;
-                                    toggled => {
-                                        root.speakers-changed();
-                                    }
-                                }
-
-                                Check {
-                                    text: "Keep it showing while nobody is speaking";
-                                    checked <=> root.sp-keep;
-                                    toggled => {
-                                        root.speakers-changed();
+                                    Hint {
+                                        text: "What it shows";
+                                        font-weight: 600;
                                     }
                                 }
 
                                 Check {
                                     text: "List everyone in my channel, not only who is speaking";
+                                    enabled: root.sp-shown;
                                     checked <=> root.sp-all;
                                     toggled => {
                                         root.speakers-changed();
@@ -1596,7 +1582,26 @@ export component SettingsWindow inherits Window {
 
                                 Check {
                                     text: "Show joins and leaves in my channel, on its bottom line";
+                                    enabled: root.sp-shown;
                                     checked <=> root.sp-events;
+                                    toggled => {
+                                        root.speakers-changed();
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    padding-top: 8px;
+
+                                    Hint {
+                                        text: "Where it appears";
+                                        font-weight: 600;
+                                    }
+                                }
+
+                                Check {
+                                    text: "Keep it above other windows";
+                                    enabled: root.sp-shown;
+                                    checked <=> root.sp-on-top;
                                     toggled => {
                                         root.speakers-changed();
                                     }
@@ -1604,9 +1609,41 @@ export component SettingsWindow inherits Window {
 
                                 Check {
                                     text: "Only show it over these programs";
+                                    enabled: root.sp-shown;
                                     checked <=> root.sp-only-programs;
                                     toggled => {
                                         root.speakers-changed();
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    padding-top: 8px;
+
+                                    Hint {
+                                        text: "Locking";
+                                        font-weight: 600;
+                                    }
+                                }
+
+                                Check {
+                                    text: "Lock its size and place, and let clicks pass through it";
+                                    enabled: root.sp-shown;
+                                    checked <=> root.sp-locked;
+                                    toggled => {
+                                        root.speakers-changed();
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 28px;
+
+                                    Check {
+                                        text: "Keep it showing while nobody is speaking";
+                                        enabled: root.sp-shown && root.sp-locked;
+                                        checked <=> root.sp-keep;
+                                        toggled => {
+                                            root.speakers-changed();
+                                        }
                                     }
                                 }
 
