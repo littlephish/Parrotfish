@@ -130,6 +130,8 @@ fn main() -> Result<(), slint::PlatformError> {
     let a = app.clone();
     ui.on_toggle_fold(move |id| with_app(&a, |s, w| s.toggle_fold(w, id)));
     let a = app.clone();
+    ui.on_columns_changed(move || with_app(&a, |s, w| s.columns_changed(w)));
+    let a = app.clone();
     ui.on_toggle_commander(move || with_app(&a, |s, w| s.toggle_commander(w)));
     let a = app.clone();
     ui.on_toggle_start_here(move || with_app(&a, |s, w| s.toggle_start_here(w)));
@@ -148,6 +150,14 @@ fn main() -> Result<(), slint::PlatformError> {
     speakers_window.window().on_close_requested(|| CloseRequestResponse::KeepWindowShown);
     let a = app.clone();
     settings_window.on_speakers_changed(move || with_app(&a, |s, w| s.speakers_changed(w)));
+    let a = app.clone();
+    settings_window.on_program_add_front(move || with_app(&a, |s, w| s.program_add_front(w)));
+    let a = app.clone();
+    settings_window.on_program_add(move |name| with_app(&a, |s, w| s.program_add(w, &name)));
+    let a = app.clone();
+    settings_window.on_program_remove(move |index| with_app(&a, |s, w| s.program_remove(w, index)));
+    let a = app.clone();
+    settings_window.on_program_reset(move |index| with_app(&a, |s, w| s.program_reset(w, index)));
     let a = app.clone();
     settings_window.on_links_changed(move || with_app(&a, |s, w| s.links_changed(w)));
     let a = app.clone();
@@ -181,6 +191,8 @@ fn main() -> Result<(), slint::PlatformError> {
     settings_window.on_output_device_selected(move || with_app(&a, |s, w| s.select_output(w)));
     let a = app.clone();
     settings_window.on_new_identity(move || with_app(&a, |s, w| s.new_identity(w)));
+    let a = app.clone();
+    settings_window.on_remove_identity(move |index| with_app(&a, |s, w| s.remove_identity(w, index)));
     let a = app.clone();
     settings_window.on_import_identity(move || with_app(&a, |s, w| s.import_identity(w)));
     let a = app.clone();
