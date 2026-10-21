@@ -410,6 +410,7 @@ export component Check inherits Pressable {
 
     height: 30px;
     border-radius: 6px;
+    opacity: root.enabled ? 1 : 0.45;
     background: root.hovered ? Theme.current.with-alpha(0.35) : transparent;
     clicked => {
         root.checked = !root.checked;
