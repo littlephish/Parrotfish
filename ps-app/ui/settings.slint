@@ -165,6 +165,10 @@ export component SettingsWindow inherits Window {
     callback new-identity();
     callback remove-identity(int);
     in-out property <int> confirm-remove-identity: -1;
+    in-out property <bool> confirm-remove-bookmark;
+    changed bm-index => {
+        root.confirm-remove-bookmark = false;
+    }
     callback import-identity();
     callback bookmark-picked(index: int);
     callback bookmark-new();
@@ -937,12 +941,28 @@ export component SettingsWindow inherits Window {
                             padding-top: 10px;
                             spacing: 8px;
 
-                            Btn {
+                            if !root.confirm-remove-bookmark: Btn {
                                 text: "Remove";
                                 danger: true;
                                 enabled: root.bm-index >= 0;
                                 clicked => {
+                                    root.confirm-remove-bookmark = true;
+                                }
+                            }
+
+                            if root.confirm-remove-bookmark: Btn {
+                                text: "Yes, remove";
+                                danger: true;
+                                clicked => {
+                                    root.confirm-remove-bookmark = false;
                                     root.bookmark-removed();
+                                }
+                            }
+
+                            if root.confirm-remove-bookmark: Btn {
+                                text: "Keep";
+                                clicked => {
+                                    root.confirm-remove-bookmark = false;
                                 }
                             }
 
