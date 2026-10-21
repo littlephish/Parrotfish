@@ -1,10 +1,14 @@
+import "fonts/AtkinsonHyperlegibleNext-Regular.ttf";
+import "fonts/AtkinsonHyperlegibleNext-Medium.ttf";
+import "fonts/AtkinsonHyperlegibleNext-SemiBold.ttf";
+import "fonts/AtkinsonHyperlegibleNext-Bold.ttf";
 import { ListView, ScrollView, Palette } from "std-widgets.slint";
-import { Theme, Icons, Frame } from "theme.slint";
-import { Icon, Badge, Pressable, Btn, IconButton, Tile, Meter, Slide, Field, Dropdown, Check, Segmented, TreeRowView, ChatRowView, TreeRow, ServerTile, BookmarkRow, ChatRow, IdentityRow, WhisperKeyRow, PickRow } from "widgets.slint";
-import { SettingsWindow } from "settings.slint";
+import { Theme, Icons, Frame, Tip } from "theme.slint";
+import { Icon, Badge, Pressable, Btn, IconButton, Tile, Meter, Slide, Field, Dropdown, Check, Segmented, TreeRowView, ChatRowView, TreeRow, BadgeTip, ServerTile, BookmarkRow, ChatRow, IdentityRow, WhisperKeyRow, PickRow } from "widgets.slint";
+import { SettingsWindow, ProgramRow } from "settings.slint";
 import { SpeakersWindow, SpeakerRow } from "speakers.slint";
 
-export { SettingsWindow, SpeakersWindow, SpeakerRow, Icons, TreeRow, ServerTile, BookmarkRow, ChatRow, IdentityRow, WhisperKeyRow, PickRow }
+export { SettingsWindow, ProgramRow, SpeakersWindow, SpeakerRow, Icons, TreeRow, BadgeTip, ServerTile, BookmarkRow, ChatRow, IdentityRow, WhisperKeyRow, PickRow }
 
 component Dim inherits Text {
     color: Theme.drift;
@@ -158,6 +162,7 @@ export component ParrotfishApp inherits Window {
     min-height: 520px;
     background: Theme.reef;
     default-font-size: Theme.text;
+    default-font-family: Theme.font;
 
     in property <[ServerTile]> sessions;
     in property <[ServerTile]> others;
@@ -165,6 +170,13 @@ export component ParrotfishApp inherits Window {
     in property <[BookmarkRow]> menu-bookmarks;
     in property <[BookmarkRow]> bookmarks;
     in property <[TreeRow]> tree;
+    in property <[TreeRow]> people;
+    in property <bool> column-view;
+    out property <int> tree-columns: root.column-view ? max(1, min(4, floor((root.width - 60px) / 380px))) : 1;
+    callback columns-changed();
+    changed tree-columns => {
+        root.columns-changed();
+    }
     in property <[ChatRow]> chat;
     in property <ChatRow> last-chat;
     in property <bool> has-chat;
@@ -187,6 +199,7 @@ export component ParrotfishApp inherits Window {
     in property <float> input-level;
     in property <float> threshold-position: -1;
     in property <bool> transmitting;
+    in property <bool> whispering;
     in property <bool> mic-muted;
     in property <bool> sound-muted;
     in property <bool> viewed-connected;
@@ -504,6 +517,13 @@ export component ParrotfishApp inherits Window {
 
                     for item in root.tree: TreeRowView {
                         entry: item;
+                        people: root.people;
+                        cell-activated(cell) => {
+                            root.row-activated(cell);
+                        }
+                        cell-context(cell) => {
+                            root.row-context(cell);
+                        }
                         activated => {
                             root.row-activated(item);
                         }
@@ -715,11 +735,11 @@ export component ParrotfishApp inherits Window {
                             width: 34px;
                             height: 34px;
                             border-radius: 10px;
-                            background: root.transmitting ? Theme.lure : Theme.shoal;
+                            background: root.transmitting ? (root.whispering ? Theme.whisper : Theme.lure) : Theme.shoal;
 
                             Text {
                                 text: root.initials;
-                                color: root.transmitting ? Theme.on-lure : Theme.foam;
+                                color: root.transmitting ? (root.whispering ? Theme.on-whisper : Theme.on-lure) : Theme.foam;
                                 font-size: 12.5px;
                                 font-weight: 600;
                                 horizontal-alignment: center;
@@ -793,6 +813,7 @@ export component ParrotfishApp inherits Window {
                                 level: root.input-level;
                                 marker: root.threshold-position;
                                 active: root.transmitting;
+                                whisper: root.whispering;
                             }
                         }
 
@@ -1445,6 +1466,59 @@ export component ParrotfishApp inherits Window {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    property <bool> tip-want: Tip.wanted;
+    property <length> tip-key: Tip.ax + Tip.ay * 10000;
+    property <bool> tip-ready;
+    changed tip-want => {
+        root.tip-ready = false;
+    }
+    changed tip-key => {
+        root.tip-ready = false;
+    }
+
+    Timer {
+        interval: 300ms;
+        running: root.tip-want && !root.tip-ready;
+        triggered => {
+            root.tip-ready = true;
+        }
+    }
+
+    if root.tip-want && root.tip-ready: Rectangle {
+        width: tip-lines.preferred-width;
+        height: tip-lines.preferred-height;
+        x: max(4px, min(root.width - self.width - 4px, Tip.ax + Tip.aw / 2 - self.width / 2));
+        y: Tip.ay - self.height - 6px < 4px ? Tip.ay + Tip.ah + 6px : Tip.ay - self.height - 6px;
+        border-radius: 6px;
+        background: Theme.tip;
+        border-width: 1px;
+        border-color: Theme.tip-line;
+        drop-shadow-blur: 6px;
+        drop-shadow-offset-y: 2px;
+        drop-shadow-color: #00000060;
+
+        tip-lines := VerticalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            padding-top: 6px;
+            padding-bottom: 6px;
+            spacing: 2px;
+
+            Text {
+                text: Tip.title;
+                color: Theme.foam;
+                font-size: Theme.small;
+                font-weight: 600;
+            }
+
+            if Tip.sub != "": Text {
+                text: Tip.sub;
+                color: Theme.drift;
+                font-size: 11px;
             }
         }
     }

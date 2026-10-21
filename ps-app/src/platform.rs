@@ -198,6 +198,112 @@ mod imp {
     }
 
     #[repr(C)]
+    struct MonitorInfo {
+        size: u32,
+        whole: Edges,
+        work: Edges,
+        flags: u32,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetMonitorInfoW(monitor: isize, info: *mut MonitorInfo) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, id: u32) -> isize;
+        fn QueryFullProcessImageNameW(process: isize, flags: u32, name: *mut u16, size: *mut u32) -> i32;
+        fn CloseHandle(handle: isize) -> i32;
+    }
+
+    #[link(name = "gdi32")]
+    extern "system" {
+        fn CreateRoundRectRgn(left: i32, top: i32, right: i32, bottom: i32, wide: i32, high: i32) -> isize;
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetWindowRgn(window: isize, region: isize, redraw: i32) -> i32;
+    }
+
+    /// The program that owns the window in front: its file name in lower case, such as
+    /// "exefile.exe". Only the name is read, through the same query Task Manager uses.
+    pub fn front_program() -> super::Front {
+        const QUERY_LIMITED: u32 = 0x1000;
+        let window = unsafe { GetForegroundWindow() };
+        if window == 0 {
+            return super::Front::Unknown;
+        }
+        let mut owner = 0u32;
+        unsafe { GetWindowThreadProcessId(window, &mut owner) };
+        if owner == 0 {
+            return super::Front::Unknown;
+        }
+        if owner == unsafe { GetCurrentProcessId() } {
+            return super::Front::Own;
+        }
+        let process = unsafe { OpenProcess(QUERY_LIMITED, 0, owner) };
+        if process == 0 {
+            return super::Front::Unknown;
+        }
+        let mut name = [0u16; 1024];
+        let mut size = name.len() as u32;
+        let found = unsafe { QueryFullProcessImageNameW(process, 0, name.as_mut_ptr(), &mut size) } != 0;
+        unsafe { CloseHandle(process) };
+        if !found {
+            return super::Front::Unknown;
+        }
+        let path = String::from_utf16_lossy(&name[..size as usize]);
+        match path.rsplit(['\\', '/']).next().map(str::to_lowercase) {
+            Some(file) if !file.is_empty() => super::Front::Program(file),
+            _ => super::Front::Unknown,
+        }
+    }
+
+    /// Cuts the window's corners to a rounded shape. Windows owns the region afterwards.
+    pub fn round_corners(title: &str, width: i32, height: i32, radius: i32) -> bool {
+        let Some(window) = own_window(title) else {
+            return false;
+        };
+        let region = unsafe { CreateRoundRectRgn(0, 0, width + 1, height + 1, radius * 2, radius * 2) };
+        region != 0 && unsafe { SetWindowRgn(window, region, 1) } != 0
+    }
+
+    /// Shrinks the window to fit the usable part of the screen it is on (the screen without the
+    /// taskbar), and moves it fully onto that screen if it then hangs over an edge. A window
+    /// opened at a large display scale can otherwise start taller than the screen. Returns false
+    /// while the window does not exist yet.
+    pub fn fit_on_screen(title: &str) -> bool {
+        const NEAREST: u32 = 2;
+        const NO_ORDER: u32 = 0x0004;
+        let Some(window) = own_window(title) else {
+            return false;
+        };
+        let mut edges = Edges { left: 0, top: 0, right: 0, bottom: 0 };
+        if unsafe { GetWindowRect(window, &mut edges) } == 0 {
+            return false;
+        }
+        let monitor = unsafe { MonitorFromRect(&edges, NEAREST) };
+        let empty = Edges { left: 0, top: 0, right: 0, bottom: 0 };
+        let mut info = MonitorInfo { size: std::mem::size_of::<MonitorInfo>() as u32, whole: empty, work: empty, flags: 0 };
+        if monitor == 0 || unsafe { GetMonitorInfoW(monitor, &mut info) } == 0 {
+            return true;
+        }
+        let work = info.work;
+        let (wide, high) = (edges.right - edges.left, edges.bottom - edges.top);
+        let (room_wide, room_high) = (work.right - work.left, work.bottom - work.top);
+        if wide <= room_wide && high <= room_high {
+            return true;
+        }
+        let (wide, high) = (wide.min(room_wide), high.min(room_high));
+        let x = edges.left.clamp(work.left, work.right - wide);
+        let y = edges.top.clamp(work.top, work.bottom - high);
+        unsafe { SetWindowPos(window, 0, x, y, wide, high, NO_ORDER | STAYS_INACTIVE) };
+        true
+    }
+
+    #[repr(C)]
     #[derive(Clone, Copy)]
     struct Edges {
         left: i32,
@@ -1029,6 +1135,18 @@ mod imp {
         true
     }
 
+    pub fn fit_on_screen(_title: &str) -> bool {
+        true
+    }
+
+    pub fn front_program() -> super::Front {
+        super::Front::Unknown
+    }
+
+    pub fn round_corners(_title: &str, _width: i32, _height: i32, _radius: i32) -> bool {
+        true
+    }
+
     pub fn own_front_window() -> isize {
         0
     }
@@ -1103,10 +1221,22 @@ mod imp {
     }
 }
 
+/// Who owns the window in front.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub enum Front {
+    /// One of Parrotfish's own windows.
+    Own,
+    /// Another program, by its file name in lower case.
+    Program(String),
+    /// Nothing, or a program whose name could not be read.
+    Unknown,
+}
+
 pub use imp::{
     adopt_icon, allow_front, bring_front, change_stored_number, change_stored_text, clear_link_handler, key_char, key_down,
-    link_handler, local_hms, on_a_screen, open_link, overlay_raise, overlay_restore, overlay_seen, overlay_style,
-    own_front_window, protect, set_link_handler, settle_scale_changes, show_own_window, stored_number, stored_text,
+    fit_on_screen, front_program, link_handler, local_hms, on_a_screen, open_link, overlay_raise, overlay_restore, overlay_seen, overlay_style,
+    own_front_window, protect, round_corners, set_link_handler, settle_scale_changes, show_own_window, stored_number, stored_text,
     unprotect, web_get,
 };
 

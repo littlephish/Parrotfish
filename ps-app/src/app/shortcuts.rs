@@ -888,6 +888,8 @@ impl App {
         w.settings.set_mute_sound_key(name(&self.settings.mute_sound_key).into());
         w.settings.set_allow_whispers(self.settings.allow_whispers);
         w.settings.set_fold_mode(self.settings.fold_mode);
+        w.settings.set_column_view(self.settings.column_view);
+        w.settings.set_show_queries(self.settings.show_queries);
 
         let Some(mut editor) = self.editor.take() else {
             w.settings.set_editor_open(false);
