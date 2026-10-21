@@ -1564,28 +1564,12 @@ export component SettingsWindow inherits Window {
                                     }
                                 }
 
-<<<<<<< HEAD
-                                Check {
-                                    text: "Lock its size and place, and let clicks pass through it";
-                                    checked <=> root.sp-locked;
-                                    toggled => {
-                                        root.speakers-changed();
-                                    }
-                                }
-
-                                Check {
-                                    text: "Keep it showing while nobody is speaking";
-                                    checked <=> root.sp-keep;
-                                    toggled => {
-                                        root.speakers-changed();
-=======
                                 VerticalLayout {
                                     padding-top: 8px;
 
                                     Hint {
                                         text: "What it shows";
                                         font-weight: 600;
->>>>>>> 9b9a577 (Group speaking-window options; dim dependent ones when off)
                                     }
                                 }
 
@@ -1619,14 +1603,6 @@ export component SettingsWindow inherits Window {
                                 Check {
                                     text: "Keep it above other windows";
                                     enabled: root.sp-shown;
-                                    checked <=> root.sp-on-top;
-                                    toggled => {
-                                        root.speakers-changed();
-                                    }
-                                }
-
-                                Check {
-                                    text: "Keep it above other windows";
                                     checked <=> root.sp-on-top;
                                     toggled => {
                                         root.speakers-changed();
