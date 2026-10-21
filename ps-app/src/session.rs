@@ -6,7 +6,7 @@ use ps_voice::Cue;
 
 use ps_client::spacer::{parse_spacer, Spacer, SpacerAlign, SpacerLine};
 use ps_client::{
-    ChannelNode, ClientHandle, ConnectionState, Event, Group, ERROR_FLOODING, ERROR_NO_WHISPER_TARGETS, ServerView, TextTarget, CODEC_OPUS_MUSIC, CODEC_OPUS_VOICE,
+    ChannelNode, ClientHandle, ClientInfo, ConnectionState, Event, Group, ERROR_FLOODING, ERROR_NO_WHISPER_TARGETS, ServerView, TextTarget, CODEC_OPUS_MUSIC, CODEC_OPUS_VOICE,
 };
 
 use crate::mic::{self, Report};
@@ -51,7 +51,9 @@ pub struct RowData {
     pub talking: bool,
     pub me: bool,
     pub mic_muted: bool,
+    pub mic_disabled: bool,
     pub sound_muted: bool,
+    pub sound_disabled: bool,
     pub away: bool,
     pub tag: String,
     pub whispering: bool,
@@ -90,6 +92,15 @@ impl FoldMode {
 pub struct Folds {
     pub mode: FoldMode,
     pub chosen: HashMap<u64, bool>,
+    pub hide_queries: bool,
+}
+
+impl Folds {
+    /// Whether a client appears in the tree: server query logins (bots and admin tools that
+    /// connect without a voice client) are left out while `hide_queries` is set.
+    pub fn shows(&self, client: &ClientInfo) -> bool {
+        !(self.hide_queries && client.is_query)
+    }
 }
 
 fn branch_end(nodes: &[ChannelNode], index: usize) -> usize {
@@ -106,8 +117,9 @@ fn fold_state(view: &ServerView, index: usize, folds: &Folds) -> (bool, bool) {
     let node = &nodes[index];
     let below = &nodes[index + 1..branch_end(nodes, index)];
     let spacer = parse_spacer(&node.channel.name, node.channel.parent).is_some();
-    let foldable = !spacer && (!below.is_empty() || !node.clients.is_empty());
-    let nobody = node.clients.is_empty() && below.iter().all(|n| n.clients.is_empty());
+    let empty = |n: &ChannelNode| !n.clients.iter().any(|c| folds.shows(c));
+    let foldable = !spacer && (!below.is_empty() || !empty(node));
+    let nobody = empty(node) && below.iter().all(empty);
     let mine = node.channel.id == view.own_channel || below.iter().any(|n| n.channel.id == view.own_channel);
     let by_default = match folds.mode {
         FoldMode::Open => false,
@@ -142,7 +154,7 @@ pub fn build_rows_folded(view: &ServerView, own_talking: bool, folds: &Folds) ->
             Some(Spacer::Line(line)) => rows.push(RowData { kind: RowKind::SpacerLine, line, ..base }),
             Some(Spacer::Gap) => rows.push(RowData { kind: RowKind::Gap, ..base }),
             None => {
-                let inside = || nodes[index..end].iter().flat_map(|n| n.clients.iter());
+                let inside = || nodes[index..end].iter().flat_map(|n| n.clients.iter()).filter(|c| folds.shows(c));
                 let holds_me = nodes[index + 1..end].iter().any(|n| n.channel.id == view.own_channel);
                 rows.push(RowData {
                     kind: RowKind::Channel,
@@ -154,7 +166,7 @@ pub fn build_rows_folded(view: &ServerView, own_talking: bool, folds: &Folds) ->
                     } else {
                         ChannelIcon::Speaker
                     },
-                    count: if folded { inside().count() } else { node.clients.len() },
+                    count: if folded { inside().count() } else { node.clients.iter().filter(|c| folds.shows(c)).count() },
                     current: channel.id == view.own_channel || (folded && holds_me),
                     talking: folded && inside().any(|c| if c.id == view.own_id { own_talking } else { c.talking }),
                     foldable,
@@ -168,7 +180,7 @@ pub fn build_rows_folded(view: &ServerView, own_talking: bool, folds: &Folds) ->
             index = end;
             continue;
         }
-        for client in &node.clients {
+        for client in node.clients.iter().filter(|c| folds.shows(c)) {
             let me = client.id == view.own_id;
             rows.push(RowData {
                 kind: RowKind::Person,
@@ -178,6 +190,8 @@ pub fn build_rows_folded(view: &ServerView, own_talking: bool, folds: &Folds) ->
                 talking: if me { own_talking } else { client.talking },
                 me,
                 mic_muted: client.input_muted || !client.input_hardware,
+                mic_disabled: !client.input_hardware,
+                sound_disabled: !client.output_hardware,
                 sound_muted: client.output_muted || !client.output_hardware,
                 away: client.away,
                 whispering: client.whispering,
@@ -509,6 +523,35 @@ pub fn connect_failure(reason: &str, address: &str, had_password: bool) -> (Dial
     (DialogField::Address, format!("Could not connect: {}.", reason.trim().trim_end_matches('.')))
 }
 
+/// Someone arriving in or leaving the channel the person is in, for the speaking window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChannelEvent {
+    pub name: String,
+    pub joined: bool,
+    /// Whether it happened on the server (connecting, leaving it) rather than between
+    /// channels; the speaking window shows that with its icon, so the words can stay short.
+    pub server: bool,
+    pub what: &'static str,
+    pub at: Instant,
+}
+
+/// One short word for why someone left, and whether they left the server or only the channel.
+fn leave_words(reason: &str) -> (&'static str, bool) {
+    if reason.starts_with("kicked from the channel") {
+        ("kicked", false)
+    } else if reason.starts_with("kicked") {
+        ("kicked", true)
+    } else if reason.starts_with("banned") {
+        ("banned", true)
+    } else if reason.starts_with("connection lost") {
+        ("dropped", true)
+    } else if reason.starts_with("left view") {
+        ("left", false)
+    } else {
+        ("offline", true)
+    }
+}
+
 fn describe_leave(nickname: &str, reason: &str) -> String {
     if reason.starts_with("kicked") || reason.starts_with("banned") {
         format!("{nickname} was {reason}")
@@ -702,6 +745,7 @@ pub struct Session {
     pub peer: Option<Peer>,
     pub voices_applied: HashMap<u16, (String, f32, bool)>,
     pub silenced: HashSet<u16>,
+    pub channel_event: Option<ChannelEvent>,
     pub priority_applied: HashSet<u16>,
     pub dim_applied: Option<f32>,
     pub mic: Report,
@@ -746,6 +790,7 @@ impl Session {
             peer: None,
             voices_applied: HashMap::new(),
             silenced: HashSet::new(),
+            channel_event: None,
             priority_applied: HashSet::new(),
             dim_applied: None,
             mic: Report::new(true),
@@ -876,9 +921,17 @@ impl Session {
             .unwrap_or_else(|| self.request.nickname.clone())
     }
 
+    fn note_channel_event(&mut self, name: &str, joined: bool, server: bool, what: &'static str) {
+        self.channel_event = Some(ChannelEvent { name: name.to_string(), joined, server, what, at: Instant::now() });
+    }
+
+    fn shown_count(&self, view: &ServerView) -> usize {
+        view.channels.iter().flat_map(|n| n.clients.iter()).filter(|c| self.folds.shows(c)).count()
+    }
+
     pub fn detail(&self) -> String {
         match (&self.phase, &self.view) {
-            (Phase::Connected, Some(view)) => people_online(view.client_count()),
+            (Phase::Connected, Some(view)) => people_online(self.shown_count(view)),
             (Phase::Closed(_), _) => "Disconnected".to_string(),
             _ => self.state_text.clone(),
         }
@@ -886,7 +939,7 @@ impl Session {
 
     pub fn short_detail(&self) -> String {
         match (&self.phase, &self.view) {
-            (Phase::Connected, Some(view)) => format!("{} online", view.client_count()),
+            (Phase::Connected, Some(view)) => format!("{} online", self.shown_count(view)),
             (Phase::Closed(_), _) => "Disconnected".to_string(),
             _ => self.state_text.clone(),
         }
@@ -1065,6 +1118,7 @@ impl Session {
             Event::ClientEntered { client } => {
                 if !client.is_query && self.view.as_ref().is_some_and(|view| view.own_channel == client.channel) {
                     out.cue = Some(Cue::Joined);
+                    self.note_channel_event(&client.nickname, true, true, "online");
                 }
                 if !client.is_query {
                     self.system(&format!("{} connected", client.nickname));
@@ -1074,6 +1128,8 @@ impl Session {
                 out.forget.push(client.id);
                 if !client.is_query && self.view.as_ref().is_some_and(|view| view.own_channel == client.channel) {
                     out.cue = Some(Cue::Left);
+                    let (what, server) = leave_words(&reason);
+                    self.note_channel_event(&client.nickname, false, server, what);
                 }
                 if !client.is_query {
                     self.system(&describe_leave(&client.nickname, &reason));
@@ -1088,6 +1144,11 @@ impl Session {
                     (false, false) if from == mine && mine != 0 => Some(Cue::Left),
                     _ => None,
                 };
+                match out.cue {
+                    Some(Cue::Joined) => self.note_channel_event(&client.nickname, true, false, "joined"),
+                    Some(Cue::Left) => self.note_channel_event(&client.nickname, false, false, "left"),
+                    _ => {}
+                }
                 if client.id == self.own_id {
                     out.forget_all = true;
                     self.forget_voices();
@@ -1327,6 +1388,19 @@ mod tests {
 
     fn names(rows: &[RowData]) -> Vec<&str> {
         rows.iter().map(|row| row.text.as_str()).collect()
+    }
+
+    #[test]
+    fn query_logins_can_be_left_out_of_the_tree() {
+        let view = sample_view();
+        let shown = build_rows_folded(&view, false, &Folds::default());
+        let hidden = build_rows_folded(&view, false, &Folds { hide_queries: true, ..Folds::default() });
+        assert!(shown.iter().any(|row| row.text == "serveradmin"));
+        assert!(!hidden.iter().any(|row| row.text == "serveradmin"));
+        assert_eq!(hidden.len(), shown.len() - 1);
+        let count = |rows: &[RowData]| rows.iter().find(|row| row.kind == RowKind::Channel && row.id == 4).map(|row| row.count);
+        assert_eq!(count(&hidden), count(&shown).map(|n| n - 1));
+        assert!(hidden.iter().any(|row| row.text == "Jukebox"), "people in the same channel stay");
     }
 
     #[test]
@@ -1579,6 +1653,38 @@ mod tests {
     }
 
     #[test]
+    fn arrivals_and_departures_in_your_channel_say_what_happened() {
+        let mut s = session();
+        s.apply(Event::Connected { client_id: 7, server: ServerInfo::default() });
+        s.apply(Event::View(sample_view()));
+        let what = |s: &Session| s.channel_event.as_ref().map(|e| (e.name.clone(), e.joined, e.server, e.what));
+        let here = person(30, 1, "Pike");
+        s.apply(Event::ClientEntered { client: here.clone() });
+        assert_eq!(what(&s), Some(("Pike".to_string(), true, true, "online")));
+        s.apply(Event::ClientMoved { client: person(31, 4, "Bream"), from: 4, to: 1 });
+        assert_eq!(what(&s), Some(("Bream".to_string(), true, false, "joined")));
+        for (reason, words, server) in [
+            ("left", "offline", true),
+            ("connection lost", "dropped", true),
+            ("kicked from the server by Admin (spam)", "kicked", true),
+            ("kicked from the channel by Admin", "kicked", false),
+            ("banned from the server by Admin", "banned", true),
+            ("left view", "left", false),
+            ("server is shutting down", "offline", true),
+        ] {
+            s.apply(Event::ClientLeft { client: here.clone(), reason: reason.into() });
+            assert_eq!(what(&s), Some(("Pike".to_string(), false, server, words)), "{reason}");
+        }
+        s.channel_event = None;
+        s.apply(Event::ClientEntered { client: person(32, 4, "Carp") });
+        assert_eq!(what(&s), None, "other channels are left out");
+        let mut robot = person(33, 1, "serveradmin");
+        robot.is_query = true;
+        s.apply(Event::ClientEntered { client: robot });
+        assert_eq!(what(&s), None, "query logins are left out");
+    }
+
+    #[test]
     fn events_ask_for_their_sounds() {
         let mut s = session();
         assert_eq!(s.apply(Event::Connected { client_id: 7, server: ServerInfo::default() }).cue, Some(Cue::Connected));
@@ -1593,6 +1699,8 @@ mod tests {
         assert_eq!(s.apply(Event::ClientMoved { client: here.clone(), from: 1, to: 4 }).cue, Some(Cue::Left));
         assert_eq!(s.apply(Event::ClientMoved { client: elsewhere, from: 4, to: 3 }).cue, None);
         assert_eq!(s.apply(Event::ClientMoved { client: person(7, 4, "Minnow"), from: 1, to: 4 }).cue, Some(Cue::Moved));
+        let what = |s: &Session| s.channel_event.as_ref().map(|e| (e.name.clone(), e.joined, e.what));
+        assert_eq!(what(&s), Some(("Pike".to_string(), false, "left")), "your own move is not an event");
         let mut robot = here;
         robot.is_query = true;
         assert_eq!(s.apply(Event::ClientEntered { client: robot }).cue, None);

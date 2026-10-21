@@ -401,12 +401,14 @@ pub(crate) fn manage(
     sources: Sender<InputSource>,
     far_sources: Sender<FarSource>,
     tx_thread: Thread,
+    first_input: Option<String>,
+    first_output: Option<String>,
 ) {
     let host = cpal::default_host();
     let mut input_stream: Option<cpal::Stream> = None;
     let mut output_stream: Option<cpal::Stream> = None;
-    let mut input_id: Option<String> = None;
-    let mut output_id: Option<String> = None;
+    let mut input_id: Option<String> = first_input;
+    let mut output_id: Option<String> = first_output;
     let mut open_input_at = Some(Instant::now());
     let mut open_output_at = Some(Instant::now());
 

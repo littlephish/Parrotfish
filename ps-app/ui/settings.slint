@@ -1,3 +1,7 @@
+import "fonts/AtkinsonHyperlegibleNext-Regular.ttf";
+import "fonts/AtkinsonHyperlegibleNext-Medium.ttf";
+import "fonts/AtkinsonHyperlegibleNext-SemiBold.ttf";
+import "fonts/AtkinsonHyperlegibleNext-Bold.ttf";
 import { ListView, ScrollView, AboutSlint, Palette } from "std-widgets.slint";
 import { Theme, Icons, Frame } from "theme.slint";
 import { Pressable, Btn, Tile, Field, Dropdown, Check, Segmented, Slide, KeyChip, PickRowView, BookmarkRow, IdentityRow, WhisperKeyRow, PickRow } from "widgets.slint";
@@ -35,6 +39,11 @@ component Divider inherits Rectangle {
     background: Theme.hairline;
 }
 
+export struct ProgramRow {
+    name: string,
+    placed: bool,
+}
+
 export component SettingsWindow inherits Window {
     title: "Parrotfish settings";
     preferred-width: 700px;
@@ -43,6 +52,7 @@ export component SettingsWindow inherits Window {
     min-height: 590px;
     background: Theme.reef;
     default-font-size: Theme.text;
+    default-font-family: Theme.font;
 
     in-out property <int> tab;
 
@@ -66,6 +76,7 @@ export component SettingsWindow inherits Window {
     in-out property <bool> even-voices;
     in-out property <bool> priority-dim: true;
     in-out property <float> cue-volume: 50;
+    in-out property <bool> join-leave-cues: true;
     in property <string> echo-status;
 
     in property <[IdentityRow]> identities;
@@ -115,10 +126,24 @@ export component SettingsWindow inherits Window {
     in property <bool> editor-can-save;
 
     in-out property <int> fold-mode: 1;
+    in-out property <bool> column-view;
+    in-out property <bool> show-queries;
     in-out property <bool> sp-shown;
     in-out property <bool> sp-locked;
     in-out property <bool> sp-on-top: true;
     in-out property <bool> sp-all;
+    in-out property <bool> sp-keep;
+    in-out property <bool> sp-events;
+    in-out property <bool> sp-only-programs;
+    in property <[ProgramRow]> sp-programs;
+    in property <string> sp-front;
+    in-out property <string> sp-program-typed;
+    in property <string> sp-front-seen;
+    in property <string> sp-program-note;
+    callback program-add-front();
+    callback program-add(string);
+    callback program-remove(int);
+    callback program-reset(int);
     in-out property <float> sp-opacity: 85;
     in-out property <float> sp-linger: 10;
     in-out property <bool> links-on;
@@ -138,6 +163,8 @@ export component SettingsWindow inherits Window {
     callback input-device-selected();
     callback output-device-selected();
     callback new-identity();
+    callback remove-identity(int);
+    in-out property <int> confirm-remove-identity: -1;
     callback import-identity();
     callback bookmark-picked(index: int);
     callback bookmark-new();
@@ -504,6 +531,22 @@ export component SettingsWindow inherits Window {
                         spacing: 16px;
 
                         Caption {
+                            text: "";
+                        }
+
+                        Check {
+                            text: "Play a sound when people join or leave my channel";
+                            checked <=> root.join-leave-cues;
+                            toggled => {
+                                root.audio-changed();
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 16px;
+
+                        Caption {
                             text: "People";
                         }
 
@@ -546,7 +589,7 @@ export component SettingsWindow inherits Window {
                         text: "An identity is how a server recognises you. Each bookmark can use a different one.";
                     }
 
-                    for identity in root.identities: Rectangle {
+                    for identity[i] in root.identities: Rectangle {
                         height: 44px;
                         border-radius: 8px;
                         background: Theme.shoal;
@@ -578,6 +621,45 @@ export component SettingsWindow inherits Window {
                                 color: Theme.drift;
                                 font-size: Theme.small;
                                 vertical-alignment: center;
+                            }
+
+                            if root.confirm-remove-identity != i: VerticalLayout {
+                                alignment: center;
+
+                                Btn {
+                                    text: "Remove";
+                                    danger: true;
+                                    height: 28px;
+                                    clicked => {
+                                        root.confirm-remove-identity = i;
+                                    }
+                                }
+                            }
+
+                            if root.confirm-remove-identity == i: VerticalLayout {
+                                alignment: center;
+
+                                HorizontalLayout {
+                                    spacing: 6px;
+
+                                    Btn {
+                                        text: "Yes, remove";
+                                        danger: true;
+                                        height: 28px;
+                                        clicked => {
+                                            root.confirm-remove-identity = -1;
+                                            root.remove-identity(i);
+                                        }
+                                    }
+
+                                    Btn {
+                                        text: "Keep";
+                                        height: 28px;
+                                        clicked => {
+                                            root.confirm-remove-identity = -1;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1374,144 +1456,297 @@ export component SettingsWindow inherits Window {
                     }
                 }
 
-                if root.tab == 5: VerticalLayout {
-                    alignment: start;
-                    padding: 20px;
-                    spacing: 12px;
+                if root.tab == 5: channels-scroll := ScrollView {
+                    content-width: self.visible-width;
+                    content-height: max(channels-list.preferred-height, self.visible-height);
 
-                    HorizontalLayout {
-                        spacing: 16px;
+                    channels-list := VerticalLayout {
+                        width: channels-scroll.visible-width;
+                        alignment: start;
+                        padding: 20px;
+                        spacing: 12px;
 
-                        Caption {
-                            text: "Channels start";
-                        }
+                        HorizontalLayout {
+                            spacing: 16px;
 
-                        VerticalLayout {
-                            spacing: 6px;
+                            Caption {
+                                text: "Channels start";
+                            }
 
-                            HorizontalLayout {
-                                Segmented {
-                                    options: ["All open", "Empty ones folded", "All folded"];
-                                    current <=> root.fold-mode;
-                                    selected => {
+                            VerticalLayout {
+                                spacing: 6px;
+
+                                HorizontalLayout {
+                                    Segmented {
+                                        options: ["All open", "Empty ones folded", "All folded"];
+                                        current <=> root.fold-mode;
+                                        selected => {
+                                            root.view-changed();
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+
+                                Hint {
+                                    text: root.fold-mode == 0 ? "Every channel shows the channels and people inside it." : (root.fold-mode == 2 ? "Every channel shows as one row with a count of the people inside. The way to your own channel stays open." : "A channel with other channels inside it shows as one row while nobody is in any of them.");
+                                }
+
+                                Hint {
+                                    text: "Click the arrow beside a channel to fold or open it yourself. Parrotfish remembers that for each server, until you change this setting.";
+                                }
+
+                                Check {
+                                    text: "Show people in columns when the window is wide";
+                                    checked <=> root.column-view;
+                                    toggled => {
                                         root.view-changed();
                                     }
                                 }
 
-                                Rectangle {
-                                    horizontal-stretch: 1;
+                                Hint {
+                                    text: "A channel with more than 4 people lists them side by side, in as many columns as fit. A narrow window keeps the single list.";
                                 }
-                            }
 
-                            Hint {
-                                text: root.fold-mode == 0 ? "Every channel shows the channels and people inside it." : (root.fold-mode == 2 ? "Every channel shows as one row with a count of the people inside. The way to your own channel stays open." : "A channel with other channels inside it shows as one row while nobody is in any of them.");
-                            }
-
-                            Hint {
-                                text: "Click the arrow beside a channel to fold or open it yourself. Parrotfish remembers that for each server, until you change this setting.";
-                            }
-                        }
-                    }
-
-                    Divider { }
-
-                    HorizontalLayout {
-                        spacing: 16px;
-
-                        Caption {
-                            text: "Speaking window";
-                        }
-
-                        VerticalLayout {
-                            spacing: 2px;
-
-                            Check {
-                                text: "Show a small window with who is speaking";
-                                checked <=> root.sp-shown;
-                                toggled => {
-                                    root.speakers-changed();
+                                Check {
+                                    text: "Show server query logins";
+                                    checked <=> root.show-queries;
+                                    toggled => {
+                                        root.view-changed();
+                                    }
                                 }
-                            }
-
-                            Check {
-                                text: "Keep it above other windows";
-                                checked <=> root.sp-on-top;
-                                toggled => {
-                                    root.speakers-changed();
-                                }
-                            }
-
-                            Check {
-                                text: "Lock its size and place, and let clicks pass through it";
-                                checked <=> root.sp-locked;
-                                toggled => {
-                                    root.speakers-changed();
-                                }
-                            }
-
-                            Check {
-                                text: "List everyone in my channel, not only who is speaking";
-                                checked <=> root.sp-all;
-                                toggled => {
-                                    root.speakers-changed();
-                                }
-                            }
-
-                            HorizontalLayout {
-                                spacing: 12px;
-                                padding-top: 4px;
 
                                 Hint {
-                                    width: 172px;
-                                    text: "How solid it is";
-                                    vertical-alignment: center;
+                                    text: "Bots and admin tools that log in to the server without a voice client, such as serveradmin. The TeamSpeak client does not list them either.";
                                 }
+                            }
+                        }
 
-                                Slide {
-                                    minimum: 20;
-                                    maximum: 100;
-                                    step: 5;
-                                    value <=> root.sp-opacity;
-                                    changed => {
+                        Divider { }
+
+                        HorizontalLayout {
+                            spacing: 16px;
+
+                            Caption {
+                                text: "Speaking window";
+                            }
+
+                            VerticalLayout {
+                                spacing: 2px;
+
+                                Check {
+                                    text: "Show a small window with who is speaking";
+                                    checked <=> root.sp-shown;
+                                    toggled => {
                                         root.speakers-changed();
                                     }
                                 }
 
-                                Reading {
-                                    text: "\{round(root.sp-opacity)}%";
-                                }
-                            }
-
-                            HorizontalLayout {
-                                spacing: 12px;
-
-                                Hint {
-                                    width: 172px;
-                                    text: "Keep a name after they stop";
-                                    vertical-alignment: center;
-                                }
-
-                                Slide {
-                                    minimum: 0;
-                                    maximum: 60;
-                                    step: 1;
-                                    value <=> root.sp-linger;
-                                    changed => {
+                                Check {
+                                    text: "Lock its size and place, and let clicks pass through it";
+                                    checked <=> root.sp-locked;
+                                    toggled => {
                                         root.speakers-changed();
                                     }
                                 }
 
-                                Reading {
-                                    text: "\{round(root.sp-linger)} s";
+                                Check {
+                                    text: "Keep it showing while nobody is speaking";
+                                    checked <=> root.sp-keep;
+                                    toggled => {
+                                        root.speakers-changed();
+                                    }
                                 }
-                            }
 
-                            Hint {
-                                text: "Move and size the window while it is unlocked. Once locked it stays hidden until someone speaks; unlock it here or from the server menu.";
-                            }
+                                Check {
+                                    text: "List everyone in my channel, not only who is speaking";
+                                    checked <=> root.sp-all;
+                                    toggled => {
+                                        root.speakers-changed();
+                                    }
+                                }
 
-                            Hint {
-                                text: "It shows over games that run in a window or borderless window, not over exclusive full screen.";
+                                Check {
+                                    text: "Show joins and leaves in my channel, on its bottom line";
+                                    checked <=> root.sp-events;
+                                    toggled => {
+                                        root.speakers-changed();
+                                    }
+                                }
+
+                                Check {
+                                    text: "Keep it above other windows";
+                                    checked <=> root.sp-on-top;
+                                    toggled => {
+                                        root.speakers-changed();
+                                    }
+                                }
+
+                                Check {
+                                    text: "Only show it over these programs";
+                                    checked <=> root.sp-only-programs;
+                                    toggled => {
+                                        root.speakers-changed();
+                                    }
+                                }
+
+                                if root.sp-only-programs: VerticalLayout {
+                                    spacing: 4px;
+                                    padding-left: 28px;
+                                    padding-bottom: 6px;
+
+                                    for program[i] in root.sp-programs: HorizontalLayout {
+                                        height: 34px;
+                                        spacing: 8px;
+
+                                        Text {
+                                            text: program.name;
+                                            color: Theme.foam;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                            horizontal-stretch: 1;
+                                        }
+
+                                        Text {
+                                            text: program.placed ? "has its own place" : "uses the current place";
+                                            color: Theme.drift;
+                                            font-size: Theme.small;
+                                            vertical-alignment: center;
+                                        }
+
+                                        VerticalLayout {
+                                            alignment: center;
+
+                                            Btn {
+                                                text: "Reset place";
+                                                height: 28px;
+                                                enabled: program.placed;
+                                                clicked => {
+                                                    root.program-reset(i);
+                                                }
+                                            }
+                                        }
+
+                                        VerticalLayout {
+                                            alignment: center;
+
+                                            Btn {
+                                                text: "Remove";
+                                                danger: true;
+                                                height: 28px;
+                                                clicked => {
+                                                    root.program-remove(i);
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        alignment: start;
+
+                                        Btn {
+                                            text: root.sp-front != "" ? "Add \{root.sp-front}" : "Add the program in front";
+                                            enabled: root.sp-front != "";
+                                            clicked => {
+                                                root.program-add-front();
+                                            }
+                                        }
+                                    }
+
+                                    HorizontalLayout {
+                                        spacing: 8px;
+
+                                        Field {
+                                            text <=> root.sp-program-typed;
+                                            placeholder: "Or type its file name, such as exefile.exe";
+                                            accepted => {
+                                                root.program-add(root.sp-program-typed);
+                                            }
+                                        }
+
+                                        Btn {
+                                            text: "Add";
+                                            enabled: root.sp-program-typed != "";
+                                            clicked => {
+                                                root.program-add(root.sp-program-typed);
+                                            }
+                                        }
+                                    }
+
+                                    if root.sp-program-note != "": Hint {
+                                        text: root.sp-program-note;
+                                    }
+
+                                    Hint {
+                                        text: root.sp-front-seen;
+                                        color: Theme.foam;
+                                    }
+
+                                    Hint {
+                                        text: "Switch to the game, then come back and add it. Once the window is locked, it shows only while one of these is in front (while unlocked it always shows, so you can place it). It remembers a place and size for each: unlock it with the game in front, then move and size it there.";
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 12px;
+                                    padding-top: 4px;
+
+                                    Hint {
+                                        width: 172px;
+                                        text: "How solid it is";
+                                        vertical-alignment: center;
+                                    }
+
+                                    Slide {
+                                        minimum: 20;
+                                        maximum: 100;
+                                        step: 5;
+                                        value <=> root.sp-opacity;
+                                        changed => {
+                                            root.speakers-changed();
+                                        }
+                                    }
+
+                                    Reading {
+                                        text: "\{round(root.sp-opacity)}%";
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 12px;
+
+                                    Hint {
+                                        width: 172px;
+                                        text: "Keep a name after they stop";
+                                        vertical-alignment: center;
+                                    }
+
+                                    Slide {
+                                        minimum: 0;
+                                        maximum: 60;
+                                        step: 1;
+                                        value <=> root.sp-linger;
+                                        changed => {
+                                            root.speakers-changed();
+                                        }
+                                    }
+
+                                    Reading {
+                                        text: "\{round(root.sp-linger)} s";
+                                    }
+                                }
+
+                                Hint {
+                                    text: root.sp-keep ? "Move and size the window while it is unlocked; its height snaps to whole lines, one per person. Once locked it stays in place, empty while nobody speaks; unlock it here or from the server menu." : "Move and size the window while it is unlocked; its height snaps to whole lines, one per person. Once locked it stays hidden until someone speaks; unlock it here or from the server menu.";
+                                }
+
+                                Hint {
+                                    text: "It shows over games that run in a window or borderless window, not over exclusive full screen.";
+                                }
                             }
                         }
                     }

@@ -8,14 +8,34 @@ export global Theme {
     out property <color> drift-bright: #a4bbc2;
     out property <color> lure: #ffc043;
     out property <color> on-lure: #221800;
+    out property <color> whisper: #ff4a4a;
+    out property <color> on-whisper: #2a0000;
+    out property <color> whisper-text: #ff6b6b;
+    out property <color> person: #7dffd0;
+    out property <color> person-dot: #55d9a8;
+    out property <color> channel: #a4bbc2;
+    out property <color> channel-icon: #6f8b95;
     out property <color> coral: #f0705f;
     out property <color> coral-bright: #eda499;
     out property <color> hairline: #e9f2f11c;
+    out property <color> tip: #0b1820;
+    out property <color> tip-line: #3a5566;
     out property <color> scrim: #040a0ea6;
+    out property <string> font: "Atkinson Hyperlegible Next";
     out property <length> row: 26px;
     out property <length> text: 13px;
     out property <length> chat: 13.5px;
     out property <length> small: 12px;
+}
+
+export global Tip {
+    in-out property <bool> wanted;
+    in-out property <string> title;
+    in-out property <string> sub;
+    in-out property <length> ax;
+    in-out property <length> ay;
+    in-out property <length> aw;
+    in-out property <length> ah;
 }
 
 export global Frame {
@@ -24,6 +44,9 @@ export global Frame {
 
 export global Icons {
     out property <image> mic: @image-url("icons/mic.svg");
+    out property <image> arrow-in: @image-url("icons/arrow-in.svg");
+    out property <image> arrow-out: @image-url("icons/arrow-out.svg");
+    out property <image> power: @image-url("icons/power.svg");
     out property <image> mic-off: @image-url("icons/mic-off.svg");
     out property <image> ear: @image-url("icons/ear.svg");
     out property <image> ear-off: @image-url("icons/ear-off.svg");

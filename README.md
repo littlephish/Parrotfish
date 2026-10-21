@@ -48,8 +48,9 @@ that sets it up. The server in the pictures is a test server; its channels and p
   TeamSpeak client. You can also make a person, or everyone in a channel, a priority speaker
   for yourself alone: right-click them.
 - A small "who is speaking" window you can put anywhere: it lists who is talking and, for a few
-  seconds, who just did. Lock it and it lets clicks through and hides while nobody speaks. It can
-  stay above other windows and be made see-through. It is an ordinary window, so it shows over
+  seconds, who just did. Lock it and it lets clicks through and hides while nobody speaks, unless
+  you choose to keep it showing. It can stay above other windows and be made see-through. It is
+  a separate window without a taskbar button of its own, so it shows over
   games that run in a window or borderless window, not over exclusive full screen.
 - Talk keys you choose by pressing them: any key, mouse button 3 to 5, or a combination, and
   more than one if you like. They work while Parrotfish is in the background. Keys for muting
