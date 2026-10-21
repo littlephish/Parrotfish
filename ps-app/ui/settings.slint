@@ -75,6 +75,7 @@ export component SettingsWindow inherits Window {
     in-out property <bool> auto-gain;
     in-out property <bool> even-voices;
     in-out property <bool> priority-dim: true;
+    in-out property <float> unfocused-db: 9;
     in-out property <float> cue-volume: 50;
     in-out property <bool> join-leave-cues: true;
     in property <string> echo-status;
@@ -579,6 +580,39 @@ export component SettingsWindow inherits Window {
 
                             Hint {
                                 text: "The server chooses the priority speakers; right-click a person or a channel to add your own. While one of them talks or whispers to you, everyone else is lowered by as much as the server says, or by 18 dB if it says nothing. A whisper to you is never lowered, and nothing is lowered for you while you are a priority speaker yourself.";
+                            }
+
+                            HorizontalLayout {
+                                spacing: 16px;
+
+                                Caption {
+                                    text: "Other servers";
+                                }
+
+                                VerticalLayout {
+                                    spacing: 4px;
+
+                                    HorizontalLayout {
+                                        spacing: 10px;
+
+                                        Slide {
+                                            minimum: 0;
+                                            maximum: 24;
+                                            value <=> root.unfocused-db;
+                                            changed => {
+                                                root.audio-changed();
+                                            }
+                                        }
+
+                                        Reading {
+                                            text: root.unfocused-db < 0.5 ? "Off" : "-\{round(root.unfocused-db)} dB";
+                                        }
+                                    }
+
+                                    Hint {
+                                        text: "When you are connected to more than one server, everyone on the servers you are not looking at is played this much quieter, so the server in front wins when they all talk at once. Switching servers moves the focus.";
+                                    }
+                                }
                             }
                         }
                     }

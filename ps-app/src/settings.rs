@@ -104,6 +104,8 @@ pub struct Settings {
     pub auto_gain: bool,
     pub even_voices: bool,
     pub priority_dim: bool,
+    /// How many dB quieter servers that are not in focus are played, 0 to 24; 0 leaves them alone.
+    pub unfocused_db: f32,
     pub check_updates: bool,
     pub updated_from: String,
     pub cue_volume: f32,
@@ -158,6 +160,7 @@ impl Default for Settings {
             auto_gain: false,
             even_voices: false,
             priority_dim: true,
+            unfocused_db: 9.0,
             check_updates: true,
             updated_from: String::new(),
             cue_volume: 50.0,
@@ -345,6 +348,7 @@ impl Settings {
                 "auto_gain" => s.auto_gain = value == "1",
                 "even_voices" => s.even_voices = value == "1",
                 "priority_dim" => s.priority_dim = value != "0",
+                "unfocused_db" => s.unfocused_db = number(value, 9.0, 0.0, 24.0),
                 "check_updates" => s.check_updates = value != "0",
                 "updated_from" => s.updated_from = value.chars().filter(|c| c.is_ascii_digit() || *c == '.').take(20).collect(),
                 "cue_volume" => s.cue_volume = number(value, 50.0, 0.0, 100.0),
@@ -458,6 +462,7 @@ impl Settings {
         put("auto_gain", u8::from(self.auto_gain).to_string());
         put("even_voices", u8::from(self.even_voices).to_string());
         put("priority_dim", u8::from(self.priority_dim).to_string());
+        put("unfocused_db", format!("{:.1}", self.unfocused_db));
         put("check_updates", u8::from(self.check_updates).to_string());
         if !self.updated_from.is_empty() {
             put("updated_from", self.updated_from.clone());
@@ -934,6 +939,7 @@ mod tests {
         s.vad_threshold = -33.5;
         s.mic_gain = 150.0;
         s.output_volume = 80.0;
+        s.unfocused_db = 15.0;
         s.echo_cancel = true;
         s.talk_keys = vec![Chord::new(&[0xA4])];
         s.talk_release_ms = 150;
