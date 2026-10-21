@@ -147,6 +147,8 @@ fn main() -> Result<(), slint::PlatformError> {
     speakers_window.on_dragged(move |dx, dy| with_app(&a, |s, w| s.speakers_dragged(w, dx, dy)));
     let a = app.clone();
     speakers_window.on_sized(move |width, height| with_app(&a, |s, w| s.speakers_sized(w, width, height)));
+    let a = app.clone();
+    speakers_window.on_capacity_changed(move || with_app(&a, |s, _| s.speakers_capacity_changed()));
     speakers_window.window().on_close_requested(|| CloseRequestResponse::KeepWindowShown);
     let a = app.clone();
     settings_window.on_speakers_changed(move || with_app(&a, |s, w| s.speakers_changed(w)));

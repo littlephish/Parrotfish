@@ -248,6 +248,19 @@ const SPEAKERS_CORNER: f32 = 8.0;
 /// talking are dropped from it sooner.
 const MIN_EVENT_SECONDS: u64 = 5;
 
+/// What the settings say about the last program that was in front, so that a name that does not
+/// match, or a program Windows will not name, is plain to see.
+fn front_seen(last: Option<&str>, unreadable: bool, listed: impl Fn(&str) -> bool) -> String {
+    match (last, unreadable) {
+        (_, true) => "Windows would not give the name of the last program in front. If it runs as administrator, \
+                      running Parrotfish as administrator too may help."
+            .to_string(),
+        (Some(name), false) if listed(name) => format!("Last program in front: {name}, which is in the list."),
+        (Some(name), false) => format!("Last program in front: {name}, which is not in the list."),
+        (None, false) => "No other program has been in front yet. Switch to the game, then come back here.".to_string(),
+    }
+}
+
 fn event_age(age: Duration) -> String {
     match age.as_secs() {
         0 | 1 => "now".to_string(),
@@ -395,6 +408,8 @@ pub struct App {
     speakers_look: Option<(u8, bool)>,
     front_ticks: u32,
     last_foreign: Option<String>,
+    front_unreadable: bool,
+    taskbar_pending: bool,
     placing_for: Option<String>,
     over_listed: bool,
     speakers_round: Option<(u32, u32)>,
@@ -514,6 +529,8 @@ impl App {
             speakers_look: None,
             front_ticks: 0,
             last_foreign: None,
+            front_unreadable: false,
+            taskbar_pending: true,
             placing_for: None,
             over_listed: false,
             speakers_round: None,
@@ -2758,12 +2775,13 @@ impl App {
         let rooms = self.speaker_rooms();
         let linger = speakers::linger(self.settings.speakers_linger);
         let lines = self.roster.lines(&rooms, self.settings.speakers_all, linger, Instant::now());
-        let height = window.size().to_logical(window.scale_factor()).height;
-        let slots = speakers::capacity(height);
+        // The window counts its own whole lines, from the height it is drawn at, so the two never
+        // disagree about how many fit, whatever the display scale.
+        let slots = w.speakers.get_capacity().max(0) as usize;
         let events = self.settings.speakers_events;
-        let lines = speakers::fit(lines, slots.saturating_sub(usize::from(events)));
+        let bottom_kept = events || !self.settings.speakers_locked;
+        let lines = speakers::fit(lines, slots.saturating_sub(usize::from(bottom_kept)));
         self.speakers_empty = lines.is_empty();
-        w.speakers.set_slots(slots as i32);
         w.speakers.set_event_line(events);
         w.speakers.set_placing(
             self.placing_for.clone().filter(|_| self.settings.speakers_only_programs).unwrap_or_default().into(),
@@ -2773,6 +2791,7 @@ impl App {
         match event {
             Some(event) => {
                 w.speakers.set_event_kind(if event.joined { 1 } else { 2 });
+                w.speakers.set_event_server(event.server);
                 w.speakers.set_event_name(event.name.as_str().into());
                 w.speakers.set_event_what(event.what.into());
                 w.speakers.set_event_age(event_age(event.at.elapsed()).into());
@@ -2812,8 +2831,9 @@ impl App {
         let listed = |name: &str| self.settings.speakers_programs.iter().any(|spot| spot.exe == name);
         match &front {
             platform::Front::Program(name) => {
-                if self.last_foreign.as_deref() != Some(name.as_str()) {
+                if self.last_foreign.as_deref() != Some(name.as_str()) || self.front_unreadable {
                     self.last_foreign = Some(name.clone());
+                    self.front_unreadable = false;
                     self.publish_programs(w);
                 }
                 let over = listed(name);
@@ -2826,6 +2846,13 @@ impl App {
             }
             platform::Front::Own => {}
             platform::Front::Unknown => self.over_listed = false,
+            platform::Front::Unreadable => {
+                self.over_listed = false;
+                if !self.front_unreadable {
+                    self.front_unreadable = true;
+                    self.publish_programs(w);
+                }
+            }
         }
     }
 
@@ -2865,6 +2892,7 @@ impl App {
             .clone()
             .filter(|name| !self.settings.speakers_programs.iter().any(|spot| &spot.exe == name));
         w.settings.set_sp_front(addable.unwrap_or_default().into());
+        w.settings.set_sp_front_seen(front_seen(self.last_foreign.as_deref(), self.front_unreadable, |name| self.settings.speakers_programs.iter().any(|spot| spot.exe == name)).into());
     }
 
     pub fn program_add_front(&mut self, w: &Windows) {
@@ -2875,12 +2903,16 @@ impl App {
 
     pub fn program_add(&mut self, w: &Windows, name: &str) {
         let spot = ProgramSpot::named(name);
-        if spot.exe.is_empty() || self.settings.speakers_programs.iter().any(|kept| kept.exe == spot.exe) {
-            w.settings.set_sp_program_typed("".into());
+        if spot.exe.is_empty() {
             return;
         }
-        self.settings.speakers_programs.push(spot);
         w.settings.set_sp_program_typed("".into());
+        if self.settings.speakers_programs.iter().any(|kept| kept.exe == spot.exe) {
+            w.settings.set_sp_program_note(format!("{} is already in the list.", spot.exe).into());
+            return;
+        }
+        w.settings.set_sp_program_note(format!("Added {}.", spot.exe).into());
+        self.settings.speakers_programs.push(spot);
         self.mark_settings_dirty();
         self.publish_programs(w);
     }
@@ -2945,11 +2977,21 @@ impl App {
         w.settings.set_sp_only_programs(self.settings.speakers_only_programs);
         self.publish_programs(w);
         self.speakers_round = None;
+        if !w.speakers.window().is_visible() {
+            self.taskbar_pending = true;
+        }
         w.settings.set_sp_opacity(self.settings.speakers_opacity);
         w.settings.set_sp_linger(self.settings.speakers_linger as f32);
         let window = w.speakers.window();
+        if self.settings.speakers_shown && window.is_visible() {
+            let size = window.size().to_logical(window.scale_factor());
+            if size.width + 0.5 < self.speakers_min_width() {
+                window.set_size(slint::LogicalSize::new(self.speakers_min_width(), size.height));
+            }
+        }
         if self.settings.speakers_shown && !window.is_visible() {
             let (width, height) = self.settings.speakers_size;
+            let width = width.max(self.speakers_min_width());
             window.set_size(slint::LogicalSize::new(width, speakers::snap_height(height)));
             if let Some((x, y)) = self.speakers_start(w) {
                 window.set_position(slint::PhysicalPosition::new(x, y));
@@ -3033,7 +3075,10 @@ impl App {
         let hidden = elsewhere || (locked && self.speakers_empty && event.is_none() && !self.settings.speakers_keep);
         let look = (if hidden { 0 } else { solid }, locked);
         if self.speakers_look != Some(look) || self.speakers_ticks % 8 == 0 {
-            let done = platform::overlay_style(SPEAKERS_TITLE, look.0, look.1);
+            let done = platform::overlay_style(SPEAKERS_TITLE, look.0, look.1, self.taskbar_pending);
+            if done {
+                self.taskbar_pending = false;
+            }
             self.speakers_look = done.then_some(look);
         }
         if self.speakers_ticks % 8 == 0 {
@@ -3083,11 +3128,24 @@ impl App {
         }
         let window = w.speakers.window();
         let size = window.size().to_logical(window.scale_factor());
-        let width = width.clamp(speakers::MIN_WIDTH, speakers::MAX_SIDE);
+        let width = width.clamp(self.speakers_min_width(), speakers::MAX_SIDE);
         let height = speakers::snap_height(height);
         if (width - size.width).abs() >= 0.5 || (height - size.height).abs() >= 0.5 {
             window.set_size(slint::LogicalSize::new(width, height));
         }
+    }
+
+    /// Joins and leaves need room for an icon, a name, a word and an age on one line.
+    fn speakers_min_width(&self) -> f32 {
+        if self.settings.speakers_events {
+            speakers::MIN_WIDTH_WITH_EVENTS
+        } else {
+            speakers::MIN_WIDTH
+        }
+    }
+
+    pub fn speakers_capacity_changed(&mut self) {
+        self.dirty.speakers = true;
     }
 
     pub fn park_speakers(&mut self, w: &Windows) {
@@ -3706,6 +3764,15 @@ mod tests {
             assert!(grid.iter().all(|row| row.columns == columns), "{people} people with room for {room} columns");
             assert_eq!(list.len(), people as usize, "everyone is shown once");
         }
+    }
+
+    #[test]
+    fn the_settings_say_which_program_was_last_in_front() {
+        let listed = |name: &str| name == "exefile.exe";
+        assert!(front_seen(Some("exefile.exe"), false, listed).ends_with("exefile.exe, which is in the list."));
+        assert!(front_seen(Some("chrome.exe"), false, listed).ends_with("chrome.exe, which is not in the list."));
+        assert!(front_seen(None, false, listed).starts_with("No other program"));
+        assert!(front_seen(Some("exefile.exe"), true, listed).starts_with("Windows would not give"));
     }
 
     #[test]
