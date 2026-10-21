@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use ps_client::spacer::{parse_spacer, SpacerAlign, SpacerLine};
 use ps_client::{
-    ClientHandle, ConnectOptions, TextTarget, VoiceSink, WhisperTarget, CODEC_OPUS_VOICE, DEFAULT_PORT,
+    ClientHandle, ClientInfo, ConnectOptions, Group, TextTarget, VoiceSink, WhisperTarget, CODEC_OPUS_VOICE, DEFAULT_PORT,
 };
 use ps_identity::Identity;
 use ps_voice::codec::CODEC_CELT_MONO;
@@ -30,11 +30,11 @@ use crate::session::{
     self, build_rows_folded, connect_failure, mic_move, next_view, ChannelIcon, ChatKind, ChatLine, ConnectRequest,
     DialogField, FoldMode, MicMove, Outcome, Peer, RowData, RowKind, Session,
 };
-use crate::settings::{self, Settings, Voice, MAX_REMEMBERED_VOICES};
+use crate::settings::{self, ProgramSpot, Settings, Voice, MAX_REMEMBERED_VOICES};
 use crate::update::{self, Offer, Place, Press};
 use crate::whisper::{route, Route, WhisperKeys};
 use crate::{
-    BookmarkRow, ChatRow, Icons, IdentityRow, ParrotfishApp, PickRow, ServerTile, SettingsWindow, SpeakerRow,
+    BadgeTip, BookmarkRow, ChatRow, Icons, ProgramRow, IdentityRow, ParrotfishApp, PickRow, ServerTile, SettingsWindow, SpeakerRow,
     SpeakersWindow, TreeRow, WhisperKeyRow,
 };
 
@@ -50,7 +50,8 @@ mod shortcuts;
 const SETTINGS_SAVE_DELAY: Duration = Duration::from_secs(2);
 const METER_FLOOR_DB: f32 = -70.0;
 const SILENCE_DB: f32 = -95.9;
-const SILENCE_HINT_AFTER: Duration = Duration::from_secs(4);
+const SILENCE_HINT_AFTER: Duration = Duration::from_secs(3);
+const SILENCE_NEVER_HEARD_AFTER: Duration = Duration::from_secs(20);
 const DEFAULT_NICKNAME: &str = "ParrotfishUser";
 const HEADER_TILES: usize = 3;
 
@@ -134,6 +135,80 @@ fn tree_row(row: &RowData) -> TreeRow {
         badge_b: slint::Image::default(),
         badge_c: slint::Image::default(),
         badge_d: slint::Image::default(),
+        tips: ModelRc::default(),
+        mic_disabled: row.mic_disabled,
+        sound_disabled: row.sound_disabled,
+        first: 0,
+        cells: 0,
+        columns: 1,
+    }
+}
+
+/// People in a channel are set out in columns only when there are more of them than this.
+const COLUMNS_FROM: usize = 5;
+
+/// Sets out the people of each busy channel in `columns` columns, read top to bottom and then
+/// left to right. Each line of the grid becomes one row of kind 5 that shows `cells` people from
+/// the returned list, starting at `first`; everything else is passed through unchanged.
+fn arrange_columns(rows: Vec<TreeRow>, columns: usize) -> (Vec<TreeRow>, Vec<TreeRow>) {
+    if columns < 2 {
+        return (rows, Vec::new());
+    }
+    let mut out = Vec::with_capacity(rows.len());
+    let mut people = Vec::new();
+    let mut rows = rows.into_iter().peekable();
+    while let Some(row) = rows.next() {
+        if row.kind != 4 {
+            out.push(row);
+            continue;
+        }
+        let depth = row.depth;
+        let mut run = vec![row];
+        while let Some(next) = rows.next_if(|next| next.kind == 4 && next.depth == depth) {
+            run.push(next);
+        }
+        if run.len() < COLUMNS_FROM {
+            out.extend(run);
+            continue;
+        }
+        let lines = run.len().div_ceil(columns);
+        let used = run.len().div_ceil(lines);
+        for line in 0..lines {
+            let first = people.len();
+            let cells: Vec<TreeRow> = (0..used).filter_map(|column| run.get(column * lines + line).cloned()).collect();
+            let mut mark = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&format!("{cells:?}"), &mut mark);
+            out.push(TreeRow {
+                kind: 5,
+                id: cells.first().map(|cell| cell.id).unwrap_or(0),
+                depth,
+                tag: std::hash::Hasher::finish(&mark).to_string().into(),
+                first: first as i32,
+                cells: cells.len() as i32,
+                columns: used as i32,
+                ..TreeRow::default()
+            });
+            people.extend(cells);
+        }
+    }
+    (out, people)
+}
+
+/// What a person's icon stands for, shown when the pointer rests on it: the channel group or
+/// server groups that carry the icon, or the person's own icon.
+fn badge_tip(icon: u32, client: &ClientInfo, server_groups: &[Group], channel_groups: &[Group]) -> BadgeTip {
+    let tip = |title: String, sub: &str| BadgeTip { title: title.into(), sub: sub.into() };
+    if let Some(group) = channel_groups.iter().find(|g| g.id == client.channel_group && g.icon == icon) {
+        return tip(group.name.clone(), "Channel Group");
+    }
+    let mut groups: Vec<&Group> =
+        server_groups.iter().filter(|g| g.icon == icon && client.server_groups.contains(&g.id)).collect();
+    groups.sort_by_key(|g| (g.sort, g.id));
+    match groups.len() {
+        0 if client.icon == icon => tip("Own Icon".to_string(), ""),
+        0 => tip(String::new(), ""),
+        1 => tip(groups[0].name.clone(), "Server Group"),
+        _ => tip(groups.iter().map(|g| g.name.as_str()).collect::<Vec<_>>().join(", "), "Server Groups"),
     }
 }
 
@@ -166,8 +241,74 @@ fn chat_row(line: &ChatLine) -> ChatRow {
     }
 }
 
+/// The speaking window's corner radius, in logical pixels.
+const SPEAKERS_CORNER: f32 = 8.0;
+
+/// A join or leave stays on the speaking window at least this long, even when people who stop
+/// talking are dropped from it sooner.
+const MIN_EVENT_SECONDS: u64 = 5;
+
+/// What the settings say about the last program that was in front, so that a name that does not
+/// match, or a program Windows will not name, is plain to see.
+fn front_seen(last: Option<&str>, unreadable: bool, listed: impl Fn(&str) -> bool) -> String {
+    match (last, unreadable) {
+        (_, true) => "Windows would not give the name of the last program in front. If it runs as administrator, \
+                      running Parrotfish as administrator too may help."
+            .to_string(),
+        (Some(name), false) if listed(name) => format!("Last program in front: {name}, which is in the list."),
+        (Some(name), false) => format!("Last program in front: {name}, which is not in the list."),
+        (None, false) => "No other program has been in front yet. Switch to the game, then come back here.".to_string(),
+    }
+}
+
+fn event_age(age: Duration) -> String {
+    match age.as_secs() {
+        0 | 1 => "now".to_string(),
+        seconds => format!("{seconds}s"),
+    }
+}
+
 fn same_address(a: &str, b: &str) -> bool {
     a.trim().eq_ignore_ascii_case(b.trim())
+}
+
+/// How long the microphone must stay digitally silent before Parrotfish says so, or `None` when
+/// silence right now is no sign of a problem. Many headsets gate their own microphone and send
+/// exact silence between words, so silence only counts while a talk or whisper key is held, or,
+/// when no key is used to talk, while the microphone has not sent any sound since it was opened.
+fn silence_wait(key_held: bool, push_to_talk: bool, heard_since_open: bool, level: f32) -> Option<Duration> {
+    if level > SILENCE_DB {
+        None
+    } else if key_held {
+        Some(SILENCE_HINT_AFTER)
+    } else if !push_to_talk && !heard_since_open {
+        Some(SILENCE_NEVER_HEARD_AFTER)
+    } else {
+        None
+    }
+}
+
+fn same_path(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+/// Moves a removed identity's file into `aside` instead of deleting it, so a
+/// mistaken removal can be undone by moving the file back. Files there are not
+/// read when identities are listed, because only the top level is searched.
+fn set_aside_identity(path: &Path, aside: &Path) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(aside).map_err(|e| format!("could not create {}: {e}", aside.display()))?;
+    let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "identity".to_string());
+    let mut target = aside.join(format!("{stem}.ini"));
+    let mut copy = 2;
+    while target.exists() {
+        target = aside.join(format!("{stem} ({copy}).ini"));
+        copy += 1;
+    }
+    std::fs::rename(path, &target).map_err(|e| format!("could not move {}: {e}", path.display()))?;
+    Ok(target)
 }
 
 pub fn forget_links(scheme: &str) {
@@ -265,6 +406,14 @@ pub struct App {
     icon_ticks: u32,
     speakers_empty: bool,
     speakers_look: Option<(u8, bool)>,
+    front_ticks: u32,
+    last_foreign: Option<String>,
+    front_unreadable: bool,
+    taskbar_pending: bool,
+    placing_for: Option<String>,
+    over_listed: bool,
+    speakers_round: Option<(u32, u32)>,
+    event_age_shown: Option<u64>,
     keeper: Keeper,
     roster: Roster,
     engine: AudioEngine,
@@ -288,6 +437,9 @@ pub struct App {
     pick_rows: Rc<VecModel<PickRow>>,
     group_rows: Rc<VecModel<SharedString>>,
     tree_shown: Option<u16>,
+    people: Rc<VecModel<TreeRow>>,
+    tree_columns: usize,
+    fit_pending: Vec<&'static str>,
     start_rows: Rc<VecModel<SharedString>>,
     bm_options: Vec<(String, String, u64)>,
     bm_choice: (String, u64),
@@ -299,6 +451,7 @@ pub struct App {
     viewed: Option<u16>,
     mic_target: Option<u16>,
     own_talking: bool,
+    own_whispering: bool,
     mic_gated: bool,
     tree: Rc<VecModel<TreeRow>>,
     chat: Rc<VecModel<ChatRow>>,
@@ -317,6 +470,8 @@ pub struct App {
     link_scheme: String,
     dirty: Dirty,
     silent_since: Option<Instant>,
+    heard_sound: bool,
+    heard_device: String,
     silence_warned: bool,
     warned_codecs: Vec<u8>,
     shown_status: String,
@@ -359,13 +514,8 @@ impl App {
         speakers_window: &SpeakersWindow,
         settings: Settings,
     ) -> Self {
-        let engine = AudioEngine::start();
-        if !settings.input_device.is_empty() {
-            engine.set_input_device(Some(settings.input_device.clone()));
-        }
-        if !settings.output_device.is_empty() {
-            engine.set_output_device(Some(settings.output_device.clone()));
-        }
+        let chosen = |id: &str| Some(id.to_string()).filter(|id| !id.is_empty());
+        let engine = AudioEngine::start_with(chosen(&settings.input_device), chosen(&settings.output_device));
         let watcher = KeyWatcher::start(engine.shared().clone());
         let allow_whispers = Arc::new(AtomicBool::new(settings.allow_whispers));
         Self {
@@ -377,6 +527,14 @@ impl App {
             icon_ticks: 0,
             speakers_empty: true,
             speakers_look: None,
+            front_ticks: 0,
+            last_foreign: None,
+            front_unreadable: false,
+            taskbar_pending: true,
+            placing_for: None,
+            over_listed: false,
+            speakers_round: None,
+            event_age_shown: None,
             keeper: Keeper::default(),
             roster: Roster::default(),
             engine,
@@ -400,6 +558,9 @@ impl App {
             pick_rows: Rc::new(VecModel::default()),
             group_rows: Rc::new(VecModel::default()),
             tree_shown: None,
+            people: Rc::new(VecModel::default()),
+            tree_columns: 1,
+            fit_pending: vec![MAIN_TITLE],
             start_rows: Rc::new(VecModel::default()),
             bm_options: Vec::new(),
             bm_choice: (String::new(), 0),
@@ -411,6 +572,7 @@ impl App {
             viewed: None,
             mic_target: None,
             own_talking: false,
+            own_whispering: false,
             mic_gated: false,
             tree: Rc::new(VecModel::default()),
             chat: Rc::new(VecModel::default()),
@@ -429,6 +591,8 @@ impl App {
             link_scheme: links::scheme(),
             dirty: Dirty::everything(),
             silent_since: None,
+            heard_sound: false,
+            heard_device: String::new(),
             silence_warned: false,
             warned_codecs: Vec::new(),
             shown_status: String::new(),
@@ -454,6 +618,9 @@ impl App {
     pub fn start(&mut self, w: &Windows, wishes: &[Wish]) {
         let stored = self.settings.serialize();
         w.main.set_tree(ModelRc::from(self.tree.clone()));
+        w.main.set_people(ModelRc::from(self.people.clone()));
+        w.main.set_column_view(self.settings.column_view);
+        self.tree_columns = w.main.get_tree_columns().max(1) as usize;
         w.main.set_chat(ModelRc::from(self.chat.clone()));
         w.settings.set_talk_keys(ModelRc::from(self.talk_rows.clone()));
         w.settings.set_whisper_keys(ModelRc::from(self.whisper_rows.clone()));
@@ -481,6 +648,7 @@ impl App {
         w.settings.set_even_voices(self.settings.even_voices);
         w.settings.set_priority_dim(self.settings.priority_dim);
         w.settings.set_cue_volume(self.settings.cue_volume);
+        w.settings.set_join_leave_cues(self.settings.join_leave_cues);
         w.settings.set_check_updates(self.settings.check_updates);
         let problems = self.load_identities();
         if self.identities.is_empty() {
@@ -871,6 +1039,9 @@ impl App {
                         }
                         identity.name = settings::identity_name_now(&identity.name);
                         let uid = identity.uid();
+                        if self.settings.hidden_identities.contains(&uid) {
+                            continue;
+                        }
                         if let Some(offset) = self.settings.key_offsets.get(&uid) {
                             if *offset > identity.key_offset {
                                 identity.key_offset = *offset;
@@ -929,10 +1100,21 @@ impl App {
             return;
         }
         let path = PathBuf::from(&typed);
-        let usable = ps_identity::list_identities(&path)
+        let usable: Vec<String> = ps_identity::list_identities(&path)
             .into_iter()
-            .filter(|(_, result)| result.as_ref().is_ok_and(|identity| identity.private_key.is_some()))
-            .count();
+            .filter_map(|(_, result)| result.ok().filter(|identity| identity.private_key.is_some()))
+            .map(|identity| identity.uid())
+            .collect();
+        let usable = {
+            let mut unhidden = false;
+            for uid in &usable {
+                unhidden |= self.settings.hidden_identities.remove(uid);
+            }
+            if unhidden {
+                self.mark_settings_dirty();
+            }
+            usable.len()
+        };
         if usable == 0 {
             w.settings.set_identity_note(
                 "No usable TeamSpeak identity was found there. Export one from the TeamSpeak client and try again."
@@ -958,6 +1140,70 @@ impl App {
         };
         w.settings.set_identity_note(note.into());
         w.settings.set_import_path("".into());
+    }
+
+    pub fn remove_identity(&mut self, w: &Windows, index: i32) {
+        let Some(at) = usize::try_from(index).ok().filter(|at| *at < self.identities.len()) else {
+            return;
+        };
+        let loaded = &self.identities[at];
+        let uid = loaded.identity.uid();
+        let label =
+            if loaded.identity.name.trim().is_empty() { loaded.identity.nickname.clone() } else { loaded.identity.name.clone() };
+        if self.identities.len() <= 1 {
+            w.settings.set_identity_note(
+                "You need at least one identity to connect. Create or import another one before removing this one.".into(),
+            );
+            return;
+        }
+        if let Some(session) = self.sessions.iter().find(|s| s.request.identity_uid == uid) {
+            w.settings.set_identity_note(
+                format!("{label} is in use on {}. Disconnect from that server first, then remove it.", session.name).into(),
+            );
+            return;
+        }
+        let path = loaded.path.clone();
+        let own_dir = settings::identities_dir();
+        let owned = path.parent().is_some_and(|parent| same_path(parent, &own_dir));
+        let note = if owned {
+            match set_aside_identity(&path, &own_dir.join("removed")) {
+                Ok(kept) => format!(
+                    "Removed {label}. Its file was moved to {}, so you can put it back if you ever need it.",
+                    kept.display()
+                ),
+                Err(problem) => {
+                    w.settings.set_identity_note(format!("Could not remove {label}: {problem}.").into());
+                    return;
+                }
+            }
+        } else {
+            let file = path.to_string_lossy().to_string();
+            let kept: Vec<&str> = self
+                .settings
+                .identity_path
+                .split('|')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty() && !same_path(Path::new(entry), &path) && !entry.eq_ignore_ascii_case(&file))
+                .collect();
+            self.settings.identity_path = kept.join("|");
+            format!("Removed {label} from the list. Its file at {} was left as it is.", path.display())
+        };
+        self.settings.hidden_identities.insert(uid.clone());
+        self.identities.remove(at);
+        if self.identity_index(&self.settings.identity_uid).is_none() {
+            self.settings.identity_uid = self.identities.first().map(|l| l.identity.uid()).unwrap_or_default();
+        }
+        let shift = |current: i32| match current.cmp(&(at as i32)) {
+            std::cmp::Ordering::Greater => current - 1,
+            std::cmp::Ordering::Equal => self.default_identity(),
+            std::cmp::Ordering::Less => current,
+        };
+        w.settings.set_bm_identity(shift(w.settings.get_bm_identity()));
+        w.main.set_dlg_identity(shift(w.main.get_dlg_identity()));
+        self.mark_settings_dirty();
+        self.dirty.identities = true;
+        self.dirty.bookmarks = true;
+        w.settings.set_identity_note(note.into());
     }
 
     fn refresh_devices(&mut self, w: &Windows) {
@@ -1027,6 +1273,7 @@ impl App {
         self.settings.noise_suppression = denoise;
         self.settings.auto_gain = even;
         self.settings.cue_volume = cues;
+        self.settings.join_leave_cues = w.settings.get_join_leave_cues();
         self.settings.even_voices = even_voices;
         let dim_changed = self.settings.priority_dim != priority_dim;
         self.settings.priority_dim = priority_dim;
@@ -1049,6 +1296,7 @@ impl App {
         self.dirty.bookmarks = true;
         self.dirty.identities = true;
         let _ = w.settings.show();
+        self.fit_pending.push(SETTINGS_TITLE);
     }
 
     pub fn stop_mic_test(&mut self, w: &Windows) {
@@ -1444,6 +1692,7 @@ impl App {
         };
         let mut session = Session::new(id, request.clone(), self.trace);
         session.folds.mode = FoldMode::from_index(self.settings.fold_mode);
+        session.folds.hide_queries = !self.settings.show_queries;
         session.allow_whispers = self.settings.allow_whispers;
         session.push_line(ChatKind::System, "", &format!("Connecting to {}", request.address));
         self.sessions.push(session);
@@ -1507,6 +1756,7 @@ impl App {
             self.viewed = Some(id);
             self.chat_shown = None;
             self.own_talking = false;
+            self.own_whispering = false;
             self.unheard = None;
             self.prompt = None;
             w.main.set_prompt_open(false);
@@ -1747,7 +1997,31 @@ impl App {
         }
     }
 
+    pub fn columns_changed(&mut self, w: &Windows) {
+        let columns = w.main.get_tree_columns().max(1) as usize;
+        if columns != self.tree_columns {
+            self.tree_columns = columns;
+            self.dirty.tree = true;
+        }
+    }
+
     pub fn view_changed(&mut self, w: &Windows) {
+        let columns = w.settings.get_column_view();
+        if columns != self.settings.column_view {
+            self.settings.column_view = columns;
+            w.main.set_column_view(columns);
+            self.columns_changed(w);
+            self.mark_settings_dirty();
+        }
+        let queries = w.settings.get_show_queries();
+        if queries != self.settings.show_queries {
+            self.settings.show_queries = queries;
+            for session in &mut self.sessions {
+                session.folds.hide_queries = !queries;
+            }
+            self.mark_settings_dirty();
+            self.dirty = Dirty::everything();
+        }
         let mode = w.settings.get_fold_mode().clamp(0, 2);
         if mode != self.settings.fold_mode {
             self.settings.fold_mode = mode;
@@ -2263,6 +2537,7 @@ impl App {
             self.viewed = next;
             self.chat_shown = None;
             self.own_talking = false;
+            self.own_whispering = false;
             w.main.set_chat_input("".into());
         }
         self.route_mic();
@@ -2287,7 +2562,10 @@ impl App {
     fn on_outcome(&mut self, w: &Windows, id: u16, was_connecting: bool, outcome: Outcome) {
         let viewed = self.viewed == Some(id);
         if let Some(cue) = outcome.cue {
-            self.engine.play_cue(cue);
+            let quiet = !self.settings.join_leave_cues && matches!(cue, Cue::Joined | Cue::Left);
+            if !quiet {
+                self.engine.play_cue(cue);
+            }
         }
         for client in &outcome.forget {
             self.engine.remove_talker(id, *client);
@@ -2478,7 +2756,7 @@ impl App {
                         id: person.id,
                         name: person.nickname.clone(),
                         talking: if me { on_air } else { person.talking },
-                        whispering: !me && person.whispering,
+                        whispering: if me { on_air && self.own_whispering } else { person.whispering },
                         me,
                         here,
                     });
@@ -2497,9 +2775,29 @@ impl App {
         let rooms = self.speaker_rooms();
         let linger = speakers::linger(self.settings.speakers_linger);
         let lines = self.roster.lines(&rooms, self.settings.speakers_all, linger, Instant::now());
-        let height = window.size().to_logical(window.scale_factor()).height;
-        let lines = speakers::fit(lines, speakers::capacity(height));
+        // The window counts its own whole lines, from the height it is drawn at, so the two never
+        // disagree about how many fit, whatever the display scale.
+        let slots = w.speakers.get_capacity().max(0) as usize;
+        let events = self.settings.speakers_events;
+        let bottom_kept = events || !self.settings.speakers_locked;
+        let lines = speakers::fit(lines, slots.saturating_sub(usize::from(bottom_kept)));
         self.speakers_empty = lines.is_empty();
+        w.speakers.set_event_line(events);
+        w.speakers.set_placing(
+            self.placing_for.clone().filter(|_| self.settings.speakers_only_programs).unwrap_or_default().into(),
+        );
+        let event = self.fresh_channel_event().filter(|_| events);
+        self.event_age_shown = event.as_ref().map(|event| event.at.elapsed().as_secs());
+        match event {
+            Some(event) => {
+                w.speakers.set_event_kind(if event.joined { 1 } else { 2 });
+                w.speakers.set_event_server(event.server);
+                w.speakers.set_event_name(event.name.as_str().into());
+                w.speakers.set_event_what(event.what.into());
+                w.speakers.set_event_age(event_age(event.at.elapsed()).into());
+            }
+            None => w.speakers.set_event_kind(0),
+        }
         let rows = lines
             .into_iter()
             .map(|line| SpeakerRow {
@@ -2512,6 +2810,134 @@ impl App {
             })
             .collect();
         sync_rows(&self.speaker_rows, rows);
+    }
+
+    /// The newest arrival in or departure from the person's channel on any server, while it is
+    /// recent enough to show.
+    fn fresh_channel_event(&self) -> Option<session::ChannelEvent> {
+        let keep = speakers::linger(self.settings.speakers_linger).max(Duration::from_secs(MIN_EVENT_SECONDS));
+        self.sessions
+            .iter()
+            .filter(|s| s.is_connected() && !s.sound_muted)
+            .filter_map(|s| s.channel_event.clone())
+            .filter(|event| event.at.elapsed() < keep)
+            .max_by_key(|event| event.at)
+    }
+
+    /// Which program is in front, so that the speaking window can show only over the chosen ones
+    /// and in the place kept for each.
+    fn follow_front(&mut self, w: &Windows) {
+        let front = platform::front_program();
+        let listed = |name: &str| self.settings.speakers_programs.iter().any(|spot| spot.exe == name);
+        match &front {
+            platform::Front::Program(name) => {
+                if self.last_foreign.as_deref() != Some(name.as_str()) || self.front_unreadable {
+                    self.last_foreign = Some(name.clone());
+                    self.front_unreadable = false;
+                    self.publish_programs(w);
+                }
+                let over = listed(name);
+                if over && self.placing_for.as_deref() != Some(name.as_str()) {
+                    self.placing_for = Some(name.clone());
+                    self.place_for_program(w);
+                    self.dirty.speakers = true;
+                }
+                self.over_listed = over;
+            }
+            platform::Front::Own => {}
+            platform::Front::Unknown => self.over_listed = false,
+            platform::Front::Unreadable => {
+                self.over_listed = false;
+                if !self.front_unreadable {
+                    self.front_unreadable = true;
+                    self.publish_programs(w);
+                }
+            }
+        }
+    }
+
+    /// Moves the speaking window to the place kept for the program now in front, if it has one.
+    fn place_for_program(&mut self, w: &Windows) {
+        if !self.settings.speakers_only_programs {
+            return;
+        }
+        let Some(spot) = self.placing_for.as_ref().and_then(|name| self.settings.speakers_programs.iter().find(|s| &s.exe == name))
+        else {
+            return;
+        };
+        let (Some(place), Some(size)) = (spot.place, spot.size) else {
+            return;
+        };
+        let window = w.speakers.window();
+        if window.is_visible() {
+            window.set_size(slint::LogicalSize::new(size.0, size.1));
+            window.set_position(slint::PhysicalPosition::new(place.0, place.1));
+            self.keeper.settle();
+        }
+        self.settings.speakers_place = Some(place);
+        self.settings.speakers_size = size;
+        self.mark_settings_dirty();
+    }
+
+    fn publish_programs(&self, w: &Windows) {
+        let rows: Vec<ProgramRow> = self
+            .settings
+            .speakers_programs
+            .iter()
+            .map(|spot| ProgramRow { name: spot.exe.as_str().into(), placed: spot.place.is_some() })
+            .collect();
+        w.settings.set_sp_programs(ModelRc::new(VecModel::from(rows)));
+        let addable = self
+            .last_foreign
+            .clone()
+            .filter(|name| !self.settings.speakers_programs.iter().any(|spot| &spot.exe == name));
+        w.settings.set_sp_front(addable.unwrap_or_default().into());
+        w.settings.set_sp_front_seen(front_seen(self.last_foreign.as_deref(), self.front_unreadable, |name| self.settings.speakers_programs.iter().any(|spot| spot.exe == name)).into());
+    }
+
+    pub fn program_add_front(&mut self, w: &Windows) {
+        if let Some(name) = self.last_foreign.clone() {
+            self.program_add(w, &name);
+        }
+    }
+
+    pub fn program_add(&mut self, w: &Windows, name: &str) {
+        let spot = ProgramSpot::named(name);
+        if spot.exe.is_empty() {
+            return;
+        }
+        w.settings.set_sp_program_typed("".into());
+        if self.settings.speakers_programs.iter().any(|kept| kept.exe == spot.exe) {
+            w.settings.set_sp_program_note(format!("{} is already in the list.", spot.exe).into());
+            return;
+        }
+        w.settings.set_sp_program_note(format!("Added {}.", spot.exe).into());
+        self.settings.speakers_programs.push(spot);
+        self.mark_settings_dirty();
+        self.publish_programs(w);
+    }
+
+    pub fn program_remove(&mut self, w: &Windows, index: i32) {
+        let Some(at) = usize::try_from(index).ok().filter(|at| *at < self.settings.speakers_programs.len()) else {
+            return;
+        };
+        let gone = self.settings.speakers_programs.remove(at);
+        if self.placing_for.as_deref() == Some(gone.exe.as_str()) {
+            self.placing_for = None;
+            self.over_listed = false;
+        }
+        self.mark_settings_dirty();
+        self.publish_programs(w);
+        self.dirty.speakers = true;
+    }
+
+    pub fn program_reset(&mut self, w: &Windows, index: i32) {
+        if let Some(spot) = usize::try_from(index).ok().and_then(|at| self.settings.speakers_programs.get_mut(at)) {
+            spot.place = None;
+            spot.size = None;
+            self.mark_settings_dirty();
+            self.publish_programs(w);
+        }
     }
 
     fn speakers_start(&self, w: &Windows) -> Option<(i32, i32)> {
@@ -2546,12 +2972,27 @@ impl App {
         w.settings.set_sp_locked(self.settings.speakers_locked);
         w.settings.set_sp_on_top(self.settings.speakers_on_top);
         w.settings.set_sp_all(self.settings.speakers_all);
+        w.settings.set_sp_keep(self.settings.speakers_keep);
+        w.settings.set_sp_events(self.settings.speakers_events);
+        w.settings.set_sp_only_programs(self.settings.speakers_only_programs);
+        self.publish_programs(w);
+        self.speakers_round = None;
+        if !w.speakers.window().is_visible() {
+            self.taskbar_pending = true;
+        }
         w.settings.set_sp_opacity(self.settings.speakers_opacity);
         w.settings.set_sp_linger(self.settings.speakers_linger as f32);
         let window = w.speakers.window();
+        if self.settings.speakers_shown && window.is_visible() {
+            let size = window.size().to_logical(window.scale_factor());
+            if size.width + 0.5 < self.speakers_min_width() {
+                window.set_size(slint::LogicalSize::new(self.speakers_min_width(), size.height));
+            }
+        }
         if self.settings.speakers_shown && !window.is_visible() {
             let (width, height) = self.settings.speakers_size;
-            window.set_size(slint::LogicalSize::new(width, height));
+            let width = width.max(self.speakers_min_width());
+            window.set_size(slint::LogicalSize::new(width, speakers::snap_height(height)));
             if let Some((x, y)) = self.speakers_start(w) {
                 window.set_position(slint::PhysicalPosition::new(x, y));
             }
@@ -2583,6 +3024,7 @@ impl App {
         if place != self.settings.speakers_place && platform::overlay_seen(SPEAKERS_TITLE).is_some_and(|seen| !seen.on_a_display) {
             return false;
         }
+        let size = slint::LogicalSize::new(size.width, speakers::snap_height(size.height));
         let kept = self.settings.speakers_size;
         let sized = (size.width - kept.0).abs() > 0.5 || (size.height - kept.1).abs() > 0.5;
         if place == self.settings.speakers_place && !sized {
@@ -2590,22 +3032,53 @@ impl App {
         }
         self.settings.speakers_place = place;
         self.settings.speakers_size = (size.width, size.height);
+        if self.settings.speakers_only_programs {
+            let name = self.placing_for.clone();
+            if let Some(spot) = self.settings.speakers_programs.iter_mut().find(|spot| Some(&spot.exe) == name.as_ref()) {
+                spot.place = place;
+                spot.size = Some((size.width, size.height));
+                self.publish_programs(w);
+            }
+        }
         self.mark_settings_dirty();
         sized
     }
 
     fn watch_speakers(&mut self, w: &Windows) {
-        if !w.speakers.window().is_visible() {
+        if self.front_ticks % 8 == 0 {
+            self.follow_front(w);
+        }
+        self.front_ticks = self.front_ticks.wrapping_add(1);
+        let window = w.speakers.window();
+        if !window.is_visible() {
             return;
         }
         if self.roster.due(Instant::now()) {
             self.dirty.speakers = true;
         }
+        let event = self.fresh_channel_event().filter(|_| self.settings.speakers_events);
+        if event.as_ref().map(|event| event.at.elapsed().as_secs()) != self.event_age_shown {
+            self.dirty.speakers = true;
+        }
+        if self.speakers_ticks % 8 == 0 {
+            let size = window.size();
+            if self.speakers_round != Some((size.width, size.height)) {
+                let radius = (SPEAKERS_CORNER * window.scale_factor()).round() as i32;
+                if platform::round_corners(SPEAKERS_TITLE, size.width as i32, size.height as i32, radius) {
+                    self.speakers_round = Some((size.width, size.height));
+                }
+            }
+        }
         let locked = self.settings.speakers_locked;
         let solid = (self.settings.speakers_opacity.clamp(20.0, 100.0) * 2.55).round() as u8;
-        let look = (if locked && self.speakers_empty { 0 } else { solid }, locked);
+        let elsewhere = locked && self.settings.speakers_only_programs && !self.over_listed;
+        let hidden = elsewhere || (locked && self.speakers_empty && event.is_none() && !self.settings.speakers_keep);
+        let look = (if hidden { 0 } else { solid }, locked);
         if self.speakers_look != Some(look) || self.speakers_ticks % 8 == 0 {
-            let done = platform::overlay_style(SPEAKERS_TITLE, look.0, look.1);
+            let done = platform::overlay_style(SPEAKERS_TITLE, look.0, look.1, self.taskbar_pending);
+            if done {
+                self.taskbar_pending = false;
+            }
             self.speakers_look = done.then_some(look);
         }
         if self.speakers_ticks % 8 == 0 {
@@ -2655,11 +3128,24 @@ impl App {
         }
         let window = w.speakers.window();
         let size = window.size().to_logical(window.scale_factor());
-        let width = width.clamp(speakers::MIN_WIDTH, speakers::MAX_SIDE);
-        let height = height.clamp(speakers::MIN_HEIGHT, speakers::MAX_SIDE);
+        let width = width.clamp(self.speakers_min_width(), speakers::MAX_SIDE);
+        let height = speakers::snap_height(height);
         if (width - size.width).abs() >= 0.5 || (height - size.height).abs() >= 0.5 {
             window.set_size(slint::LogicalSize::new(width, height));
         }
+    }
+
+    /// Joins and leaves need room for an icon, a name, a word and an age on one line.
+    fn speakers_min_width(&self) -> f32 {
+        if self.settings.speakers_events {
+            speakers::MIN_WIDTH_WITH_EVENTS
+        } else {
+            speakers::MIN_WIDTH
+        }
+    }
+
+    pub fn speakers_capacity_changed(&mut self) {
+        self.dirty.speakers = true;
     }
 
     pub fn park_speakers(&mut self, w: &Windows) {
@@ -2690,6 +3176,14 @@ impl App {
         self.settings.speakers_locked = w.settings.get_sp_locked();
         self.settings.speakers_on_top = w.settings.get_sp_on_top();
         self.settings.speakers_all = w.settings.get_sp_all();
+        self.settings.speakers_keep = w.settings.get_sp_keep();
+        self.settings.speakers_events = w.settings.get_sp_events();
+        let only = w.settings.get_sp_only_programs();
+        if only && !self.settings.speakers_only_programs {
+            self.settings.speakers_only_programs = true;
+            self.place_for_program(w);
+        }
+        self.settings.speakers_only_programs = only;
         self.settings.speakers_opacity = w.settings.get_sp_opacity().clamp(20.0, 100.0);
         let linger = w.settings.get_sp_linger().round().clamp(0.0, speakers::MAX_LINGER_SECONDS as f32);
         self.settings.speakers_linger = linger as u32;
@@ -2796,6 +3290,7 @@ impl App {
                 platform::show_own_window(MAIN_TITLE);
             }
         }
+        self.fit_pending.retain(|title| !platform::fit_on_screen(title));
         if self.icon_ticks % ICON_EVERY == 0 {
             for title in [MAIN_TITLE, SETTINGS_TITLE, SPEAKERS_TITLE] {
                 platform::adopt_icon(title);
@@ -2820,12 +3315,15 @@ impl App {
         let transmitting = self.engine.is_transmitting();
         let heard = self.mic_target.and_then(|id| self.session(id)).is_some_and(|s| s.mic_seems_on);
         let on_air = transmitting && heard && !self.whisper_goes_nowhere();
-        if on_air != self.own_talking {
+        let whispering = on_air && self.engine.shared().on_air_lane().is_some_and(|lane| lane != 0);
+        if on_air != self.own_talking || whispering != self.own_whispering {
             self.own_talking = on_air;
+            self.own_whispering = whispering;
             self.dirty.tree = true;
         }
         w.main.set_input_level(position);
         w.main.set_transmitting(on_air);
+        w.main.set_whispering(whispering);
         w.settings.set_input_level(position);
         w.settings.set_transmitting(
             transmitting || (self.settings.tx_mode == 0 && level >= self.settings.vad_threshold),
@@ -2860,13 +3358,23 @@ impl App {
 
         let devices = self.engine.status();
         let now = Instant::now();
-        let silent = devices.input_ok && !self.mic_target_muted() && level <= SILENCE_DB;
+        if devices.input != self.heard_device {
+            self.heard_device = devices.input.clone();
+            self.heard_sound = false;
+            self.silent_since = None;
+        }
+        self.heard_sound |= level > SILENCE_DB;
+        let shared = self.engine.shared();
+        let key_held = shared.whisper_lane() != 0 || (self.settings.tx_mode == 1 && shared.ptt.load(Ordering::Relaxed));
+        let wait = silence_wait(key_held, self.settings.tx_mode == 1, self.heard_sound, level);
+        let silent = devices.input_ok && !self.mic_target_muted() && wait.is_some();
         if silent {
             self.silent_since.get_or_insert(now);
         } else {
             self.silent_since = None;
         }
-        let silent_long = self.silent_since.is_some_and(|since| now.duration_since(since) >= SILENCE_HINT_AFTER);
+        let silent_long =
+            self.silent_since.zip(wait).is_some_and(|(since, wait)| now.duration_since(since) >= wait);
         let mic_text = if devices.input.is_empty() {
             "Opening the microphone…".to_string()
         } else if silent_long {
@@ -2949,6 +3457,7 @@ impl App {
             })
             .collect();
         w.settings.set_identities(ModelRc::new(VecModel::from(rows)));
+        w.settings.set_confirm_remove_identity(-1);
     }
 
     fn publish_sessions(&mut self, w: &Windows) {
@@ -3068,21 +3577,39 @@ impl App {
         let own_mic_muted = self.viewed_session().map(|s| {
             !s.mic_seems_on || s.view.as_ref().and_then(|view| view.client(view.own_id)).is_some_and(|own| own.input_muted)
         });
+        let (server_groups, channel_groups) = self
+            .viewed_session()
+            .map(|s| (s.server_groups.clone(), s.channel_groups.clone()))
+            .unwrap_or_default();
+        let viewed_view = self.viewed_session().and_then(|s| s.view.clone());
         for row in &data {
             let mut shown = tree_row(row);
+            let person = (row.kind == RowKind::Person)
+                .then(|| viewed_view.as_ref().and_then(|view| view.client(row.id as u16)))
+                .flatten();
+            let mut tips: Vec<BadgeTip> = Vec::new();
             if let (true, Some(muted)) = (row.kind == RowKind::Person && row.me, own_mic_muted) {
                 shown.mic_muted = muted;
+            }
+            if row.kind == RowKind::Person && row.me {
+                shown.whispering = row.talking && self.own_whispering;
             }
             if row.kind == RowKind::Person && row.tag.is_empty() && silenced.contains(&(row.id as u16)) {
                 shown.tag = "muted by you".into();
             }
             for icon in &row.icons {
                 if let Some((picture, tinted)) = self.picture(&uid, *icon, client.as_ref(), now) {
+                    if shown.badges < 4 {
+                        tips.push(person.map(|p| badge_tip(*icon, p, &server_groups, &channel_groups)).unwrap_or_default());
+                    }
                     set_badge(&mut shown, picture, tinted);
                 }
             }
+            shown.tips = ModelRc::new(VecModel::from(tips));
             rows.push(shown);
         }
+        let (rows, people) = arrange_columns(rows, self.tree_columns);
+        sync_rows(&self.people, people);
         if self.tree_shown == self.viewed {
             sync_rows(&self.tree, rows);
         } else {
@@ -3178,6 +3705,112 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn person(id: i32) -> TreeRow {
+        TreeRow { kind: 4, id, depth: 1, text: format!("p{id}").into(), ..TreeRow::default() }
+    }
+
+    #[test]
+    fn icons_are_named_after_the_groups_that_carry_them() {
+        let group = |id: u64, name: &str, sort: u32, icon: u32| Group { id, name: name.into(), kind: 1, sort, icon };
+        let server = vec![group(6, "Server Admin", 2, 300), group(7, "Veteran", 1, 300), group(8, "Member", 3, 100)];
+        let channel = vec![group(5, "Channel Admin", 0, 500)];
+        let client = ClientInfo { server_groups: vec![6, 7, 8], channel_group: 5, icon: 900, ..ClientInfo::default() };
+        let named = |icon| {
+            let tip = badge_tip(icon, &client, &server, &channel);
+            (tip.title.to_string(), tip.sub.to_string())
+        };
+        assert_eq!(named(500), ("Channel Admin".into(), "Channel Group".into()));
+        assert_eq!(named(100), ("Member".into(), "Server Group".into()));
+        assert_eq!(named(300), ("Veteran, Server Admin".into(), "Server Groups".into()), "in the server's order");
+        assert_eq!(named(900), ("Own Icon".into(), String::new()));
+        assert_eq!(named(42), (String::new(), String::new()), "an icon nothing explains gets no tooltip");
+        let stranger = ClientInfo { server_groups: vec![8], ..ClientInfo::default() };
+        assert_eq!(badge_tip(300, &stranger, &server, &channel).title, "", "groups they are not in do not count");
+    }
+
+    #[test]
+    fn busy_channels_set_out_their_people_in_columns_read_downwards() {
+        let channel = TreeRow { kind: 3, id: 100, ..TreeRow::default() };
+        let mut rows = vec![channel.clone()];
+        rows.extend((1..=7).map(person));
+        rows.push(TreeRow { kind: 3, id: 101, ..TreeRow::default() });
+        rows.extend((8..=9).map(person));
+        let ids = |rows: &[TreeRow]| -> Vec<(i32, i32)> { rows.iter().map(|row| (row.kind, row.id)).collect() };
+        let (single, none) = arrange_columns(rows.clone(), 1);
+        assert_eq!((ids(&single), none.len()), (ids(&rows), 0), "one column keeps the list as it is");
+        let (out, people) = arrange_columns(rows, 3);
+        let kinds: Vec<i32> = out.iter().map(|row| row.kind).collect();
+        assert_eq!(kinds, vec![3, 5, 5, 5, 3, 4, 4], "7 people take 3 lines; 2 people stay a list");
+        let line = |at: usize| -> Vec<i32> {
+            let row = &out[at];
+            (row.first..row.first + row.cells).map(|i| people[i as usize].id).collect()
+        };
+        assert_eq!(line(1), vec![1, 4, 7]);
+        assert_eq!(line(2), vec![2, 5]);
+        assert_eq!(line(3), vec![3, 6]);
+        assert!(out[1..4].iter().all(|row| row.columns == 3));
+    }
+
+    #[test]
+    fn room_for_more_columns_than_the_people_fill_is_not_left_empty() {
+        let channel = TreeRow { kind: 3, id: 100, ..TreeRow::default() };
+        for (people, room, lines, columns) in [(9, 4, 3, 3), (5, 4, 2, 3), (8, 4, 2, 4), (6, 4, 2, 3), (7, 3, 3, 3)] {
+            let mut rows = vec![channel.clone()];
+            rows.extend((1..=people).map(person));
+            let (out, list) = arrange_columns(rows, room);
+            let grid: Vec<&TreeRow> = out.iter().filter(|row| row.kind == 5).collect();
+            assert_eq!(grid.len(), lines, "{people} people with room for {room} columns");
+            assert!(grid.iter().all(|row| row.columns == columns), "{people} people with room for {room} columns");
+            assert_eq!(list.len(), people as usize, "everyone is shown once");
+        }
+    }
+
+    #[test]
+    fn the_settings_say_which_program_was_last_in_front() {
+        let listed = |name: &str| name == "exefile.exe";
+        assert!(front_seen(Some("exefile.exe"), false, listed).ends_with("exefile.exe, which is in the list."));
+        assert!(front_seen(Some("chrome.exe"), false, listed).ends_with("chrome.exe, which is not in the list."));
+        assert!(front_seen(None, false, listed).starts_with("No other program"));
+        assert!(front_seen(Some("exefile.exe"), true, listed).starts_with("Windows would not give"));
+    }
+
+    #[test]
+    fn a_join_or_leave_says_how_long_ago_it_was() {
+        assert_eq!(event_age(Duration::from_millis(400)), "now");
+        assert_eq!(event_age(Duration::from_millis(1900)), "now");
+        assert_eq!(event_age(Duration::from_secs(3)), "3s");
+    }
+
+    #[test]
+    fn silence_is_only_reported_when_it_points_to_a_muted_microphone() {
+        let quiet = SILENCE_DB;
+        assert_eq!(silence_wait(true, true, true, quiet), Some(SILENCE_HINT_AFTER), "talk key held, nothing comes in");
+        assert_eq!(silence_wait(false, true, false, quiet), None, "push to talk, key up: a gated headset is silent");
+        assert_eq!(silence_wait(false, false, true, quiet), None, "a pause after sound was heard");
+        assert_eq!(silence_wait(false, false, false, quiet), Some(SILENCE_NEVER_HEARD_AFTER));
+        assert_eq!(silence_wait(true, true, true, -50.0), None, "sound is coming in");
+    }
+
+    #[test]
+    fn a_removed_identity_is_moved_aside_and_no_longer_listed() {
+        let root = std::env::temp_dir().join(format!("parrotfish-remove-identity-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let identity = Identity::generate("Parrotfish 1", "Minnow");
+        let path = root.join("identity_1.ini");
+        identity.save(&path).unwrap();
+        assert_eq!(ps_identity::list_identities(&root).len(), 1);
+        let aside = root.join("removed");
+        let kept = set_aside_identity(&path, &aside).unwrap();
+        assert!(!path.exists() && kept.exists());
+        assert!(ps_identity::list_identities(&root).is_empty(), "the removed folder is not searched");
+        identity.save(&path).unwrap();
+        let second = set_aside_identity(&path, &aside).unwrap();
+        assert_ne!(kept, second, "an earlier removal is never overwritten");
+        assert!(same_path(&root.join("removed").join(".."), &root));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     fn synced(old: &[i32], new: &[i32]) -> Vec<i32> {
         let model = VecModel::from(old.to_vec());

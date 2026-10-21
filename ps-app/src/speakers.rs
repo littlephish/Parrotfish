@@ -6,6 +6,8 @@ pub const MAX_LINGER_SECONDS: u32 = 60;
 pub const ROW_HEIGHT: f32 = 22.0;
 pub const PADDING: f32 = 8.0;
 pub const MIN_WIDTH: f32 = 120.0;
+/// Room for an icon, a name of about 17 letters, the longest word ("dropped") and an age.
+pub const MIN_WIDTH_WITH_EVENTS: f32 = 230.0;
 pub const MIN_HEIGHT: f32 = 38.0;
 pub const MAX_SIDE: f32 = 2000.0;
 
@@ -100,8 +102,25 @@ impl Roster {
     }
 }
 
+/// How much of a line may be missing and still count as a whole line. At display scales such as
+/// 125% the window's height in pixels is rounded, which can take a fraction of a pixel off a
+/// height that was set to an exact number of lines.
+#[cfg(test)]
+const LINE_SLACK: f32 = 0.1;
+
+/// How many whole lines fit in a window this tall. The window itself counts them the same way
+/// (`capacity` in speakers.slint); this copy keeps the arithmetic under test.
+#[cfg(test)]
 pub fn capacity(height: f32) -> usize {
-    ((height - 2.0 * PADDING) / ROW_HEIGHT).floor().max(0.0) as usize
+    ((height - 2.0 * PADDING) / ROW_HEIGHT + LINE_SLACK).floor().max(0.0) as usize
+}
+
+/// The nearest height that holds a whole number of lines, and at least one, so that the window
+/// is sized by how many people it shows and never cuts a line in half.
+pub fn snap_height(height: f32) -> f32 {
+    let most = ((MAX_SIDE - 2.0 * PADDING) / ROW_HEIGHT).floor();
+    let lines = ((height - 2.0 * PADDING) / ROW_HEIGHT).round().clamp(1.0, most);
+    2.0 * PADDING + lines * ROW_HEIGHT
 }
 
 fn arrange(lines: &[Line], chosen: &HashSet<usize>) -> Vec<Line> {
@@ -382,10 +401,27 @@ mod tests {
     fn the_height_decides_how_many_lines_fit() {
         assert_eq!(capacity(160.0), 6);
         assert_eq!(capacity(38.0), 1);
-        assert_eq!(capacity(37.0), 0);
+        assert_eq!(capacity(37.0), 1, "a pixel lost to rounding at a display scale still leaves the line");
+        assert_eq!(capacity(35.0), 0);
         assert_eq!(capacity(0.0), 0);
         assert_eq!(capacity(-5.0), 0);
         assert_eq!(capacity(MIN_HEIGHT), 1);
+    }
+
+    #[test]
+    fn the_height_snaps_to_whole_lines() {
+        assert_eq!(snap_height(38.0), 38.0);
+        assert_eq!(snap_height(10.0), MIN_HEIGHT, "never less than one line");
+        assert_eq!(snap_height(48.0), 38.0);
+        assert_eq!(snap_height(50.0), 60.0);
+        assert_eq!(snap_height(160.0), 170.0);
+        assert_eq!(capacity(snap_height(160.0)), 7);
+        assert!(snap_height(99999.0) <= MAX_SIDE);
+        for lines in 1..=20 {
+            let height = 2.0 * PADDING + lines as f32 * ROW_HEIGHT;
+            assert_eq!(snap_height(height), height);
+            assert_eq!(capacity(height), lines);
+        }
     }
 
     #[test]

@@ -87,6 +87,12 @@ fn transmit_loop(
 
 impl AudioEngine {
     pub fn start() -> Self {
+        Self::start_with(None, None)
+    }
+
+    /// Starts the engine with the microphone and speakers to open first, so that a chosen device
+    /// is opened straight away instead of the system default being opened for a moment before it.
+    pub fn start_with(input: Option<String>, output: Option<String>) -> Self {
         let shared = Arc::new(Shared::default());
         let stop = Arc::new(AtomicBool::new(false));
         let (ctl, ctl_rx) = mpsc::channel();
@@ -105,7 +111,7 @@ impl AudioEngine {
         let waker = tx_thread.thread().clone();
         let manager_thread = std::thread::Builder::new()
             .name("ps-voice-devices".into())
-            .spawn(move || device::manage(manager_shared, ctl_rx, manager_ctl, source_tx, far_tx, waker))
+            .spawn(move || device::manage(manager_shared, ctl_rx, manager_ctl, source_tx, far_tx, waker, input, output))
             .expect("failed to spawn audio device thread");
 
         Self {
