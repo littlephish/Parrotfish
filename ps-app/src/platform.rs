@@ -173,9 +173,16 @@ mod imp {
                 unsafe { ShowWindow(window, SHOW_WITHOUT_FOCUS) };
             }
         }
+        // winit keeps WS_CAPTION on frameless windows and hides it in WM_NCCALCSIZE, and Slint sets
+        // the title again whenever a window property changes. Each of those makes Windows paint
+        // the hidden caption bar, which shows as a pale "Parrotfish speaking" box flashing over
+        // the overlay. Without the caption style there is nothing for it to paint.
         let frame = unsafe { GetWindowLongPtrW(window, STYLE) };
-        if frame & MINIMISE_BOX != 0 {
-            unsafe { SetWindowLongPtrW(window, STYLE, frame & !MINIMISE_BOX) };
+        if frame & (MINIMISE_BOX | CAPTION) != 0 {
+            unsafe {
+                SetWindowLongPtrW(window, STYLE, frame & !(MINIMISE_BOX | CAPTION));
+                SetWindowPos(window, 0, 0, 0, 0, 0, KEEPS_SIZE | KEEPS_PLACE | STAYS_INACTIVE | 0x0004 | FRAME_CHANGED);
+            }
         }
         unsafe { SetLayeredWindowAttributes(window, 0, alpha, WHOLE_WINDOW_ALPHA) != 0 }
     }
@@ -361,6 +368,8 @@ mod imp {
     const STAYS_INACTIVE: u32 = 0x0010;
     const STYLE: i32 = -16;
     const MINIMISE_BOX: isize = 0x0002_0000;
+    const CAPTION: isize = 0x00C0_0000;
+    const FRAME_CHANGED: u32 = 0x0020;
     const ON_TOP: isize = 0x0000_0008;
     const ABOVE_ALL: isize = -1;
     const SHOW_WITHOUT_FOCUS: i32 = 4;
