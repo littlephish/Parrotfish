@@ -891,6 +891,26 @@ export component PersonCell inherits Pressable {
             horizontal-stretch: 0;
         }
 
+        if root.entry.talking && root.entry.whispering: VerticalLayout {
+            alignment: center;
+
+            TipSpot {
+                width: 14px;
+                height: 14px;
+                active: root.hovered;
+                px: root.px;
+                py: root.py;
+                title: "Whispering";
+
+                Icon {
+                    source: Icons.ear;
+                    tint: Theme.whisper-text;
+                    width: 14px;
+                    height: 14px;
+                }
+            }
+        }
+
         if root.entry.mic-muted: VerticalLayout {
             alignment: center;
 
