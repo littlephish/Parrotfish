@@ -52,6 +52,8 @@ const METER_FLOOR_DB: f32 = -70.0;
 const SILENCE_DB: f32 = -95.9;
 const SILENCE_HINT_AFTER: Duration = Duration::from_secs(3);
 const SILENCE_NEVER_HEARD_AFTER: Duration = Duration::from_secs(20);
+/// How much quieter people on a server that is not in focus are played.
+const UNFOCUSED_SERVER_DB: f32 = -9.0;
 const DEFAULT_NICKNAME: &str = "ParrotfishUser";
 const HEADER_TILES: usize = 3;
 
@@ -455,6 +457,8 @@ pub struct App {
     mic_gated: bool,
     /// Set while the channel we talk into drops our normal voice (enforced mute, e.g. AFK).
     voice_blocked: Arc<AtomicBool>,
+    /// Which servers were last told they are in the background, to avoid re-locking the mixer.
+    background_sent: Vec<(u16, bool)>,
     tree: Rc<VecModel<TreeRow>>,
     chat: Rc<VecModel<ChatRow>>,
     chat_shown: Option<(u16, u64)>,
@@ -577,6 +581,7 @@ impl App {
             own_whispering: false,
             mic_gated: false,
             voice_blocked: Arc::new(AtomicBool::new(false)),
+            background_sent: Vec::new(),
             tree: Rc::new(VecModel::default()),
             chat: Rc::new(VecModel::default()),
             chat_shown: None,
@@ -1842,6 +1847,24 @@ impl App {
             self.engine.set_codec(codec, quality);
         }
         self.gate_mic();
+    }
+
+    /// With several servers connected, everyone on the ones not in focus is played quieter, so the
+    /// server you are looking at wins when they all talk at once.
+    fn favour_focused_server(&mut self) {
+        let connected: Vec<u16> = self.sessions.iter().filter(|s| s.is_connected()).map(|s| s.id).collect();
+        let wanted: Vec<(u16, bool)> =
+            connected.iter().map(|id| (*id, connected.len() > 1 && self.viewed.is_some_and(|v| v != *id))).collect();
+        if wanted == self.background_sent {
+            return;
+        }
+        for (id, back) in &wanted {
+            self.engine.set_session_background(*id, back.then_some(UNFOCUSED_SERVER_DB));
+        }
+        for (id, _) in self.background_sent.iter().filter(|(id, _)| !connected.contains(id)) {
+            self.engine.set_session_background(*id, None);
+        }
+        self.background_sent = wanted;
     }
 
     fn tell_mics(&mut self, now: Instant) {
@@ -3320,6 +3343,7 @@ impl App {
             self.toggle_sound(w);
         }
         self.watch_whispers();
+        self.favour_focused_server();
         self.publish_person_heard(w);
 
         let level = self.engine.shared().input_level();

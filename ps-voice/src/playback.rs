@@ -640,6 +640,8 @@ pub struct Playback {
     unleveled: HashSet<u32>,
     levelers: HashMap<u32, Leveler>,
     dims: HashMap<u16, Dim>,
+    /// Servers that are not the one in focus: (target gain, gain now).
+    background: HashMap<u16, (f32, f32)>,
     muted: HashSet<u16>,
     leveling: bool,
     unsupported_codec: Option<u8>,
@@ -733,6 +735,19 @@ impl Playback {
         }
     }
 
+    /// Plays everyone on `session` this many dB quieter than the focused server (`None` = full
+    /// level). Unlike the priority dim, this applies to everybody on that server, always.
+    pub fn set_session_background(&mut self, session: u16, db: Option<f32>) {
+        let gain = db.filter(|db| db.is_finite() && *db < 0.0).map_or(1.0, |db| 10f32.powf(db.max(DEEPEST_DIM_DB) / 20.0));
+        match self.background.get_mut(&session) {
+            Some(entry) => entry.0 = gain,
+            None if gain < 1.0 => {
+                self.background.insert(session, (gain, 1.0));
+            }
+            None => {}
+        }
+    }
+
     pub fn set_session_muted(&mut self, session: u16, muted: bool) {
         if muted {
             self.muted.insert(session);
@@ -788,6 +803,7 @@ impl Playback {
         self.unleveled.retain(|key| Self::session_of(*key) != session);
         self.levelers.retain(|key, _| Self::session_of(*key) != session);
         self.dims.remove(&session);
+        self.background.remove(&session);
         self.muted.remove(&session);
     }
 
@@ -838,6 +854,10 @@ impl Playback {
         for dim in self.dims.values_mut() {
             dim.step(dt);
         }
+        for (target, now) in self.background.values_mut() {
+            *now = slew(*now, *target, dt);
+        }
+        self.background.retain(|_, (target, now)| *target < 1.0 || *now < 1.0);
         for (key, talker) in self.talkers.iter_mut() {
             let goal = match self.dims.get(&Self::session_of(*key)) {
                 Some(dim) if !talker.priority && !talker.whisper => dim.now,
@@ -855,7 +875,7 @@ impl Playback {
             }
             let (from, to) = (talker.lowered, slew(talker.lowered, goal, dt));
             talker.lowered = to;
-            let volume = talker.volume;
+            let volume = talker.volume * self.background.get(&Self::session_of(*key)).map_or(1.0, |(_, now)| *now);
             if from == 1.0 && to == 1.0 {
                 for (o, s) in out.iter_mut().zip(talker.out.iter()) {
                     *o += *s * volume;
@@ -1631,6 +1651,33 @@ mod tests {
         p.clear_session(2);
         p.push(2, 7, 0, CODEC_OPUS_VOICE, &b[0]);
         assert!(p.talker(2, 7).is_some(), "a connection made again starts with its sound on");
+    }
+
+    #[test]
+    fn a_server_out_of_focus_is_played_quieter_and_returns_to_full_level() {
+        let a = packets(120, 440.0);
+        let mut p = Playback::new();
+        let mut out = vec![0f32; BLOCK];
+        let mut next = 0;
+        let mut level = |p: &mut Playback, blocks: usize| {
+            let mut last = 0.0;
+            for _ in 0..blocks {
+                p.push(2, 7, next as u16, CODEC_OPUS_VOICE, &a[next]);
+                next += 1;
+                p.mix(&mut out);
+                last = (out.iter().map(|s| s * s).sum::<f32>() / out.len() as f32).sqrt();
+            }
+            last
+        };
+        let full = level(&mut p, 20);
+        assert!(full > 0.01);
+        p.set_session_background(2, Some(-9.0));
+        let quiet = level(&mut p, 40);
+        let ratio_db = 20.0 * (quiet / full).log10();
+        assert!((ratio_db + 9.0).abs() < 1.5, "lowered by {ratio_db:.1} dB, wanted about 9");
+        p.set_session_background(2, None);
+        let back = level(&mut p, 40);
+        assert!((20.0 * (back / full).log10()).abs() < 1.0, "back to full level");
     }
 
     fn tone_at(count: usize, freq: f32, amplitude: f32) -> Vec<Vec<u8>> {
