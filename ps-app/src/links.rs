@@ -51,6 +51,18 @@ pub fn is_link(text: &str, scheme: &str) -> bool {
     after_scheme(text.trim(), scheme).is_some()
 }
 
+const LONGEST_WEB_LINK: usize = 2000;
+
+/// The first `https://` address written in a chat message, without the punctuation or BBCode
+/// that sentences put around it.
+pub fn web_link_in(text: &str) -> Option<String> {
+    let start = text.to_ascii_lowercase().find("https://")?;
+    let rest = &text[start..];
+    let end = rest.find(|c: char| c.is_whitespace() || c.is_control() || c == '[' || c == '<').unwrap_or(rest.len());
+    let link = rest[..end].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '\'', '"']);
+    (link.len() > "https://".len() && link.len() <= LONGEST_WEB_LINK).then(|| link.to_string())
+}
+
 fn unescape(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -280,6 +292,20 @@ pub fn refresh(handlers: &mut dyn Handlers, program: &str, state: &mut Claim) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_web_address_is_found_in_a_chat_message() {
+        let found = |text: &str| web_link_in(text);
+        assert_eq!(found("see https://example.org/rules for more"), Some("https://example.org/rules".into()));
+        assert_eq!(found("it is at https://example.org/a?b=1&c=2."), Some("https://example.org/a?b=1&c=2".into()));
+        assert_eq!(found("(https://example.org/x)"), Some("https://example.org/x".into()));
+        assert_eq!(found("[URL]HTTPS://example.org/x[/URL]"), Some("HTTPS://example.org/x".into()));
+        assert_eq!(found("first https://a.example then https://b.example"), Some("https://a.example".into()));
+        assert_eq!(found("http://example.org is not secure"), None);
+        assert_eq!(found("https:// alone"), None);
+        assert_eq!(found("nothing here"), None);
+        assert_eq!(found(&format!("https://{}", "a".repeat(3000))), None);
+    }
 
     fn read(text: &str) -> Result<Link, Refused> {
         parse(text, SCHEME)

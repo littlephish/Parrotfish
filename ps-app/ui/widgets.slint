@@ -67,6 +67,7 @@ export struct ChatRow {
     kind: int,
     name: string,
     text: string,
+    link: string,
 }
 
 export struct IdentityRow {
@@ -1157,6 +1158,7 @@ export component TreeRowView inherits Rectangle {
 
 export component ChatRowView inherits Rectangle {
     in property <ChatRow> entry;
+    callback open-url(url: string);
 
     HorizontalLayout {
         padding-left: 14px;
@@ -1181,13 +1183,40 @@ export component ChatRowView inherits Rectangle {
             vertical-alignment: top;
         }
 
-        Text {
-            text: root.entry.text;
-            color: root.entry.kind == 0 ? Theme.drift : (root.entry.kind == 3 ? Theme.coral-bright : Theme.foam);
-            font-size: root.entry.kind == 0 ? Theme.small : Theme.chat;
-            wrap: word-wrap;
-            vertical-alignment: top;
+        VerticalLayout {
+            spacing: 2px;
             horizontal-stretch: 1;
+
+            Text {
+                text: root.entry.text;
+                color: root.entry.kind == 0 ? Theme.drift : (root.entry.kind == 3 ? Theme.coral-bright : Theme.foam);
+                font-size: root.entry.kind == 0 ? Theme.small : Theme.chat;
+                wrap: word-wrap;
+                vertical-alignment: top;
+            }
+
+            if root.entry.link != "": Rectangle {
+                height: 20px;
+
+                Text {
+                    x: 0;
+                    width: parent.width;
+                    text: "Open " + root.entry.link;
+                    color: Theme.lure;
+                    font-size: Theme.small;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: pointer;
+                    accessible-role: button;
+                    accessible-label: "Open link " + root.entry.link;
+                    clicked => {
+                        root.open-url(root.entry.link);
+                    }
+                }
+            }
         }
     }
 }
