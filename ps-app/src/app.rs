@@ -238,6 +238,7 @@ fn chat_row(line: &ChatLine) -> ChatRow {
         },
         name: line.name.as_str().into(),
         text: line.text.as_str().into(),
+        link: links::web_link_in(&line.text).unwrap_or_default().into(),
     }
 }
 
@@ -453,6 +454,10 @@ pub struct App {
     own_talking: bool,
     own_whispering: bool,
     mic_gated: bool,
+    /// Set while the channel we talk into drops our normal voice (enforced mute, e.g. AFK).
+    voice_blocked: Arc<AtomicBool>,
+    /// Which servers were last told they are in the background, to avoid re-locking the mixer.
+    background_sent: Vec<(u16, bool)>,
     tree: Rc<VecModel<TreeRow>>,
     chat: Rc<VecModel<ChatRow>>,
     chat_shown: Option<(u16, u64)>,
@@ -574,6 +579,8 @@ impl App {
             own_talking: false,
             own_whispering: false,
             mic_gated: false,
+            voice_blocked: Arc::new(AtomicBool::new(false)),
+            background_sent: Vec::new(),
             tree: Rc::new(VecModel::default()),
             chat: Rc::new(VecModel::default()),
             chat_shown: None,
@@ -647,6 +654,7 @@ impl App {
         w.settings.set_auto_gain(self.settings.auto_gain);
         w.settings.set_even_voices(self.settings.even_voices);
         w.settings.set_priority_dim(self.settings.priority_dim);
+        w.settings.set_unfocused_db(self.settings.unfocused_db);
         w.settings.set_cue_volume(self.settings.cue_volume);
         w.settings.set_join_leave_cues(self.settings.join_leave_cues);
         w.settings.set_check_updates(self.settings.check_updates);
@@ -1277,6 +1285,11 @@ impl App {
         self.settings.even_voices = even_voices;
         let dim_changed = self.settings.priority_dim != priority_dim;
         self.settings.priority_dim = priority_dim;
+        let unfocused = w.settings.get_unfocused_db().clamp(0.0, 24.0);
+        if (self.settings.unfocused_db - unfocused).abs() > f32::EPSILON {
+            self.settings.unfocused_db = unfocused;
+            self.background_sent.clear();
+        }
         self.mark_settings_dirty();
         if dim_changed {
             let ids: Vec<u16> = self.sessions.iter().map(|s| s.id).collect();
@@ -1817,11 +1830,14 @@ impl App {
             self.dirty.sessions = true;
             self.rebuild_lanes(true);
             let lanes = &self.lanes;
+            let blocked = self.voice_blocked.clone();
             *slot = self.mic_target.and_then(|id| self.session(id)).and_then(|s| s.client.clone()).map(|client| {
                 let lanes = lanes.clone();
                 let sink: FrameSink = Box::new(move |lane, codec, data| {
                     if lane == 0 {
-                        client.send_voice(codec, data);
+                        if !blocked.load(Ordering::Relaxed) {
+                            client.send_voice(codec, data);
+                        }
                     } else if let Ok(table) = lanes.lock() {
                         if let Route::Whisper(target) = route(lane, &table) {
                             client.send_whisper(target, codec, data);
@@ -1836,6 +1852,25 @@ impl App {
             self.engine.set_codec(codec, quality);
         }
         self.gate_mic();
+    }
+
+    /// With several servers connected, everyone on the ones not in focus is played quieter, so the
+    /// server you are looking at wins when they all talk at once.
+    fn favour_focused_server(&mut self) {
+        let connected: Vec<u16> = self.sessions.iter().filter(|s| s.is_connected()).map(|s| s.id).collect();
+        let wanted: Vec<(u16, bool)> =
+            connected.iter().map(|id| (*id, connected.len() > 1 && self.viewed.is_some_and(|v| v != *id))).collect();
+        if wanted == self.background_sent {
+            return;
+        }
+        for (id, back) in &wanted {
+            let db = (*back && self.settings.unfocused_db >= 0.5).then(|| -self.settings.unfocused_db);
+            self.engine.set_session_background(*id, db);
+        }
+        for (id, _) in self.background_sent.iter().filter(|(id, _)| !connected.contains(id)) {
+            self.engine.set_session_background(*id, None);
+        }
+        self.background_sent = wanted;
     }
 
     fn tell_mics(&mut self, now: Instant) {
@@ -1970,14 +2005,20 @@ impl App {
         w.main.set_prompt_open(true);
     }
 
+    /// Whether the channel we are talking into (not necessarily the one on screen) drops our voice.
+    fn mic_target_blocked(&self) -> bool {
+        self.mic_target
+            .and_then(|id| self.session(id))
+            .filter(|s| s.is_connected())
+            .and_then(|s| s.view.as_ref())
+            .is_some_and(|view| view.muted_by_channel())
+    }
+
     fn cannot_talk(&self) -> bool {
         let Some(view) = self.viewed_session().filter(|s| s.is_connected()).and_then(|s| s.view.as_ref()) else {
             return false;
         };
-        let (Some(own), Some(node)) = (view.client(view.own_id), view.own_channel_node()) else {
-            return false;
-        };
-        node.channel.needed_talk_power > 0 && own.talk_power < node.channel.needed_talk_power && !own.is_talker
+        view.muted_by_channel()
     }
 
     pub fn person_ask(&mut self, w: &Windows) {
@@ -3308,14 +3349,30 @@ impl App {
             self.toggle_sound(w);
         }
         self.watch_whispers();
+        self.favour_focused_server();
         self.publish_person_heard(w);
 
         let level = self.engine.shared().input_level();
         let position = level_position(level);
         let transmitting = self.engine.is_transmitting();
         let heard = self.mic_target.and_then(|id| self.session(id)).is_some_and(|s| s.mic_seems_on);
-        let on_air = transmitting && heard && !self.whisper_goes_nowhere();
-        let whispering = on_air && self.engine.shared().on_air_lane().is_some_and(|lane| lane != 0);
+        let blocked = self.mic_target_blocked();
+        if self.voice_blocked.swap(blocked, Ordering::Relaxed) != blocked && blocked {
+            // Tell the server our speech ended; frames stop reaching it from here on.
+            if let Some((client, codec)) = self
+                .mic_target
+                .and_then(|id| self.session(id))
+                .and_then(|s| s.client.clone().map(|c| (c, s.own_codec().0)))
+            {
+                if self.engine.shared().on_air_lane() == Some(0) {
+                    client.send_voice(codec, &[]);
+                }
+            }
+        }
+        let on_lane = self.engine.shared().on_air_lane();
+        let silenced = blocked && on_lane == Some(0);
+        let on_air = transmitting && heard && !silenced && !self.whisper_goes_nowhere();
+        let whispering = on_air && on_lane.is_some_and(|lane| lane != 0);
         if on_air != self.own_talking || whispering != self.own_whispering {
             self.own_talking = on_air;
             self.own_whispering = whispering;
