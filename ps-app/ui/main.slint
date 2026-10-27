@@ -180,6 +180,7 @@ export component ParrotfishApp inherits Window {
     in property <[ChatRow]> chat;
     in property <ChatRow> last-chat;
     in property <bool> has-chat;
+    in property <[bool]> chat-unread;
     in property <bool> viewing;
     in property <string> server-name;
     in property <string> server-detail;
@@ -261,6 +262,13 @@ export component ParrotfishApp inherits Window {
     callback row-activated(row: TreeRow);
     callback join-with-password();
     callback send-chat();
+    callback chat-view-changed();
+    changed chat-open => {
+        root.chat-view-changed();
+    }
+    changed chat-target => {
+        root.chat-view-changed();
+    }
     callback open-url(url: string);
     callback toggle-mic();
     callback toggle-sound();
@@ -680,6 +688,7 @@ export component ParrotfishApp inherits Window {
 
                         Segmented {
                             options: root.chat-peer == "" ? [root.channel-name == "" ? "Channel" : root.channel-name, "Server"] : [root.channel-name == "" ? "Channel" : root.channel-name, "Server", root.chat-peer];
+                            marks: root.chat-unread;
                             current <=> root.chat-target;
                         }
 
