@@ -27,7 +27,7 @@ use crate::mic;
 use crate::scale::ScaleWatch;
 use crate::speakers::{self, Keeper, Member, Room, Roster, Seen};
 use crate::session::{
-    self, build_rows_folded, connect_failure, mic_move, next_view, ChannelIcon, ChatKind, ChatLine, ConnectRequest,
+    self, build_rows_folded, connect_failure, mic_move, next_view, ChannelIcon, ChatKind, ChatLine, ChatTab, ConnectRequest,
     DialogField, FoldMode, MicMove, Outcome, Peer, RowData, RowKind, Session,
 };
 use crate::settings::{self, ProgramSpot, Settings, Voice, MAX_REMEMBERED_VOICES};
@@ -460,7 +460,7 @@ pub struct App {
     background_sent: Vec<(u16, bool)>,
     tree: Rc<VecModel<TreeRow>>,
     chat: Rc<VecModel<ChatRow>>,
-    chat_shown: Option<(u16, u64)>,
+    chat_shown: Option<(u16, ChatTab, u64)>,
     inputs: Vec<DeviceInfo>,
     outputs: Vec<DeviceInfo>,
     level_jobs: Vec<LevelJob>,
@@ -1708,7 +1708,7 @@ impl App {
         session.folds.hide_queries = !self.settings.show_queries;
         session.allow_whispers = self.settings.allow_whispers;
         session.whisper_lines = self.settings.whisper_lines;
-        session.push_line(ChatKind::System, "", &format!("Connecting to {}", request.address));
+        session.notice(ChatKind::System, &format!("Connecting to {}", request.address));
         self.sessions.push(session);
         match self.launch(id, !request.background) {
             Ok(()) => self.view_server(w, id),
@@ -2425,6 +2425,7 @@ impl App {
         w.main.set_chat_target(2);
         w.main.set_chat_open(true);
         self.dirty.sessions = true;
+        self.dirty.chat = true;
     }
 
     pub fn person_poke(&mut self, w: &Windows) {
@@ -2443,7 +2444,7 @@ impl App {
             return;
         };
         client.poke(client_id, &text);
-        session.system(&if text.is_empty() { format!("You poked {name}") } else { format!("You poked {name}: {text}") });
+        session.channel_line(&if text.is_empty() { format!("You poked {name}") } else { format!("You poked {name}: {text}") });
         self.dirty.chat |= viewed;
     }
 
@@ -2550,7 +2551,7 @@ impl App {
             let relaunched = reached && {
                 if let Some(session) = self.session_mut(id) {
                     session.waiting_level = None;
-                    session.push_line(ChatKind::System, "", "Your identity is strong enough now. Connecting again.");
+                    session.notice(ChatKind::System, "Your identity is strong enough now. Connecting again.");
                 }
                 self.launch(id, false).is_ok()
             };
@@ -3605,6 +3606,7 @@ impl App {
         let peer = self.viewed_session().and_then(|s| s.peer.as_ref()).map(|peer| peer.name.clone()).unwrap_or_default();
         if peer.is_empty() && w.main.get_chat_target() == 2 {
             w.main.set_chat_target(0);
+            self.dirty.chat = true;
         }
         w.main.set_chat_peer(peer.into());
         w.main.set_initials(initials(&nickname).into());
@@ -3677,38 +3679,50 @@ impl App {
     }
 
     fn publish_chat(&mut self, w: &Windows) {
-        let Some(session) = self.viewed_session() else {
+        let tab = ChatTab::from_index(w.main.get_chat_target());
+        let viewed = self.viewed;
+        let Some(session) = self.sessions.iter_mut().find(|s| Some(s.id) == viewed) else {
             self.chat.set_vec(Vec::<ChatRow>::new());
             self.chat_shown = None;
             w.main.set_has_chat(false);
+            w.main.set_chat_unread(ModelRc::new(VecModel::from(vec![false; 3])));
             return;
         };
-        let (id, total, length) = (session.id, session.chat_total, session.chat.len());
+        if w.main.get_chat_open() {
+            session.tab_unread[tab.index()] = false;
+        }
+        let (id, total, length) = (session.id, session.tab_totals[tab.index()], session.tab_lines(tab).count());
         let fresh = match self.chat_shown {
-            Some((shown_id, shown_total)) if shown_id == id && total >= shown_total => {
+            Some((shown_id, shown_tab, shown_total)) if shown_id == id && shown_tab == tab && total >= shown_total => {
                 Some((total - shown_total) as usize).filter(|added| *added <= length)
             }
             _ => None,
         };
         match fresh {
             Some(added) => {
-                for line in session.chat.iter().skip(length - added) {
+                for line in session.tab_lines(tab).skip(length - added) {
                     self.chat.push(chat_row(line));
                 }
                 while self.chat.row_count() > length {
                     self.chat.remove(0);
                 }
             }
-            None => self.chat.set_vec(session.chat.iter().map(chat_row).collect::<Vec<ChatRow>>()),
+            None => self.chat.set_vec(session.tab_lines(tab).map(chat_row).collect::<Vec<ChatRow>>()),
         }
-        match session.chat.back() {
+        // The closed bar previews what was said to the person, not the server's comings and goings.
+        match session.chat.iter().rev().find(|line| line.tab != ChatTab::Server) {
             Some(line) => {
                 w.main.set_last_chat(chat_row(line));
                 w.main.set_has_chat(true);
             }
             None => w.main.set_has_chat(false),
         }
-        self.chat_shown = Some((id, total));
+        w.main.set_chat_unread(ModelRc::new(VecModel::from(session.tab_unread.to_vec())));
+        self.chat_shown = Some((id, tab, total));
+    }
+
+    pub fn chat_view_changed(&mut self) {
+        self.dirty.chat = true;
     }
 
     pub fn refresh(&mut self, w: &Windows) {
@@ -3730,7 +3744,8 @@ impl App {
         if dirty.speakers || dirty.tree || dirty.sessions {
             self.publish_speakers(w);
         }
-        if dirty.chat {
+        // Publishing the sessions can move the chat back to the channel tab.
+        if dirty.chat || std::mem::take(&mut self.dirty.chat) {
             self.publish_chat(w);
         }
         if dirty.shortcuts {
