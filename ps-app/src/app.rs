@@ -1707,6 +1707,7 @@ impl App {
         session.folds.mode = FoldMode::from_index(self.settings.fold_mode);
         session.folds.hide_queries = !self.settings.show_queries;
         session.allow_whispers = self.settings.allow_whispers;
+        session.whisper_lines = self.settings.whisper_lines;
         session.push_line(ChatKind::System, "", &format!("Connecting to {}", request.address));
         self.sessions.push(session);
         match self.launch(id, !request.background) {

@@ -605,14 +605,16 @@ export component ParrotfishApp inherits Window {
                     padding-top: 8px;
                     spacing: 6px;
 
-                    Pressable {
+                    chat-bar := Pressable {
                         height: 28px;
                         border-radius: 6px;
+                        background: self.hovered ? Theme.current : transparent;
                         clicked => {
                             root.chat-open = true;
                         }
 
                         HorizontalLayout {
+                            padding-left: 4px;
                             spacing: 8px;
 
                             if root.has-chat: Dim {
@@ -635,6 +637,16 @@ export component ParrotfishApp inherits Window {
                                 vertical-alignment: center;
                                 overflow: elide;
                                 horizontal-stretch: 1;
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                padding-right: 4px;
+
+                                Icon {
+                                    source: Icons.chevron-up;
+                                    tint: chat-bar.hovered ? Theme.foam : Theme.drift;
+                                }
                             }
                         }
                     }

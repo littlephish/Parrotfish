@@ -112,6 +112,7 @@ export component SettingsWindow inherits Window {
     in property <string> mute-mic-key;
     in property <string> mute-sound-key;
     in-out property <bool> allow-whispers: true;
+    in-out property <bool> whisper-lines;
 
     in property <bool> editor-open;
     in property <string> editor-title;
@@ -1322,11 +1323,23 @@ export component SettingsWindow inherits Window {
                                 text: "Incoming whispers";
                             }
 
-                            Check {
-                                text: "Let others whisper to me";
-                                checked <=> root.allow-whispers;
-                                toggled => {
-                                    root.shortcut-changed();
+                            VerticalLayout {
+                                spacing: 4px;
+
+                                Check {
+                                    text: "Let others whisper to me";
+                                    checked <=> root.allow-whispers;
+                                    toggled => {
+                                        root.shortcut-changed();
+                                    }
+                                }
+
+                                Check {
+                                    text: "Note in the chat when someone whispers to me";
+                                    checked <=> root.whisper-lines;
+                                    toggled => {
+                                        root.shortcut-changed();
+                                    }
                                 }
                             }
                         }
