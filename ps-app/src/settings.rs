@@ -117,6 +117,8 @@ pub struct Settings {
     pub mute_sound_key: Chord,
     pub links: Claim,
     pub allow_whispers: bool,
+    /// Whether a "... is whispering to you" line goes into the chat history.
+    pub whisper_lines: bool,
     pub fold_mode: i32,
     pub column_view: bool,
     pub show_queries: bool,
@@ -172,6 +174,7 @@ impl Default for Settings {
             mute_sound_key: Chord::default(),
             links: Claim::default(),
             allow_whispers: true,
+            whisper_lines: false,
             fold_mode: 1,
             column_view: false,
             show_queries: false,
@@ -373,6 +376,7 @@ impl Settings {
                 "links_command" => s.links.command = value.to_string(),
                 "links_previous" => s.links.previous = value.to_string(),
                 "allow_whispers" => s.allow_whispers = value != "0",
+                "whisper_lines" => s.whisper_lines = value == "1",
                 "fold_mode" => s.fold_mode = value.parse().unwrap_or(1).clamp(0, 2),
                 "column_view" => s.column_view = value == "1",
                 "show_queries" => s.show_queries = value == "1",
@@ -487,6 +491,7 @@ impl Settings {
             put("links_previous", self.links.previous.clone());
         }
         put("allow_whispers", u8::from(self.allow_whispers).to_string());
+        put("whisper_lines", u8::from(self.whisper_lines).to_string());
         put("fold_mode", self.fold_mode.to_string());
         put("column_view", u8::from(self.column_view).to_string());
         put("show_queries", u8::from(self.show_queries).to_string());
@@ -964,14 +969,14 @@ mod tests {
         assert_eq!(Settings::parse(&text), new);
         assert_eq!(Settings::parse("talk_release_ms=99999\n").talk_release_ms, 1000);
         assert_eq!(Settings::default().talk_release_ms, 0);
-        let whisper = Settings::parse("reply_key=96\nallow_whispers=0\n");
+        let whisper = Settings::parse("reply_key=96\nallow_whispers=0\nwhisper_lines=1\n");
         assert_eq!(whisper.reply_key, Chord::new(&[0x60]));
         let mutes = Settings::parse("mute_mic_key=162+77\nmute_sound_key=123\n");
         assert_eq!((mutes.mute_mic_key.keys().len(), mutes.mute_sound_key.clone()), (2, Chord::new(&[123])));
         assert_eq!(Settings::parse(&mutes.serialize()), mutes);
-        assert!(!whisper.allow_whispers);
+        assert!(!whisper.allow_whispers && whisper.whisper_lines);
         assert_eq!(Settings::parse(&whisper.serialize()), whisper);
-        assert!(Settings::default().allow_whispers && Settings::default().reply_key.is_empty());
+        assert!(Settings::default().allow_whispers && !Settings::default().whisper_lines && Settings::default().reply_key.is_empty());
     }
 
     #[test]

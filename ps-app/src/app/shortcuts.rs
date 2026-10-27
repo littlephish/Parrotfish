@@ -748,6 +748,14 @@ impl App {
             self.dirty.tree = true;
             self.dirty.sessions = true;
         }
+        let lines = w.settings.get_whisper_lines();
+        if lines != self.settings.whisper_lines {
+            self.settings.whisper_lines = lines;
+            for session in &mut self.sessions {
+                session.whisper_lines = lines;
+            }
+            self.mark_settings_dirty();
+        }
         self.dirty.shortcuts = true;
     }
 
@@ -887,6 +895,7 @@ impl App {
         w.settings.set_mute_mic_key(name(&self.settings.mute_mic_key).into());
         w.settings.set_mute_sound_key(name(&self.settings.mute_sound_key).into());
         w.settings.set_allow_whispers(self.settings.allow_whispers);
+        w.settings.set_whisper_lines(self.settings.whisper_lines);
         w.settings.set_fold_mode(self.settings.fold_mode);
         w.settings.set_column_view(self.settings.column_view);
         w.settings.set_show_queries(self.settings.show_queries);

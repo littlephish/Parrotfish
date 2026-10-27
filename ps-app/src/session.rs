@@ -552,13 +552,24 @@ fn leave_words(reason: &str) -> (&'static str, bool) {
     }
 }
 
-fn describe_leave(nickname: &str, reason: &str) -> String {
+/// The chat line for someone leaving; `ours` is whether they were in the person's channel.
+fn describe_leave(nickname: &str, reason: &str, ours: bool) -> String {
     if reason.starts_with("kicked") || reason.starts_with("banned") {
         format!("{nickname} was {reason}")
     } else if let Some(rest) = reason.strip_prefix("connection lost") {
         format!("{nickname} lost connection{rest}")
     } else if reason.starts_with("left view") {
-        format!("{nickname} went out of view")
+        if ours {
+            format!("{nickname} left your channel")
+        } else {
+            format!("{nickname} moved to a channel you can't see")
+        }
+    } else if let Some(rest) = reason.strip_prefix("left") {
+        if ours {
+            format!("{nickname} left your channel and went offline{rest}")
+        } else {
+            format!("{nickname} went offline{rest}")
+        }
     } else {
         format!("{nickname} {reason}")
     }
@@ -734,6 +745,7 @@ pub struct Session {
     pub channel_groups: Vec<Group>,
     pub folds: Folds,
     pub allow_whispers: bool,
+    pub whisper_lines: bool,
     pub reply_to: Option<(u16, String)>,
     pub server_uid: String,
     pub start_pending: bool,
@@ -779,6 +791,7 @@ impl Session {
             channel_groups: Vec::new(),
             folds: Folds::default(),
             allow_whispers: true,
+            whisper_lines: false,
             reply_to: None,
             server_uid: String::new(),
             start_pending: false,
@@ -1074,7 +1087,7 @@ impl Session {
                     let now = Instant::now();
                     let recent = self.whispered.get(&client_id).is_some_and(|at| now.duration_since(*at) < WHISPER_LINE_GAP);
                     self.whispered.insert(client_id, now);
-                    if !recent && !name.is_empty() {
+                    if self.whisper_lines && !recent && !name.is_empty() {
                         self.system(&format!("{name} is whispering to you"));
                     }
                 }
@@ -1116,23 +1129,26 @@ impl Session {
                 out.notice = Some(line);
             }
             Event::ClientEntered { client } => {
-                if !client.is_query && self.view.as_ref().is_some_and(|view| view.own_channel == client.channel) {
+                let ours = !client.is_query && self.view.as_ref().is_some_and(|view| view.own_channel == client.channel);
+                if ours {
                     out.cue = Some(Cue::Joined);
                     self.note_channel_event(&client.nickname, true, true, "online");
                 }
                 if !client.is_query {
-                    self.system(&format!("{} connected", client.nickname));
+                    let place = if ours { " in your channel" } else { "" };
+                    self.system(&format!("{} came online{place}", client.nickname));
                 }
             }
             Event::ClientLeft { client, reason } => {
                 out.forget.push(client.id);
-                if !client.is_query && self.view.as_ref().is_some_and(|view| view.own_channel == client.channel) {
+                let ours = !client.is_query && self.view.as_ref().is_some_and(|view| view.own_channel == client.channel);
+                if ours {
                     out.cue = Some(Cue::Left);
                     let (what, server) = leave_words(&reason);
                     self.note_channel_event(&client.nickname, false, server, what);
                 }
                 if !client.is_query {
-                    self.system(&describe_leave(&client.nickname, &reason));
+                    self.system(&describe_leave(&client.nickname, &reason, ours));
                 }
             }
             Event::ClientMoved { client, from, to } => {
@@ -1155,7 +1171,12 @@ impl Session {
                     self.system(&format!("You joined {channel}"));
                 } else {
                     out.forget.push(client.id);
-                    self.system(&format!("{} moved to {channel}", client.nickname));
+                    let line = match out.cue {
+                        Some(Cue::Joined) => format!("{} joined your channel", client.nickname),
+                        Some(Cue::Left) => format!("{} left your channel for {channel}", client.nickname),
+                        _ => format!("{} moved to {channel}", client.nickname),
+                    };
+                    self.system(&line);
                 }
             }
             Event::ServerError { id, message, extra } => {
@@ -1959,7 +1980,7 @@ mod tests {
 
         let out = s.apply(Event::ClientLeft { client: person(9, 1, "Coralline"), reason: "left (bye)".into() });
         assert_eq!(out.forget, vec![9]);
-        assert_eq!(s.chat.back().unwrap().text, "Coralline left (bye)");
+        assert_eq!(s.chat.back().unwrap().text, "Coralline left your channel and went offline (bye)");
 
         s.voices_applied.insert(9, ("someone".into(), 0.25, true));
         s.priority_applied.insert(8);
@@ -1974,7 +1995,11 @@ mod tests {
 
         let out = s.apply(Event::ClientMoved { client: person(8, 1, "Marlin"), from: 1, to: 2 });
         assert_eq!(out.forget, vec![8]);
-        assert_eq!(s.chat.back().unwrap().text, "Marlin moved to Radio");
+        assert_eq!(s.chat.back().unwrap().text, "Marlin left your channel for Radio");
+        s.apply(Event::ClientMoved { client: person(8, 2, "Marlin"), from: 2, to: 1 });
+        assert_eq!(s.chat.back().unwrap().text, "Marlin joined your channel");
+        s.apply(Event::ClientMoved { client: person(8, 2, "Marlin"), from: 2, to: 3 });
+        assert_eq!(s.chat.back().unwrap().text, "Marlin moved to Squad Alpha");
 
         s.apply(Event::ServerError { id: 0x030d, message: "invalid channel password".into(), extra: String::new() });
         assert_eq!(s.chat.back().unwrap().kind, ChatKind::Error);
@@ -2026,6 +2051,12 @@ mod tests {
         s.apply(Event::Connected { client_id: 7, server: ServerInfo { name: "Reef Runners".into(), ..ServerInfo::default() } });
         s.apply(Event::View(sample_view()));
         let lines = s.chat.len();
+        let quiet = s.apply(Event::Talking { client_id: 8, talking: true, whisper: true });
+        assert_eq!(quiet.whisper_from, Some(8));
+        assert_eq!(s.chat.len(), lines);
+        s.apply(Event::Talking { client_id: 8, talking: false, whisper: false });
+        s.whispered.clear();
+        s.whisper_lines = true;
         let out = s.apply(Event::Talking { client_id: 8, talking: true, whisper: true });
         assert_eq!(out.whisper_from, Some(8));
         assert_eq!(s.chat.back().unwrap().text, "Marlin is whispering to you");
@@ -2243,12 +2274,15 @@ mod tests {
 
     #[test]
     fn leaving_reads_naturally() {
-        assert_eq!(describe_leave("Marlin", "left"), "Marlin left");
+        assert_eq!(describe_leave("Marlin", "left", false), "Marlin went offline");
+        assert_eq!(describe_leave("Marlin", "left (bye)", true), "Marlin left your channel and went offline (bye)");
+        assert_eq!(describe_leave("Marlin", "left view", true), "Marlin left your channel");
+        assert_eq!(describe_leave("Marlin", "left view", false), "Marlin moved to a channel you can't see");
         assert_eq!(
-            describe_leave("Marlin", "kicked from the server by Coralline (spam)"),
+            describe_leave("Marlin", "kicked from the server by Coralline (spam)", true),
             "Marlin was kicked from the server by Coralline (spam)"
         );
-        assert_eq!(describe_leave("Marlin", "connection lost"), "Marlin lost connection");
+        assert_eq!(describe_leave("Marlin", "connection lost", false), "Marlin lost connection");
         assert_eq!(people_online(1), "1 person online");
         assert_eq!(people_online(12), "12 people online");
     }
