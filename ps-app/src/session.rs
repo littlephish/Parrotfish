@@ -552,13 +552,24 @@ fn leave_words(reason: &str) -> (&'static str, bool) {
     }
 }
 
-fn describe_leave(nickname: &str, reason: &str) -> String {
+/// The chat line for someone leaving; `ours` is whether they were in the person's channel.
+fn describe_leave(nickname: &str, reason: &str, ours: bool) -> String {
     if reason.starts_with("kicked") || reason.starts_with("banned") {
         format!("{nickname} was {reason}")
     } else if let Some(rest) = reason.strip_prefix("connection lost") {
         format!("{nickname} lost connection{rest}")
     } else if reason.starts_with("left view") {
-        format!("{nickname} went out of view")
+        if ours {
+            format!("{nickname} left your channel")
+        } else {
+            format!("{nickname} moved to a channel you can't see")
+        }
+    } else if let Some(rest) = reason.strip_prefix("left") {
+        if ours {
+            format!("{nickname} left your channel and went offline{rest}")
+        } else {
+            format!("{nickname} went offline{rest}")
+        }
     } else {
         format!("{nickname} {reason}")
     }
@@ -572,9 +583,32 @@ pub enum ChatKind {
     Error,
 }
 
+/// The chat tab a line is shown in, in the order the tabs appear.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatTab {
+    Channel,
+    Server,
+    Private,
+}
+
+impl ChatTab {
+    pub fn from_index(index: i32) -> Self {
+        match index {
+            1 => ChatTab::Server,
+            2 => ChatTab::Private,
+            _ => ChatTab::Channel,
+        }
+    }
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatLine {
     pub time: String,
+    pub tab: ChatTab,
     pub kind: ChatKind,
     pub name: String,
     pub text: String,
@@ -721,6 +755,9 @@ pub struct Session {
     pub view: Option<ServerView>,
     pub chat: VecDeque<ChatLine>,
     pub chat_total: u64,
+    /// Lines ever added to each tab, and whether one holds a message or error not yet looked at.
+    pub tab_totals: [u64; 3],
+    pub tab_unread: [bool; 3],
     pub phase: Phase,
     pub state_text: String,
     pub ping: String,
@@ -734,6 +771,7 @@ pub struct Session {
     pub channel_groups: Vec<Group>,
     pub folds: Folds,
     pub allow_whispers: bool,
+    pub whisper_lines: bool,
     pub reply_to: Option<(u16, String)>,
     pub server_uid: String,
     pub start_pending: bool,
@@ -766,6 +804,8 @@ impl Session {
             view: None,
             chat: VecDeque::new(),
             chat_total: 0,
+            tab_totals: [0; 3],
+            tab_unread: [false; 3],
             phase: Phase::Connecting,
             state_text: "Connecting".to_string(),
             ping: String::new(),
@@ -779,6 +819,7 @@ impl Session {
             channel_groups: Vec::new(),
             folds: Folds::default(),
             allow_whispers: true,
+            whisper_lines: false,
             reply_to: None,
             server_uid: String::new(),
             start_pending: false,
@@ -866,7 +907,9 @@ impl Session {
         }
     }
 
-    pub fn push_line(&mut self, kind: ChatKind, name: &str, text: &str) {
+    /// Adds a line to one tab; each tab keeps its own last `MAX_CHAT_LINES`, so a busy
+    /// server log never pushes the channel's messages out.
+    pub fn push_line(&mut self, tab: ChatTab, kind: ChatKind, name: &str, text: &str) {
         let text = tidy(text);
         if text.is_empty() {
             return;
@@ -874,19 +917,41 @@ impl Session {
         let stamp = platform::timestamp();
         self.chat.push_back(ChatLine {
             time: stamp.chars().take(5).collect(),
+            tab,
             kind,
             name: name.trim().to_string(),
             text,
         });
         self.chat_total += 1;
-        while self.chat.len() > MAX_CHAT_LINES {
-            self.chat.pop_front();
+        self.tab_totals[tab.index()] += 1;
+        self.tab_unread[tab.index()] |= matches!(kind, ChatKind::Message | ChatKind::Error);
+        if self.tab_lines(tab).count() > MAX_CHAT_LINES {
+            if let Some(oldest) = self.chat.iter().position(|line| line.tab == tab) {
+                self.chat.remove(oldest);
+            }
         }
     }
 
+    /// A line for the server log.
     pub fn system(&mut self, text: &str) {
-        self.push_line(ChatKind::System, "", text);
+        self.push_line(ChatTab::Server, ChatKind::System, "", text);
     }
+
+    /// A line about the person's own channel, or meant for them wherever they are looking.
+    pub fn channel_line(&mut self, text: &str) {
+        self.push_line(ChatTab::Channel, ChatKind::System, "", text);
+    }
+
+    /// A line about the connection itself, which belongs in both the channel and the server log.
+    pub fn notice(&mut self, kind: ChatKind, text: &str) {
+        self.push_line(ChatTab::Server, kind, "", text);
+        self.push_line(ChatTab::Channel, kind, "", text);
+    }
+
+    pub fn tab_lines(&self, tab: ChatTab) -> impl DoubleEndedIterator<Item = &ChatLine> {
+        self.chat.iter().filter(move |line| line.tab == tab)
+    }
+
 
     pub fn channel_name(&self, id: u64) -> String {
         self.view
@@ -994,7 +1059,7 @@ impl Session {
                     self.name = server.name.trim().to_string();
                 }
                 let shown = if server.name.trim().is_empty() { self.name.clone() } else { server.name.clone() };
-                self.system(&format!("Connected to {shown}"));
+                self.notice(ChatKind::System, &format!("Connected to {shown}"));
                 if !server.welcome_message.trim().is_empty() {
                     self.system(&server.welcome_message);
                 }
@@ -1074,16 +1139,20 @@ impl Session {
                     let now = Instant::now();
                     let recent = self.whispered.get(&client_id).is_some_and(|at| now.duration_since(*at) < WHISPER_LINE_GAP);
                     self.whispered.insert(client_id, now);
-                    if !recent && !name.is_empty() {
-                        self.system(&format!("{name} is whispering to you"));
+                    if self.whisper_lines && !recent && !name.is_empty() {
+                        self.channel_line(&format!("{name} is whispering to you"));
                     }
                 }
             }
             Event::TextMessage { target, from_id, from_name, text } => {
                 let mine = self.own_id != 0 && from_id == self.own_id;
+                let tab = match target {
+                    TextTarget::Channel => ChatTab::Channel,
+                    TextTarget::Server => ChatTab::Server,
+                    TextTarget::Client(_) => ChatTab::Private,
+                };
                 let name = match target {
-                    TextTarget::Channel => from_name,
-                    TextTarget::Server => format!("{from_name} (server)"),
+                    TextTarget::Channel | TextTarget::Server => from_name,
                     TextTarget::Client(to) if mine => {
                         let peer = self.view.as_ref().and_then(|view| view.client(to)).map(|client| client.nickname.clone());
                         format!("to {}", peer.unwrap_or_else(|| "someone".to_string()))
@@ -1103,7 +1172,7 @@ impl Session {
                         format!("{from_name} (private)")
                     }
                 };
-                self.push_line(if mine { ChatKind::Mine } else { ChatKind::Message }, &name, &text);
+                self.push_line(tab, if mine { ChatKind::Mine } else { ChatKind::Message }, &name, &text);
             }
             Event::Poke { from_name, text } => {
                 let line = if text.trim().is_empty() {
@@ -1111,28 +1180,39 @@ impl Session {
                 } else {
                     format!("{from_name} poked you: {}", tidy(&text))
                 };
-                self.system(&line);
+                self.channel_line(&line);
                 out.cue = Some(Cue::Poke);
                 out.notice = Some(line);
             }
             Event::ClientEntered { client } => {
-                if !client.is_query && self.view.as_ref().is_some_and(|view| view.own_channel == client.channel) {
+                let ours = !client.is_query && self.view.as_ref().is_some_and(|view| view.own_channel == client.channel);
+                if ours {
                     out.cue = Some(Cue::Joined);
                     self.note_channel_event(&client.nickname, true, true, "online");
                 }
                 if !client.is_query {
-                    self.system(&format!("{} connected", client.nickname));
+                    if ours {
+                        self.channel_line(&format!("{} came online in your channel", client.nickname));
+                    } else {
+                        self.system(&format!("{} came online", client.nickname));
+                    }
                 }
             }
             Event::ClientLeft { client, reason } => {
                 out.forget.push(client.id);
-                if !client.is_query && self.view.as_ref().is_some_and(|view| view.own_channel == client.channel) {
+                let ours = !client.is_query && self.view.as_ref().is_some_and(|view| view.own_channel == client.channel);
+                if ours {
                     out.cue = Some(Cue::Left);
                     let (what, server) = leave_words(&reason);
                     self.note_channel_event(&client.nickname, false, server, what);
                 }
                 if !client.is_query {
-                    self.system(&describe_leave(&client.nickname, &reason));
+                    let line = describe_leave(&client.nickname, &reason, ours);
+                    if ours {
+                        self.channel_line(&line);
+                    } else {
+                        self.system(&line);
+                    }
                 }
             }
             Event::ClientMoved { client, from, to } => {
@@ -1152,10 +1232,14 @@ impl Session {
                 if client.id == self.own_id {
                     out.forget_all = true;
                     self.forget_voices();
-                    self.system(&format!("You joined {channel}"));
+                    self.channel_line(&format!("You joined {channel}"));
                 } else {
                     out.forget.push(client.id);
-                    self.system(&format!("{} moved to {channel}", client.nickname));
+                    match out.cue {
+                        Some(Cue::Joined) => self.channel_line(&format!("{} joined your channel", client.nickname)),
+                        Some(Cue::Left) => self.channel_line(&format!("{} left your channel for {channel}", client.nickname)),
+                        _ => self.system(&format!("{} moved to {channel}", client.nickname)),
+                    }
                 }
             }
             Event::ServerError { id, message, extra } => {
@@ -1166,14 +1250,15 @@ impl Session {
                     out.whisper_unheard = true;
                 } else {
                     let text = server_error_text(id, &message, &extra);
-                    self.push_line(ChatKind::Error, "", &text);
+                    self.notice(ChatKind::Error, &text);
                 }
             }
             Event::SecurityLevelRequired(level) => {
                 self.waiting_level = Some(level);
-                self.system(&format!(
-                    "This server asks for identity security level {level}. Working on it, which can take a while."
-                ));
+                self.notice(
+                    ChatKind::System,
+                    &format!("This server asks for identity security level {level}. Working on it, which can take a while."),
+                );
                 out.level = Some(level);
             }
             Event::Groups { server_groups, channel_groups } => {
@@ -1224,7 +1309,7 @@ impl Session {
                         (self.request.channel, self.request.channel_id) = self.last_channel.clone();
                     }
                     let line = format!("{}. Trying again in {} s.", sentence(&reason), wait.as_secs());
-                    self.system(&line);
+                    self.notice(ChatKind::System, &line);
                     out.retry = true;
                 } else {
                     self.phase = Phase::Closed(reason.clone());
@@ -1955,11 +2040,11 @@ mod tests {
             text: "hello all".into(),
         });
         let last = s.chat.back().unwrap();
-        assert_eq!((last.kind, last.name.as_str()), (ChatKind::Mine, "Minnow (server)"));
+        assert_eq!((last.kind, last.name.as_str(), last.tab), (ChatKind::Mine, "Minnow", ChatTab::Server));
 
         let out = s.apply(Event::ClientLeft { client: person(9, 1, "Coralline"), reason: "left (bye)".into() });
         assert_eq!(out.forget, vec![9]);
-        assert_eq!(s.chat.back().unwrap().text, "Coralline left (bye)");
+        assert_eq!(s.chat.back().unwrap().text, "Coralline left your channel and went offline (bye)");
 
         s.voices_applied.insert(9, ("someone".into(), 0.25, true));
         s.priority_applied.insert(8);
@@ -1974,7 +2059,11 @@ mod tests {
 
         let out = s.apply(Event::ClientMoved { client: person(8, 1, "Marlin"), from: 1, to: 2 });
         assert_eq!(out.forget, vec![8]);
-        assert_eq!(s.chat.back().unwrap().text, "Marlin moved to Radio");
+        assert_eq!(s.chat.back().unwrap().text, "Marlin left your channel for Radio");
+        s.apply(Event::ClientMoved { client: person(8, 2, "Marlin"), from: 2, to: 1 });
+        assert_eq!(s.chat.back().unwrap().text, "Marlin joined your channel");
+        s.apply(Event::ClientMoved { client: person(8, 2, "Marlin"), from: 2, to: 3 });
+        assert_eq!(s.chat.back().unwrap().text, "Marlin moved to Squad Alpha");
 
         s.apply(Event::ServerError { id: 0x030d, message: "invalid channel password".into(), extra: String::new() });
         assert_eq!(s.chat.back().unwrap().kind, ChatKind::Error);
@@ -2026,6 +2115,12 @@ mod tests {
         s.apply(Event::Connected { client_id: 7, server: ServerInfo { name: "Reef Runners".into(), ..ServerInfo::default() } });
         s.apply(Event::View(sample_view()));
         let lines = s.chat.len();
+        let quiet = s.apply(Event::Talking { client_id: 8, talking: true, whisper: true });
+        assert_eq!(quiet.whisper_from, Some(8));
+        assert_eq!(s.chat.len(), lines);
+        s.apply(Event::Talking { client_id: 8, talking: false, whisper: false });
+        s.whispered.clear();
+        s.whisper_lines = true;
         let out = s.apply(Event::Talking { client_id: 8, talking: true, whisper: true });
         assert_eq!(out.whisper_from, Some(8));
         assert_eq!(s.chat.back().unwrap().text, "Marlin is whispering to you");
@@ -2048,16 +2143,54 @@ mod tests {
     #[test]
     fn chat_history_is_capped() {
         let mut s = session();
+        s.channel_line("said early");
         for i in 0..MAX_CHAT_LINES + 25 {
-            s.push_line(ChatKind::System, "", &format!("line {i}"));
+            s.system(&format!("line {i}"));
         }
-        s.push_line(ChatKind::System, "", "   ");
-        assert_eq!(s.chat.len(), MAX_CHAT_LINES);
-        assert_eq!(s.chat_total, (MAX_CHAT_LINES + 25) as u64);
-        assert_eq!(s.chat.front().unwrap().text, "line 25");
+        s.system("   ");
+        assert_eq!(s.tab_lines(ChatTab::Server).count(), MAX_CHAT_LINES);
+        assert_eq!(s.chat_total, (MAX_CHAT_LINES + 26) as u64);
+        assert_eq!(s.tab_lines(ChatTab::Server).next().unwrap().text, "line 25");
+        let kept: Vec<&str> = s.tab_lines(ChatTab::Channel).map(|line| line.text.as_str()).collect();
+        assert_eq!(kept, vec!["said early"], "a busy server log does not push the channel's lines out");
         let long = "x".repeat(MAX_LINE_CHARS + 50);
-        s.push_line(ChatKind::Message, "Marlin", &long);
+        s.push_line(ChatTab::Channel, ChatKind::Message, "Marlin", &long);
         assert_eq!(s.chat.back().unwrap().text.chars().count(), MAX_LINE_CHARS + 1);
+    }
+
+    #[test]
+    fn lines_go_to_the_tab_they_belong_in() {
+        let mut s = session();
+        s.apply(Event::Connected { client_id: 7, server: ServerInfo { name: "Reef Runners".into(), ..ServerInfo::default() } });
+        s.apply(Event::View(sample_view()));
+        let tabs = |s: &Session| s.chat.iter().map(|line| (line.tab, line.text.clone())).collect::<Vec<_>>();
+        let connected: Vec<ChatTab> = tabs(&s).into_iter().filter(|(_, text)| text.starts_with("Connected")).map(|(tab, _)| tab).collect();
+        assert_eq!(connected, vec![ChatTab::Server, ChatTab::Channel], "the connection is noted in both");
+
+        s.chat.clear();
+        s.tab_unread = [false; 3];
+        s.apply(Event::TextMessage { target: TextTarget::Channel, from_id: 8, from_name: "Marlin".into(), text: "here".into() });
+        s.apply(Event::TextMessage { target: TextTarget::Server, from_id: 8, from_name: "Marlin".into(), text: "all".into() });
+        s.apply(Event::TextMessage { target: TextTarget::Client(7), from_id: 8, from_name: "Marlin".into(), text: "psst".into() });
+        s.apply(Event::ClientMoved { client: person(9, 2, "Coralline"), from: 2, to: 3 });
+        s.apply(Event::ClientMoved { client: person(9, 3, "Coralline"), from: 3, to: 1 });
+        s.apply(Event::Poke { from_name: "Marlin".into(), text: String::new() });
+        assert_eq!(
+            tabs(&s),
+            vec![
+                (ChatTab::Channel, "here".to_string()),
+                (ChatTab::Server, "all".to_string()),
+                (ChatTab::Private, "psst".to_string()),
+                (ChatTab::Server, "Coralline moved to Squad Alpha".to_string()),
+                (ChatTab::Channel, "Coralline joined your channel".to_string()),
+                (ChatTab::Channel, "Marlin poked you".to_string()),
+            ]
+        );
+        assert_eq!(s.tab_unread, [true, true, true]);
+
+        s.tab_unread = [false; 3];
+        s.apply(Event::ClientMoved { client: person(9, 1, "Coralline"), from: 1, to: 2 });
+        assert_eq!(s.tab_unread, [false; 3], "comings and goings are not marked as unread");
     }
 
     #[test]
@@ -2243,12 +2376,15 @@ mod tests {
 
     #[test]
     fn leaving_reads_naturally() {
-        assert_eq!(describe_leave("Marlin", "left"), "Marlin left");
+        assert_eq!(describe_leave("Marlin", "left", false), "Marlin went offline");
+        assert_eq!(describe_leave("Marlin", "left (bye)", true), "Marlin left your channel and went offline (bye)");
+        assert_eq!(describe_leave("Marlin", "left view", true), "Marlin left your channel");
+        assert_eq!(describe_leave("Marlin", "left view", false), "Marlin moved to a channel you can't see");
         assert_eq!(
-            describe_leave("Marlin", "kicked from the server by Coralline (spam)"),
+            describe_leave("Marlin", "kicked from the server by Coralline (spam)", true),
             "Marlin was kicked from the server by Coralline (spam)"
         );
-        assert_eq!(describe_leave("Marlin", "connection lost"), "Marlin lost connection");
+        assert_eq!(describe_leave("Marlin", "connection lost", false), "Marlin lost connection");
         assert_eq!(people_online(1), "1 person online");
         assert_eq!(people_online(12), "12 people online");
     }

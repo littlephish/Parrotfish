@@ -442,6 +442,8 @@ export component Check inherits Pressable {
 
 export component Segmented inherits Rectangle {
     in property <[string]> options;
+    /// Options with something new in them, shown with a dot until they are picked.
+    in property <[bool]> marks;
     in-out property <int> current;
     callback selected();
 
@@ -469,6 +471,15 @@ export component Segmented inherits Rectangle {
                 font-weight: i == root.current ? 600 : 400;
                 horizontal-alignment: center;
                 vertical-alignment: center;
+            }
+
+            if root.marks[i] && i != root.current: Rectangle {
+                x: parent.width - 10px;
+                y: 4px;
+                width: 6px;
+                height: 6px;
+                border-radius: 3px;
+                background: Theme.lure;
             }
         }
     }

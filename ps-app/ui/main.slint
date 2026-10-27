@@ -180,6 +180,7 @@ export component ParrotfishApp inherits Window {
     in property <[ChatRow]> chat;
     in property <ChatRow> last-chat;
     in property <bool> has-chat;
+    in property <[bool]> chat-unread;
     in property <bool> viewing;
     in property <string> server-name;
     in property <string> server-detail;
@@ -261,6 +262,13 @@ export component ParrotfishApp inherits Window {
     callback row-activated(row: TreeRow);
     callback join-with-password();
     callback send-chat();
+    callback chat-view-changed();
+    changed chat-open => {
+        root.chat-view-changed();
+    }
+    changed chat-target => {
+        root.chat-view-changed();
+    }
     callback open-url(url: string);
     callback toggle-mic();
     callback toggle-sound();
@@ -605,14 +613,16 @@ export component ParrotfishApp inherits Window {
                     padding-top: 8px;
                     spacing: 6px;
 
-                    Pressable {
+                    chat-bar := Pressable {
                         height: 28px;
                         border-radius: 6px;
+                        background: self.hovered ? Theme.current : transparent;
                         clicked => {
                             root.chat-open = true;
                         }
 
                         HorizontalLayout {
+                            padding-left: 4px;
                             spacing: 8px;
 
                             if root.has-chat: Dim {
@@ -635,6 +645,16 @@ export component ParrotfishApp inherits Window {
                                 vertical-alignment: center;
                                 overflow: elide;
                                 horizontal-stretch: 1;
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                padding-right: 4px;
+
+                                Icon {
+                                    source: Icons.chevron-up;
+                                    tint: chat-bar.hovered ? Theme.foam : Theme.drift;
+                                }
                             }
                         }
                     }
@@ -668,6 +688,7 @@ export component ParrotfishApp inherits Window {
 
                         Segmented {
                             options: root.chat-peer == "" ? [root.channel-name == "" ? "Channel" : root.channel-name, "Server"] : [root.channel-name == "" ? "Channel" : root.channel-name, "Server", root.chat-peer];
+                            marks: root.chat-unread;
                             current <=> root.chat-target;
                         }
 
