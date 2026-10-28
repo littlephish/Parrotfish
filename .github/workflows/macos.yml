@@ -1,0 +1,75 @@
+name: macOS
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag; when given it must match the version in Cargo.toml
+        type: string
+        default: ""
+  pull_request:
+    paths:
+      - "installer/macos/**"
+      - "ps-app/build.rs"
+      - "ps-app/src/platform.rs"
+      - "ps-voice/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/macos.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "installer/macos/**"
+      - "ps-app/build.rs"
+      - "ps-app/src/platform.rs"
+      - "ps-voice/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/macos.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: Build the Mac installer
+    runs-on: macos-latest
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tag matches the version
+        if: ${{ env.TAG != '' }}
+        run: python3 tools/package_release.py --tag "$TAG" --check
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update -t aarch64-apple-darwin -t x86_64-apple-darwin
+          rustup default stable
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: macos-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            macos-${{ runner.os }}-
+
+      - name: Build and package
+        run: sh installer/macos/build-pkg.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: parrotfish-macos
+          path: |
+            dist/*.pkg
+            dist/SHA256SUMS-macos.txt
+          if-no-files-found: error
