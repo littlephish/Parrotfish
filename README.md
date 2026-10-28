@@ -175,15 +175,17 @@ zip alone. The files are not code-signed, so Windows will ask before running the
 ## Macs
 
 A release also carries `Parrotfish-<version>.pkg`, an installer for Macs with an Apple
-processor or an Intel one, macOS 11 or newer. It puts `Parrotfish.app` into Applications. The
+processor or an Intel one, macOS 11 or newer. It puts `Parrotfish.app` into Applications.
+`Parrotfish-<version>.dmg` holds the same app to drag onto the Applications shortcut beside it,
+for those who would rather not run an installer. The
 `macOS` workflow builds it on a Mac runner: as part of the `Release` workflow, which adds it to
 the release once the Windows files are published, and also by hand (Actions, macOS, Run
 workflow) and on pushes and pull requests that touch the Mac files, where it is kept as a
 download of the workflow run (`parrotfish-macos`) and published nowhere.
 
-The package and the app are not signed with an Apple certificate or notarised; the app carries
+The package, the disk image and the app are not signed with an Apple certificate or notarised; the app carries
 only an ad hoc signature, without which a Mac with an Apple processor will not start it. So
-macOS refuses both the first time. Right-click the package and choose Open, then Open again; or
+macOS refuses them the first time. Right-click the package and choose Open, then Open again; or
 open it, close the warning, and press Open Anyway under System Settings, Privacy & Security. Do
 the same for Parrotfish in Applications the first time it starts. macOS asks once for the
 microphone. Because the ad hoc signature changes with every build, it may ask again after a
@@ -195,7 +197,7 @@ whisper and mute keys of the Shortcuts tab do nothing, a password typed into a b
 kept, and links do not open in the browser.
 
 To make the package on a Mac, install Rust and the Xcode command line tools and run
-`sh installer/macos/build-pkg.sh` (`--arm64-only` for Apple processors only); it lands in
+`sh installer/macos/build-pkg.sh` (`--arm64-only` for Apple processors only); both land in
 `dist/`. `tools/macos_build.sh` builds the same app on Linux instead (see [PLAN.md](PLAN.md)).
 
 ## Tests

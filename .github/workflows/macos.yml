@@ -71,5 +71,6 @@ jobs:
           name: parrotfish-macos
           path: |
             dist/*.pkg
+            dist/*.dmg
             dist/SHA256SUMS-macos.txt
           if-no-files-found: error

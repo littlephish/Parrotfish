@@ -89,7 +89,7 @@ jobs:
       - name: Publish
         run: |
           gh release upload "$TAG" macos/* --clobber
-          note="The Mac installer, Parrotfish-${TAG#v}.pkg, is not signed or notarised by Apple, so macOS refuses to open it at first. Right-click it and choose Open, or open it once and then press Open Anyway under System Settings, Privacy & Security; do the same for Parrotfish in Applications the first time it starts."
+          note="The Mac installer, Parrotfish-${TAG#v}.pkg, and disk image, Parrotfish-${TAG#v}.dmg (drag Parrotfish onto Applications), are not signed or notarised by Apple, so macOS refuses to open them at first. Right-click and choose Open, or open once and then press Open Anyway under System Settings, Privacy & Security; do the same for Parrotfish in Applications the first time it starts."
           body=$(gh release view "$TAG" --json body --jq .body)
           case "$body" in
             *"is not signed or notarised by Apple"*) ;;

@@ -1,7 +1,8 @@
 #!/bin/sh
 # Builds Parrotfish on a Mac for both kinds of Mac, makes Parrotfish.app, signs it ad hoc and
-# writes dist/Parrotfish-<version>.pkg, an installer package for /Applications that is not
-# signed with a certificate. Needs Rust (rustup), the Xcode command line tools and python3.
+# writes dist/Parrotfish-<version>.pkg, an installer package for /Applications, and
+# dist/Parrotfish-<version>.dmg, a disk image to drag the app from; neither is signed with a
+# certificate. Needs Rust (rustup), the Xcode command line tools and python3.
 #
 #   sh installer/macos/build-pkg.sh               both kinds of Mac, joined with lipo
 #   sh installer/macos/build-pkg.sh --arm64-only  Apple processors only
@@ -30,7 +31,7 @@ fail() {
 }
 
 [ "$(uname -s)" = "Darwin" ] || fail "this script runs on a Mac; tools/macos_build.sh builds on Linux"
-for tool in cargo lipo codesign sips iconutil pkgbuild productbuild plutil pkgutil shasum; do
+for tool in cargo lipo codesign sips iconutil pkgbuild productbuild plutil pkgutil hdiutil ditto shasum; do
     command -v "$tool" >/dev/null || fail "$tool was not found"
 done
 
@@ -133,7 +134,20 @@ out="$root/dist/$name-$version.pkg"
 rm -f "$out"
 productbuild --distribution "$distribution" --package-path "$work" "$out"
 
-(cd "$root/dist" && shasum -a 256 "$name-$version.pkg" > SHA256SUMS-macos.txt)
+# The disk image holds the app beside a shortcut to Applications to drag it onto. ditto keeps
+# the signature and the extended attributes that cp would drop.
+stage="$work/dmg"
+rm -rf "$stage"
+mkdir -p "$stage"
+ditto "$app" "$stage/$name.app"
+ln -s /Applications "$stage/Applications"
+image="$root/dist/$name-$version.dmg"
+rm -f "$image"
+hdiutil create -volname "$name $version" -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$image"
+hdiutil verify "$image"
+
+(cd "$root/dist" && shasum -a 256 "$name-$version.pkg" "$name-$version.dmg" > SHA256SUMS-macos.txt)
 echo "  $(wc -c < "$out" | tr -d ' ')  dist/$name-$version.pkg"
+echo "  $(wc -c < "$image" | tr -d ' ')  dist/$name-$version.dmg"
 echo "  dist/SHA256SUMS-macos.txt"
-echo "The package is not signed with a certificate: macOS asks before it opens it and the app."
+echo "Neither is signed with a certificate: macOS asks before it opens them and the app."
