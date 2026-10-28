@@ -64,3 +64,34 @@ jobs:
           } else {
             gh release create "$env:TAG" $files --title "Parrotfish $($env:TAG.TrimStart('v'))" --generate-notes --verify-tag
           }
+
+  macos:
+    name: Mac installer
+    uses: ./.github/workflows/macos.yml
+    with:
+      tag: ${{ github.ref_name }}
+
+  publish-macos:
+    name: Publish the Mac installer
+    needs: [release, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: parrotfish-macos
+          path: macos
+
+      - name: Publish
+        run: |
+          gh release upload "$TAG" macos/* --clobber
+          note="The Mac installer, Parrotfish-${TAG#v}.pkg, is not signed or notarised by Apple, so macOS refuses to open it at first. Right-click it and choose Open, or open it once and then press Open Anyway under System Settings, Privacy & Security; do the same for Parrotfish in Applications the first time it starts."
+          body=$(gh release view "$TAG" --json body --jq .body)
+          case "$body" in
+            *"is not signed or notarised by Apple"*) ;;
+            *) gh release edit "$TAG" --notes "$(printf '%s\n\n%s' "$body" "$note")" ;;
+          esac
