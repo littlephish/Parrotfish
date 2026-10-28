@@ -33,6 +33,9 @@ const MAX_PLAUSIBLE_RMS: f32 = 0.7;
 const DIM_ATTACK_SECONDS: f32 = 0.06;
 const DIM_RELEASE_SECONDS: f32 = 0.3;
 const DIM_HOLD_SECONDS: f32 = 0.4;
+/// How long a voice takes to move from one ear to the other, short enough to follow a switch of
+/// server at once and long enough not to click.
+const PAN_SECONDS: f32 = 0.05;
 pub const DEEPEST_DIM_DB: f32 = -60.0;
 
 fn frame_rms(samples: &[f32]) -> f32 {
@@ -154,6 +157,8 @@ pub struct Talker {
     last_rms: f32,
     conceal_run: usize,
     blend_from: Option<[f32; MIX_CHANNELS]>,
+    /// How much of the voice goes to both ears as it is, to the left only and to the right only.
+    pan: [f32; 3],
     recent: Vec<f32>,
     faded: bool,
     draining: bool,
@@ -206,6 +211,7 @@ impl Talker {
             priority: false,
             unleveled: false,
             lowered: 1.0,
+            pan: Ear::Both.weights(),
             volume: 1.0,
             stats: TalkerStats::default(),
         })
@@ -602,10 +608,56 @@ pub fn soft_limit(x: f32) -> f32 {
     }
 }
 
+/// Which ear a voice is played in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Ear {
+    #[default]
+    Both,
+    Left,
+    Right,
+}
+
+impl Ear {
+    pub fn from_index(index: i32) -> Self {
+        match index {
+            1 => Ear::Left,
+            2 => Ear::Right,
+            _ => Ear::Both,
+        }
+    }
+
+    pub fn index(self) -> i32 {
+        self as i32
+    }
+
+    fn weights(self) -> [f32; 3] {
+        match self {
+            Ear::Both => [1.0, 0.0, 0.0],
+            Ear::Left => [0.0, 1.0, 0.0],
+            Ear::Right => [0.0, 0.0, 1.0],
+        }
+    }
+}
+
+/// The ears a server's voices are played in: everyone, and its priority speakers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Ears {
+    pub normal: Ear,
+    pub priority: Ear,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Adjustment {
     pub leveled_db: f32,
     pub lowered_db: f32,
+}
+
+fn step_toward(from: f32, goal: f32, most: f32) -> f32 {
+    if goal < from {
+        goal.max(from - most)
+    } else {
+        goal.min(from + most)
+    }
 }
 
 fn slew(from: f32, goal: f32, dt: f32) -> f32 {
@@ -643,6 +695,7 @@ pub struct Playback {
     /// Servers that are not the one in focus: (target gain, gain now).
     background: HashMap<u16, (f32, f32)>,
     muted: HashSet<u16>,
+    ears: HashMap<u16, Ears>,
     leveling: bool,
     unsupported_codec: Option<u8>,
 }
@@ -684,6 +737,7 @@ impl Playback {
                     talker.volume = self.volumes.get(&key).copied().unwrap_or(1.0);
                     talker.priority = self.priority.contains(&key);
                     talker.unleveled = self.unleveled.contains(&key);
+                    talker.pan = self.ear_of(session, talker.priority).weights();
                     self.talkers.insert(key, talker);
                     if session != LOOPBACK_SESSION {
                         self.levelers.entry(key).or_default();
@@ -748,6 +802,19 @@ impl Playback {
         }
     }
 
+    /// Which ears a server's voices go to; voices already playing move over in `PAN_SECONDS`.
+    pub fn set_session_ears(&mut self, session: u16, ears: Ears) {
+        if ears == Ears::default() {
+            self.ears.remove(&session);
+        } else {
+            self.ears.insert(session, ears);
+        }
+    }
+
+    fn ear_of(&self, session: u16, priority: bool) -> Ear {
+        self.ears.get(&session).map_or(Ear::Both, |ears| if priority { ears.priority } else { ears.normal })
+    }
+
     pub fn set_session_muted(&mut self, session: u16, muted: bool) {
         if muted {
             self.muted.insert(session);
@@ -805,6 +872,7 @@ impl Playback {
         self.dims.remove(&session);
         self.background.remove(&session);
         self.muted.remove(&session);
+        self.ears.remove(&session);
     }
 
     pub fn clear(&mut self) {
@@ -875,18 +943,27 @@ impl Playback {
             }
             let (from, to) = (talker.lowered, slew(talker.lowered, goal, dt));
             talker.lowered = to;
-            let volume = talker.volume * self.background.get(&Self::session_of(*key)).map_or(1.0, |(_, now)| *now);
-            if from == 1.0 && to == 1.0 {
+            let session = Self::session_of(*key);
+            let volume = talker.volume * self.background.get(&session).map_or(1.0, |(_, now)| *now);
+            let pan_from = talker.pan;
+            let ear = self.ears.get(&session).map_or(Ear::Both, |ears| if talker.priority { ears.priority } else { ears.normal });
+            let pan_goal = ear.weights();
+            let pan_to: [f32; 3] = std::array::from_fn(|i| step_toward(pan_from[i], pan_goal[i], dt / PAN_SECONDS));
+            talker.pan = pan_to;
+            if from == 1.0 && to == 1.0 && pan_from == Ear::Both.weights() && pan_to == pan_from {
                 for (o, s) in out.iter_mut().zip(talker.out.iter()) {
                     *o += *s * volume;
                 }
             } else {
                 let pairs = out.chunks_mut(MIX_CHANNELS).zip(talker.out.chunks(MIX_CHANNELS));
                 for (index, (mixed, heard)) in pairs.enumerate() {
-                    let gain = volume * (from + (to - from) * (index as f32 + 1.0) / frames.max(1) as f32);
-                    for (o, s) in mixed.iter_mut().zip(heard) {
-                        *o += *s * gain;
-                    }
+                    let along = (index as f32 + 1.0) / frames.max(1) as f32;
+                    let gain = volume * (from + (to - from) * along);
+                    let [both, left, right] = [0, 1, 2].map(|i| pan_from[i] + (pan_to[i] - pan_from[i]) * along);
+                    let (l, r) = (heard[0], heard[1]);
+                    let middle = (l + r) * 0.5;
+                    mixed[0] += gain * (both * l + left * middle);
+                    mixed[1] += gain * (both * r + right * middle);
                 }
             }
         }
@@ -1727,9 +1804,21 @@ mod tests {
     }
 
     fn play(p: &mut Playback, parts: &[Part], blocks: usize) -> Vec<f32> {
+        play_both(p, parts, blocks, |_, _| {}).0
+    }
+
+    /// Plays the parts and returns the left and right ears; `meanwhile` runs before each block.
+    fn play_both(
+        p: &mut Playback,
+        parts: &[Part],
+        blocks: usize,
+        mut meanwhile: impl FnMut(&mut Playback, usize),
+    ) -> (Vec<f32>, Vec<f32>) {
         let mut out = vec![0f32; BLOCK];
         let mut left = Vec::with_capacity(blocks * FRAME_SAMPLES);
+        let mut right = Vec::with_capacity(blocks * FRAME_SAMPLES);
         for block in 0..blocks {
+            meanwhile(p, block);
             for part in parts {
                 let end = part.from + part.packets.len();
                 if block >= part.from && block < end {
@@ -1741,8 +1830,51 @@ mod tests {
             }
             p.mix(&mut out);
             left.extend(out.chunks(MIX_CHANNELS).map(|frame| frame[0]));
+            right.extend(out.chunks(MIX_CHANNELS).map(|frame| frame[1]));
         }
-        left
+        (left, right)
+    }
+
+    #[test]
+    fn priority_speakers_and_everyone_else_go_to_their_own_ears() {
+        let normal = tone_at(80, 440.0, 0.2);
+        let chief = tone_at(80, 1000.0, 0.2);
+        let alone = strength(span(&play(&mut Playback::new(), &[says(1, 20, &normal, 0)], 80), 20, 70), 440.0);
+        let mut p = Playback::new();
+        p.set_priority(1, 10, true);
+        p.set_session_ears(1, Ears { normal: Ear::Right, priority: Ear::Left });
+        let (left, right) = play_both(&mut p, &[says(1, 20, &normal, 0), says(1, 10, &chief, 0)], 80, |_, _| {});
+        let heard = |ear: &[f32], freq: f32| db(strength(span(ear, 20, 70), freq) / alone);
+        assert!(heard(&left, 1000.0).abs() < 1.0, "priority speaker in the left ear at {:.1} dB", heard(&left, 1000.0));
+        assert!(heard(&right, 1000.0) < -40.0, "and not in the right: {:.1} dB", heard(&right, 1000.0));
+        assert!(heard(&right, 440.0).abs() < 1.0, "everyone else in the right ear at {:.1} dB", heard(&right, 440.0));
+        assert!(heard(&left, 440.0) < -40.0, "and not in the left: {:.1} dB", heard(&left, 440.0));
+
+        let mut other = Playback::new();
+        other.set_session_ears(1, Ears { normal: Ear::Right, priority: Ear::Left });
+        let (left, right) = play_both(&mut other, &[says(2, 20, &normal, 0)], 80, |_, _| {});
+        assert!(heard(&left, 440.0).abs() < 1.0 && heard(&right, 440.0).abs() < 1.0, "another server stays in both ears");
+    }
+
+    #[test]
+    fn a_voice_moves_to_the_other_ear_without_a_click() {
+        let normal = tone_at(120, 440.0, 0.3);
+        let (plain, _) = play_both(&mut Playback::new(), &[says(1, 20, &normal, 0)], 120, |_, _| {});
+        let mut p = Playback::new();
+        p.set_session_ears(1, Ears { normal: Ear::Left, priority: Ear::Left });
+        let (left, right) = play_both(&mut p, &[says(1, 20, &normal, 0)], 120, |p, block| {
+            if block == 60 {
+                p.set_session_ears(1, Ears { normal: Ear::Right, priority: Ear::Right });
+            }
+        });
+        for ear in [&left, &right] {
+            assert!(largest_step(ear) <= largest_step(&plain) * 1.02 + 1e-4, "a step of {} against {}", largest_step(ear), largest_step(&plain));
+        }
+        let full = strength(span(&plain, 20, 55), 440.0);
+        assert!(db(strength(span(&left, 20, 55), 440.0) / full).abs() < 1.0);
+        assert!(db(strength(span(&right, 20, 55), 440.0) / full) < -40.0);
+        assert!(db(strength(span(&right, 70, 115), 440.0) / full).abs() < 1.0, "it moved over to the right");
+        assert!(db(strength(span(&left, 70, 115), 440.0) / full) < -40.0);
     }
 
     fn span(left: &[f32], from_block: usize, to_block: usize) -> &[f32] {

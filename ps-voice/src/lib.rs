@@ -18,7 +18,7 @@ use std::time::Duration;
 
 pub use cues::{cue_samples, Cue};
 pub use device::{list_input_devices, list_output_devices, DeviceInfo};
-pub use playback::Adjustment;
+pub use playback::{Adjustment, Ear, Ears};
 pub use state::{DeviceStatus, FrameSink, Shared, TxMode, LANES, LOOPBACK_CLIENT_ID, LOOPBACK_SESSION};
 
 use capture::Transmitter;
@@ -179,6 +179,12 @@ impl AudioEngine {
     pub fn set_session_background(&self, session: u16, db: Option<f32>) {
         if let Ok(mut playback) = self.shared.playback.lock() {
             playback.set_session_background(session, db);
+        }
+    }
+
+    pub fn set_session_ears(&self, session: u16, ears: Ears) {
+        if let Ok(mut playback) = self.shared.playback.lock() {
+            playback.set_session_ears(session, ears);
         }
     }
 

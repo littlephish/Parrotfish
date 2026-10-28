@@ -29,7 +29,31 @@ component FieldLabel inherits Text {
     vertical-alignment: bottom;
 }
 
+/// One ear a server can be played in; lit while chosen, and clicking it again puts the server
+/// back in both ears.
+component EarToggle inherits Pressable {
+    in property <image> icon;
+    in property <bool> on;
+
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    focusable: false;
+    background: root.hovered ? Theme.shoal : transparent;
+
+    Icon {
+        source: root.icon;
+        tint: root.on ? Theme.lure : Theme.drift;
+        opacity: root.on || root.hovered ? 1 : 0.45;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+}
+
 component ServerRow inherits Pressable {
+    /// -1 hides the ear toggles; otherwise 0 both ears, 1 left, 2 right.
+    in property <int> ear: -1;
+    callback ear-picked(ear: int);
     in property <string> initials;
     in property <string> name;
     in property <string> detail;
@@ -56,6 +80,8 @@ component ServerRow inherits Pressable {
                 size: 30px;
                 focusable: false;
                 label: root.initials;
+                picture: root.picture;
+                has-picture: root.has-picture;
                 viewed: root.viewed;
                 connected: root.connected;
                 talking: root.talking;
@@ -78,14 +104,6 @@ component ServerRow inherits Pressable {
                 overflow: elide;
             }
 
-            if root.has-picture: VerticalLayout {
-                alignment: center;
-
-                Badge {
-                    picture: root.picture;
-                }
-            }
-
             Rectangle {
                 horizontal-stretch: 1;
             }
@@ -95,6 +113,35 @@ component ServerRow inherits Pressable {
             text: root.detail;
             color: root.viewed || root.hovered ? Theme.drift-bright : Theme.drift;
             font-size: 11.5px;
+        }
+
+        if root.ear >= 0: HorizontalLayout {
+            alignment: center;
+            spacing: 2px;
+
+            VerticalLayout {
+                alignment: center;
+
+                EarToggle {
+                    icon: Icons.ear-left;
+                    on: root.ear == 1;
+                    clicked => {
+                        root.ear-picked(root.ear == 1 ? 0 : 1);
+                    }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+
+                EarToggle {
+                    icon: Icons.ear-right;
+                    on: root.ear == 2;
+                    clicked => {
+                        root.ear-picked(root.ear == 2 ? 0 : 2);
+                    }
+                }
+            }
         }
 
         if root.mic != 0: VerticalLayout {
@@ -256,6 +303,7 @@ export component ParrotfishApp inherits Window {
 
     callback view-server(id: int);
     callback connect-bookmark(index: int);
+    callback bookmark-ear(index: int, ear: int);
     callback open-connect();
     callback connect-new();
     callback disconnect-viewed();
@@ -908,6 +956,10 @@ export component ParrotfishApp inherits Window {
                     picture: session.icon;
                     has-picture: session.has-icon;
                     mic: session.mic;
+                    ear: session.bookmark >= 0 ? session.ear : -1;
+                    ear-picked(ear) => {
+                        root.bookmark-ear(session.bookmark, ear);
+                    }
                     clicked => {
                         root.menu-open = false;
                         root.view-server(session.id);
@@ -927,6 +979,12 @@ export component ParrotfishApp inherits Window {
                     initials: bookmark.initials;
                     name: bookmark.name;
                     detail: bookmark.address;
+                    picture: bookmark.icon;
+                    has-picture: bookmark.has-icon;
+                    ear: bookmark.ear;
+                    ear-picked(ear) => {
+                        root.bookmark-ear(bookmark.index, ear);
+                    }
                     clicked => {
                         root.menu-open = false;
                         root.connect-bookmark(bookmark.index);
