@@ -877,6 +877,15 @@ without Docker and without root, `udocker` 1.3.17 runs the same image from the h
 `udocker pull`, `udocker create --name=macbuild`, then `udocker run -v <repository>:/root/src
 -w /root/src macbuild sh tools/macos_build.sh`. That is how it was run on 2026-10-10.
 
+On a Mac, `installer/macos/build-pkg.sh` does the same with Apple's own tools: `cargo build`
+for both targets, `lipo`, the icon from `sips` and `iconutil`, `codesign` ad hoc, then
+`pkgbuild` (the app marked as not relocatable, so an upgrade lands in `/Applications`) and
+`productbuild`, into `dist/Parrotfish-<version>.pkg` and `dist/SHA256SUMS-macos.txt`. The
+`macOS` workflow runs it on `macos-latest`: called by `Release`, whose `publish-macos` job adds
+the package to the release after the Windows job has published it and appends a note that it
+is unsigned; by hand; and on pushes and pull requests that touch the Mac files, where the
+package stays an artifact of the run. Nothing is signed with a certificate or notarised.
+
 A local test server: official `teamspeak3-server_linux_amd64` in WSL
 (`./ts3server license_accepted=1`, which accepts TeamSpeak's server license), reachable from
 Windows at the WSL IP (`hostname -I`). Many quick reconnects trip its anti-flood ban; raise

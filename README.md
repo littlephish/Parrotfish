@@ -172,6 +172,32 @@ To make the same files on your own PC, install [Inno Setup 6](https://jrsoftware
 and run `python tools/package_release.py`; they land in `dist/`. Add `--skip-installer` for the
 zip alone. The files are not code-signed, so Windows will ask before running the installer.
 
+## Macs
+
+A release also carries `Parrotfish-<version>.pkg`, an installer for Macs with an Apple
+processor or an Intel one, macOS 11 or newer. It puts `Parrotfish.app` into Applications. The
+`macOS` workflow builds it on a Mac runner: as part of the `Release` workflow, which adds it to
+the release once the Windows files are published, and also by hand (Actions, macOS, Run
+workflow) and on pushes and pull requests that touch the Mac files, where it is kept as a
+download of the workflow run (`parrotfish-macos`) and published nowhere.
+
+The package and the app are not signed with an Apple certificate or notarised; the app carries
+only an ad hoc signature, without which a Mac with an Apple processor will not start it. So
+macOS refuses both the first time. Right-click the package and choose Open, then Open again; or
+open it, close the warning, and press Open Anyway under System Settings, Privacy & Security. Do
+the same for Parrotfish in Applications the first time it starts. macOS asks once for the
+microphone. Because the ad hoc signature changes with every build, it may ask again after a
+new version is installed.
+
+The Mac build is new and has not been tried much. It lacks what Parrotfish gets from Windows
+itself: it does not look for updates (install a newer package over the old app), the talk,
+whisper and mute keys of the Shortcuts tab do nothing, a password typed into a bookmark is not
+kept, and links do not open in the browser.
+
+To make the package on a Mac, install Rust and the Xcode command line tools and run
+`sh installer/macos/build-pkg.sh` (`--arm64-only` for Apple processors only); it lands in
+`dist/`. `tools/macos_build.sh` builds the same app on Linux instead (see [PLAN.md](PLAN.md)).
+
 ## Tests
 
 ```
