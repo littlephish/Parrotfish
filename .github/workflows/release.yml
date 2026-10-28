@@ -62,7 +62,7 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             gh release upload "$env:TAG" $files --clobber
           } else {
-            gh release create "$env:TAG" $files --title "Parrotfish $($env:TAG.TrimStart('v'))" --generate-notes --verify-tag
+            gh release create "$env:TAG" $files --title "Parrotfish $($env:TAG.TrimStart('v'))" --notes-from-tag --verify-tag
           }
 
   macos:
