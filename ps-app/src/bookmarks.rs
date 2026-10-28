@@ -38,6 +38,12 @@ pub struct Bookmark {
     pub server_password: String,
     pub channel_password: String,
     pub auto_connect: bool,
+    /// The ear everyone on this server plays in while another server is in front: 0 both, 1 left, 2 right.
+    pub ear: i32,
+    /// The server's identity and icon as last seen while connected, so its icon can be shown
+    /// from the icon cache without connecting.
+    pub server_uid: String,
+    pub icon: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -105,6 +111,9 @@ impl Bookmarks {
                 "server_password" => entry.server_password = reveal(&value),
                 "channel_password" => entry.channel_password = reveal(&value),
                 "connect_on_start" => entry.auto_connect = value == "1",
+                "ear" => entry.ear = value.parse().unwrap_or(0).clamp(0, 2),
+                "server_uid" => entry.server_uid = value,
+                "icon" => entry.icon = value.parse().unwrap_or(0),
                 _ => {}
             }
         }
@@ -130,6 +139,15 @@ impl Bookmarks {
             }
             if b.auto_connect {
                 out.push_str("connect_on_start=1\n");
+            }
+            if b.ear != 0 {
+                out.push_str(&format!("ear={}\n", b.ear));
+            }
+            if !b.server_uid.is_empty() {
+                out.push_str(&format!("server_uid={}\n", one_line(&b.server_uid)));
+            }
+            if b.icon != 0 {
+                out.push_str(&format!("icon={}\n", b.icon));
             }
             out.push('\n');
         }
@@ -233,6 +251,22 @@ mod tests {
         assert!(!plain.items[0].auto_connect);
         assert_eq!(unhex("0aFf"), Some(vec![10, 255]));
         assert_eq!((unhex("0"), unhex("zz")), (None, None));
+    }
+
+    #[test]
+    fn a_bookmark_remembers_its_ear() {
+        let mut left = bookmark("Left", "left.example.net", "", "");
+        left.ear = 1;
+        left.server_uid = "abc+def=".into();
+        left.icon = 3_000_000_123;
+        let list = Bookmarks { items: vec![left, bookmark("Both", "both.example.net", "", "")] };
+        let text = list.serialize();
+        assert_eq!(text.matches("ear=").count(), 1, "both ears is the default and is not written");
+        assert_eq!(Bookmarks::parse(&text), list);
+        assert_eq!(Bookmarks::parse("[bookmark]
+address=a.example.net
+ear=9
+").items[0].ear, 2);
     }
 
     #[test]

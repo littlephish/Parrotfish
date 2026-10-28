@@ -51,6 +51,9 @@ export struct ServerTile {
     icon: image,
     has-icon: bool,
     mic: int,
+    /// The bookmark this server was saved as, or -1, and the ear chosen there.
+    bookmark: int,
+    ear: int,
 }
 
 export struct BookmarkRow {
@@ -60,6 +63,9 @@ export struct BookmarkRow {
     address: string,
     nickname: string,
     identity-index: int,
+    ear: int,
+    icon: image,
+    has-icon: bool,
 }
 
 export struct ChatRow {
@@ -191,6 +197,9 @@ export component IconButton inherits Pressable {
 
 export component Tile inherits Pressable {
     in property <string> label;
+    /// The server's own icon, shown instead of the letters when there is one.
+    in property <image> picture;
+    in property <bool> has-picture;
     in property <bool> viewed;
     in property <bool> connected;
     in property <bool> talking;
@@ -203,13 +212,22 @@ export component Tile inherits Pressable {
     border-width: root.viewed ? 0px : (root.connected ? 2px : 1px);
     border-color: root.connected ? Theme.drift : Theme.hairline;
 
-    Text {
+    if !root.has-picture: Text {
         text: root.label;
         color: root.viewed ? Theme.on-lure : (root.connected ? Theme.foam : Theme.drift);
         font-size: root.size * 0.36;
         font-weight: 600;
         horizontal-alignment: center;
         vertical-alignment: center;
+    }
+
+    if root.has-picture: Image {
+        source: root.picture;
+        width: root.size * 0.6;
+        height: root.size * 0.6;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        image-fit: contain;
     }
 
     if root.talking: Rectangle {

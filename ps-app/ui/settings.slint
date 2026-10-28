@@ -20,6 +20,13 @@ component Hint inherits Text {
     wrap: word-wrap;
 }
 
+component EarLabel inherits Text {
+    width: 120px;
+    color: Theme.foam;
+    font-size: Theme.text;
+    vertical-alignment: center;
+}
+
 component Reading inherits Text {
     width: 56px;
     color: Theme.drift;
@@ -76,6 +83,8 @@ export component SettingsWindow inherits Window {
     in-out property <bool> even-voices;
     in-out property <bool> priority-dim: true;
     in-out property <float> unfocused-db: 9;
+    in-out property <int> normal-ear;
+    in-out property <int> priority-ear;
     in-out property <float> cue-volume: 50;
     in-out property <bool> join-leave-cues: true;
     in property <string> echo-status;
@@ -96,6 +105,7 @@ export component SettingsWindow inherits Window {
     in-out property <string> bm-server-password;
     in-out property <string> bm-channel-password;
     in-out property <bool> bm-auto;
+    in-out property <int> bm-ear;
     in property <string> bm-channel-hint;
     in property <string> bm-note;
 
@@ -460,158 +470,220 @@ export component SettingsWindow inherits Window {
                     }
                 }
 
-                if root.tab == 1: VerticalLayout {
-                    alignment: start;
-                    padding: 20px;
-                    spacing: 12px;
+                if root.tab == 1: audio-scroll := ScrollView {
+                    content-width: self.visible-width;
+                    content-height: max(audio-list.preferred-height, self.visible-height);
 
-                    HorizontalLayout {
-                        spacing: 16px;
+                    audio-list := VerticalLayout {
+                        width: audio-scroll.visible-width;
+                        alignment: start;
+                        padding: 20px;
+                        spacing: 12px;
 
-                        Caption {
-                            text: "Speakers";
-                        }
+                        HorizontalLayout {
+                            spacing: 16px;
 
-                        VerticalLayout {
-                            spacing: 5px;
+                            Caption {
+                                text: "Speakers";
+                            }
 
-                            Dropdown {
-                                model: root.output-devices;
-                                current-index <=> root.output-index;
-                                selected => {
-                                    root.output-device-selected();
+                            VerticalLayout {
+                                spacing: 5px;
+
+                                Dropdown {
+                                    model: root.output-devices;
+                                    current-index <=> root.output-index;
+                                    selected => {
+                                        root.output-device-selected();
+                                    }
+                                }
+
+                                Hint {
+                                    text: root.sound-status;
                                 }
                             }
+                        }
 
-                            Hint {
-                                text: root.sound-status;
+                        HorizontalLayout {
+                            spacing: 16px;
+
+                            Caption {
+                                text: "Volume";
                             }
-                        }
-                    }
 
-                    HorizontalLayout {
-                        spacing: 16px;
-
-                        Caption {
-                            text: "Volume";
-                        }
-
-                        Slide {
-                            minimum: 0;
-                            maximum: 200;
-                            step: 5;
-                            value <=> root.output-volume;
-                            changed => {
-                                root.audio-changed();
-                            }
-                        }
-
-                        Reading {
-                            text: "\{round(root.output-volume)}%";
-                        }
-                    }
-
-                    HorizontalLayout {
-                        spacing: 16px;
-
-                        Caption {
-                            text: "Event sounds";
-                        }
-
-                        Slide {
-                            minimum: 0;
-                            maximum: 100;
-                            step: 5;
-                            value <=> root.cue-volume;
-                            changed => {
-                                root.audio-changed();
-                            }
-                        }
-
-                        Reading {
-                            text: root.cue-volume < 1 ? "off" : "\{round(root.cue-volume)}%";
-                        }
-                    }
-
-                    HorizontalLayout {
-                        spacing: 16px;
-
-                        Caption {
-                            text: "";
-                        }
-
-                        Check {
-                            text: "Play a sound when people join or leave my channel";
-                            checked <=> root.join-leave-cues;
-                            toggled => {
-                                root.audio-changed();
-                            }
-                        }
-                    }
-
-                    HorizontalLayout {
-                        spacing: 16px;
-
-                        Caption {
-                            text: "People";
-                        }
-
-                        VerticalLayout {
-                            spacing: 4px;
-
-                            Check {
-                                text: "Even out how loud people are";
-                                checked <=> root.even-voices;
-                                toggled => {
+                            Slide {
+                                minimum: 0;
+                                maximum: 200;
+                                step: 5;
+                                value <=> root.output-volume;
+                                changed => {
                                     root.audio-changed();
                                 }
                             }
 
-                            Hint {
-                                text: "Someone who comes in loud is turned down at once, someone quiet is brought up over a few seconds, each on their own. The volume you set for a person still counts on top.";
+                            Reading {
+                                text: "\{round(root.output-volume)}%";
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 16px;
+
+                            Caption {
+                                text: "Event sounds";
                             }
 
-                            Check {
-                                text: "Lower everyone else while a priority speaker talks";
-                                checked <=> root.priority-dim;
-                                toggled => {
+                            Slide {
+                                minimum: 0;
+                                maximum: 100;
+                                step: 5;
+                                value <=> root.cue-volume;
+                                changed => {
                                     root.audio-changed();
                                 }
                             }
 
-                            Hint {
-                                text: "The server chooses the priority speakers; right-click a person or a channel to add your own. While one of them talks or whispers to you, everyone else is lowered by as much as the server says, or by 18 dB if it says nothing. A whisper to you is never lowered, and nothing is lowered for you while you are a priority speaker yourself.";
+                            Reading {
+                                text: root.cue-volume < 1 ? "off" : "\{round(root.cue-volume)}%";
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 16px;
+
+                            Caption {
+                                text: "";
                             }
 
-                            HorizontalLayout {
-                                spacing: 16px;
+                            Check {
+                                text: "Play a sound when people join or leave my channel";
+                                checked <=> root.join-leave-cues;
+                                toggled => {
+                                    root.audio-changed();
+                                }
+                            }
+                        }
 
-                                Caption {
-                                    text: "Other servers";
+                        HorizontalLayout {
+                            spacing: 16px;
+
+                            Caption {
+                                text: "People";
+                            }
+
+                            VerticalLayout {
+                                spacing: 4px;
+
+                                Check {
+                                    text: "Even out how loud people are";
+                                    checked <=> root.even-voices;
+                                    toggled => {
+                                        root.audio-changed();
+                                    }
                                 }
 
-                                VerticalLayout {
-                                    spacing: 4px;
+                                Hint {
+                                    text: "Someone who comes in loud is turned down at once, someone quiet is brought up over a few seconds, each on their own. The volume you set for a person still counts on top.";
+                                }
 
-                                    HorizontalLayout {
-                                        spacing: 10px;
+                                Check {
+                                    text: "Lower everyone else while a priority speaker talks";
+                                    checked <=> root.priority-dim;
+                                    toggled => {
+                                        root.audio-changed();
+                                    }
+                                }
 
-                                        Slide {
-                                            minimum: 0;
-                                            maximum: 24;
-                                            value <=> root.unfocused-db;
-                                            changed => {
-                                                root.audio-changed();
+                                Hint {
+                                    text: "The server chooses the priority speakers; right-click a person or a channel to add your own. While one of them talks or whispers to you, everyone else is lowered by as much as the server says, or by 18 dB if it says nothing. A whisper to you is never lowered, and nothing is lowered for you while you are a priority speaker yourself.";
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 16px;
+
+                                    Caption {
+                                        text: "Other servers";
+                                    }
+
+                                    VerticalLayout {
+                                        spacing: 4px;
+
+                                        HorizontalLayout {
+                                            spacing: 10px;
+
+                                            Slide {
+                                                minimum: 0;
+                                                maximum: 24;
+                                                value <=> root.unfocused-db;
+                                                changed => {
+                                                    root.audio-changed();
+                                                }
+                                            }
+
+                                            Reading {
+                                                text: root.unfocused-db < 0.5 ? "Off" : "-\{round(root.unfocused-db)} dB";
                                             }
                                         }
 
-                                        Reading {
-                                            text: root.unfocused-db < 0.5 ? "Off" : "-\{round(root.unfocused-db)} dB";
+                                        Hint {
+                                            text: "When you are connected to more than one server, everyone on the servers you are not looking at is played this much quieter, so the server in front wins when they all talk at once. Switching servers moves the focus.";
                                         }
                                     }
+                                }
 
-                                    Hint {
-                                        text: "When you are connected to more than one server, everyone on the servers you are not looking at is played this much quieter, so the server in front wins when they all talk at once. Switching servers moves the focus.";
+                                HorizontalLayout {
+                                    spacing: 16px;
+
+                                    Caption {
+                                        text: "Ears";
+                                    }
+
+                                    VerticalLayout {
+                                        spacing: 6px;
+
+                                        HorizontalLayout {
+                                            spacing: 10px;
+
+                                            EarLabel {
+                                                text: "Priority speakers";
+                                            }
+
+                                            Segmented {
+                                                options: ["Both", "Left", "Right"];
+                                                current <=> root.priority-ear;
+                                                selected => {
+                                                    root.audio-changed();
+                                                }
+                                            }
+
+                                            Rectangle {
+                                                horizontal-stretch: 1;
+                                            }
+                                        }
+
+                                        HorizontalLayout {
+                                            spacing: 10px;
+
+                                            EarLabel {
+                                                text: "Everyone else";
+                                            }
+
+                                            Segmented {
+                                                options: ["Both", "Left", "Right"];
+                                                current <=> root.normal-ear;
+                                                selected => {
+                                                    root.audio-changed();
+                                                }
+                                            }
+
+                                            Rectangle {
+                                                horizontal-stretch: 1;
+                                            }
+                                        }
+
+                                        Hint {
+                                            text: "For the server you are looking at. Every other server plays in the ear chosen in its bookmark, its priority speakers too. Sounds for joins and pokes stay in both ears.";
+                                        }
                                     }
                                 }
                             }
@@ -735,277 +807,304 @@ export component SettingsWindow inherits Window {
                     }
                 }
 
-                if root.tab == 3: HorizontalLayout {
-                    padding: 20px;
-                    spacing: 18px;
+                if root.tab == 3: servers-scroll := ScrollView {
+                    content-width: self.visible-width;
+                    content-height: max(servers-list.preferred-height, self.visible-height);
 
-                    VerticalLayout {
-                        width: 236px;
-                        spacing: 4px;
-                        alignment: start;
+                    servers-list := HorizontalLayout {
+                        width: servers-scroll.visible-width;
+                        padding: 20px;
+                        spacing: 18px;
 
-                        for bookmark[i] in root.bookmarks: Pressable {
-                            height: 44px;
-                            border-radius: 8px;
-                            background: i == root.bm-index || self.hovered ? Theme.current : Theme.shoal;
-                            clicked => {
-                                root.bookmark-picked(i);
+                        VerticalLayout {
+                            width: 236px;
+                            spacing: 4px;
+                            alignment: start;
+
+                            for bookmark[i] in root.bookmarks: Pressable {
+                                height: 44px;
+                                border-radius: 8px;
+                                background: i == root.bm-index || self.hovered ? Theme.current : Theme.shoal;
+                                clicked => {
+                                    root.bookmark-picked(i);
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 10px;
+                                    spacing: 10px;
+
+                                    VerticalLayout {
+                                        alignment: center;
+
+                                        Tile {
+                                            size: 30px;
+                                            focusable: false;
+                                            label: bookmark.initials;
+                                            clicked => {
+                                                root.bookmark-picked(i);
+                                            }
+                                        }
+                                    }
+
+                                    Text {
+                                        text: bookmark.name;
+                                        color: Theme.foam;
+                                        font-size: Theme.text;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+                            }
+
+                            if root.bookmarks.length == 0: Hint {
+                                text: "No bookmarks yet. Fill in the form to add one.";
+                            }
+
+                            Rectangle {
+                                height: 6px;
+                            }
+
+                            Btn {
+                                text: "Add a bookmark";
+                                clicked => {
+                                    root.bookmark-new();
+                                }
+                            }
+
+                            Rectangle {
+                                height: 12px;
+                            }
+
+                            Divider { }
+
+                            Check {
+                                text: "Open ts3server:// links here";
+                                checked <=> root.links-on;
+                                toggled => {
+                                    root.links-changed();
+                                }
+                            }
+
+                            Hint {
+                                text: "Server links on web pages then open in Parrotfish, which shows where a link leads before it connects. Switching this off gives the links back to the program that had them.";
+                            }
+
+                            if root.links-note != "": Hint {
+                                text: root.links-note;
+                                color: Theme.coral;
+                            }
+                        }
+
+                        VerticalLayout {
+                            alignment: start;
+                            spacing: 5px;
+
+                            Heading {
+                                text: root.bm-index >= 0 ? "Edit bookmark" : "New bookmark";
                             }
 
                             HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 10px;
                                 spacing: 10px;
 
                                 VerticalLayout {
-                                    alignment: center;
+                                    min-width: 80px;
+                                    preferred-width: 180px;
+                                    horizontal-stretch: 1;
+                                    spacing: 5px;
 
-                                    Tile {
-                                        size: 30px;
-                                        focusable: false;
-                                        label: bookmark.initials;
-                                        clicked => {
-                                            root.bookmark-picked(i);
+                                    Hint {
+                                        text: "Name";
+                                    }
+
+                                    Field {
+                                        text <=> root.bm-name;
+                                        placeholder: "what to call it";
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    min-width: 80px;
+                                    preferred-width: 180px;
+                                    horizontal-stretch: 1;
+                                    spacing: 5px;
+
+                                    Hint {
+                                        text: "Nickname";
+                                    }
+
+                                    Field {
+                                        text <=> root.bm-nickname;
+                                        placeholder: "the name others see";
+                                    }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 10px;
+
+                                VerticalLayout {
+                                    min-width: 80px;
+                                    preferred-width: 180px;
+                                    horizontal-stretch: 1;
+                                    spacing: 5px;
+
+                                    Hint {
+                                        text: "Server address";
+                                    }
+
+                                    Field {
+                                        text <=> root.bm-address;
+                                        placeholder: "name or address, with :port";
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    min-width: 80px;
+                                    preferred-width: 180px;
+                                    horizontal-stretch: 1;
+                                    spacing: 5px;
+
+                                    Hint {
+                                        text: "Server password";
+                                    }
+
+                                    Field {
+                                        text <=> root.bm-server-password;
+                                        password: true;
+                                        placeholder: "none";
+                                    }
+                                }
+                            }
+
+                            Hint {
+                                text: "Identity";
+                            }
+
+                            Dropdown {
+                                model: root.identity-names;
+                                current-index <=> root.bm-identity;
+                                placeholder: "No identity yet";
+                            }
+
+                            HorizontalLayout {
+                                spacing: 10px;
+
+                                VerticalLayout {
+                                    min-width: 80px;
+                                    preferred-width: 180px;
+                                    horizontal-stretch: 1;
+                                    spacing: 5px;
+
+                                    Hint {
+                                        text: "Channel to join";
+                                    }
+
+                                    Dropdown {
+                                        model: root.bm-channels;
+                                        current-index <=> root.bm-channel;
+                                        selected => {
+                                            root.bookmark-channel-selected();
                                         }
                                     }
                                 }
 
-                                Text {
-                                    text: bookmark.name;
-                                    color: Theme.foam;
-                                    font-size: Theme.text;
-                                    font-weight: 600;
-                                    vertical-alignment: center;
-                                    overflow: elide;
+                                VerticalLayout {
+                                    min-width: 80px;
+                                    preferred-width: 180px;
                                     horizontal-stretch: 1;
-                                }
-                            }
-                        }
+                                    spacing: 5px;
 
-                        if root.bookmarks.length == 0: Hint {
-                            text: "No bookmarks yet. Fill in the form to add one.";
-                        }
+                                    Hint {
+                                        text: "Its password";
+                                    }
 
-                        Rectangle {
-                            height: 6px;
-                        }
-
-                        Btn {
-                            text: "Add a bookmark";
-                            clicked => {
-                                root.bookmark-new();
-                            }
-                        }
-
-                        Rectangle {
-                            height: 12px;
-                        }
-
-                        Divider { }
-
-                        Check {
-                            text: "Open ts3server:// links here";
-                            checked <=> root.links-on;
-                            toggled => {
-                                root.links-changed();
-                            }
-                        }
-
-                        Hint {
-                            text: "Server links on web pages then open in Parrotfish, which shows where a link leads before it connects. Switching this off gives the links back to the program that had them.";
-                        }
-
-                        if root.links-note != "": Hint {
-                            text: root.links-note;
-                            color: Theme.coral;
-                        }
-                    }
-
-                    VerticalLayout {
-                        alignment: start;
-                        spacing: 5px;
-
-                        Heading {
-                            text: root.bm-index >= 0 ? "Edit bookmark" : "New bookmark";
-                        }
-
-                        HorizontalLayout {
-                            spacing: 10px;
-
-                            VerticalLayout {
-                                min-width: 80px;
-                                preferred-width: 180px;
-                                horizontal-stretch: 1;
-                                spacing: 5px;
-
-                                Hint {
-                                    text: "Name";
-                                }
-
-                                Field {
-                                    text <=> root.bm-name;
-                                    placeholder: "what to call it";
-                                }
-                            }
-
-                            VerticalLayout {
-                                min-width: 80px;
-                                preferred-width: 180px;
-                                horizontal-stretch: 1;
-                                spacing: 5px;
-
-                                Hint {
-                                    text: "Nickname";
-                                }
-
-                                Field {
-                                    text <=> root.bm-nickname;
-                                    placeholder: "the name others see";
-                                }
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 10px;
-
-                            VerticalLayout {
-                                min-width: 80px;
-                                preferred-width: 180px;
-                                horizontal-stretch: 1;
-                                spacing: 5px;
-
-                                Hint {
-                                    text: "Server address";
-                                }
-
-                                Field {
-                                    text <=> root.bm-address;
-                                    placeholder: "name or address, with :port";
-                                }
-                            }
-
-                            VerticalLayout {
-                                min-width: 80px;
-                                preferred-width: 180px;
-                                horizontal-stretch: 1;
-                                spacing: 5px;
-
-                                Hint {
-                                    text: "Server password";
-                                }
-
-                                Field {
-                                    text <=> root.bm-server-password;
-                                    password: true;
-                                    placeholder: "none";
-                                }
-                            }
-                        }
-
-                        Hint {
-                            text: "Identity";
-                        }
-
-                        Dropdown {
-                            model: root.identity-names;
-                            current-index <=> root.bm-identity;
-                            placeholder: "No identity yet";
-                        }
-
-                        HorizontalLayout {
-                            spacing: 10px;
-
-                            VerticalLayout {
-                                min-width: 80px;
-                                preferred-width: 180px;
-                                horizontal-stretch: 1;
-                                spacing: 5px;
-
-                                Hint {
-                                    text: "Channel to join";
-                                }
-
-                                Dropdown {
-                                    model: root.bm-channels;
-                                    current-index <=> root.bm-channel;
-                                    selected => {
-                                        root.bookmark-channel-selected();
+                                    Field {
+                                        text <=> root.bm-channel-password;
+                                        password: true;
+                                        enabled: root.bm-channel > 0;
+                                        placeholder: "none";
                                     }
                                 }
                             }
 
-                            VerticalLayout {
-                                min-width: 80px;
-                                preferred-width: 180px;
-                                horizontal-stretch: 1;
-                                spacing: 5px;
-
-                                Hint {
-                                    text: "Its password";
-                                }
-
-                                Field {
-                                    text <=> root.bm-channel-password;
-                                    password: true;
-                                    enabled: root.bm-channel > 0;
-                                    placeholder: "none";
-                                }
+                            if root.bm-channel-hint != "": Hint {
+                                text: root.bm-channel-hint;
                             }
-                        }
 
-                        if root.bm-channel-hint != "": Hint {
-                            text: root.bm-channel-hint;
-                        }
+                            Check {
+                                text: "Connect when Parrotfish starts";
+                                checked <=> root.bm-auto;
+                            }
 
-                        Check {
-                            text: "Connect when Parrotfish starts";
-                            checked <=> root.bm-auto;
-                        }
+                            HorizontalLayout {
+                                spacing: 10px;
 
-                        Hint {
-                            text: "Passwords are kept encrypted for your Windows account.";
-                        }
+                                EarLabel {
+                                    text: "Ear";
+                                }
 
-                        if root.bm-note != "": Hint {
-                            text: root.bm-note;
-                            color: Theme.coral;
-                        }
+                                Segmented {
+                                    options: ["Both", "Left", "Right"];
+                                    current <=> root.bm-ear;
+                                }
 
-                        HorizontalLayout {
-                            alignment: end;
-                            padding-top: 10px;
-                            spacing: 8px;
-
-                            if !root.confirm-remove-bookmark: Btn {
-                                text: "Remove";
-                                danger: true;
-                                enabled: root.bm-index >= 0;
-                                clicked => {
-                                    root.confirm-remove-bookmark = true;
+                                Rectangle {
+                                    horizontal-stretch: 1;
                                 }
                             }
 
-                            if root.confirm-remove-bookmark: Btn {
-                                text: "Yes, remove";
-                                danger: true;
-                                clicked => {
-                                    root.confirm-remove-bookmark = false;
-                                    root.bookmark-removed();
-                                }
+                            Hint {
+                                text: "Everyone on this server plays in that ear while you are looking at another server.";
                             }
 
-                            if root.confirm-remove-bookmark: Btn {
-                                text: "Keep";
-                                clicked => {
-                                    root.confirm-remove-bookmark = false;
-                                }
+                            Hint {
+                                text: "Passwords are kept encrypted for your Windows account.";
                             }
 
-                            Btn {
-                                text: "Save bookmark";
-                                enabled: root.bm-address != "";
-                                clicked => {
-                                    root.bookmark-saved();
+                            if root.bm-note != "": Hint {
+                                text: root.bm-note;
+                                color: Theme.coral;
+                            }
+
+                            HorizontalLayout {
+                                alignment: end;
+                                padding-top: 10px;
+                                spacing: 8px;
+
+                                if !root.confirm-remove-bookmark: Btn {
+                                    text: "Remove";
+                                    danger: true;
+                                    enabled: root.bm-index >= 0;
+                                    clicked => {
+                                        root.confirm-remove-bookmark = true;
+                                    }
+                                }
+
+                                if root.confirm-remove-bookmark: Btn {
+                                    text: "Yes, remove";
+                                    danger: true;
+                                    clicked => {
+                                        root.confirm-remove-bookmark = false;
+                                        root.bookmark-removed();
+                                    }
+                                }
+
+                                if root.confirm-remove-bookmark: Btn {
+                                    text: "Keep";
+                                    clicked => {
+                                        root.confirm-remove-bookmark = false;
+                                    }
+                                }
+
+                                Btn {
+                                    text: "Save bookmark";
+                                    enabled: root.bm-address != "";
+                                    clicked => {
+                                        root.bookmark-saved();
+                                    }
                                 }
                             }
                         }

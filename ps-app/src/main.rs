@@ -104,6 +104,8 @@ fn main() -> Result<(), slint::PlatformError> {
     let a = app.clone();
     ui.on_connect_bookmark(move |index| with_app(&a, |s, w| s.connect_bookmark(w, index)));
     let a = app.clone();
+    ui.on_bookmark_ear(move |index, ear| with_app(&a, |s, w| s.bookmark_ear(w, index, ear)));
+    let a = app.clone();
     ui.on_open_connect(move || with_app(&a, |s, w| s.open_connect(w)));
     let a = app.clone();
     ui.on_connect_new(move || with_app(&a, |s, w| s.connect_new(w)));

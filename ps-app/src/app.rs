@@ -13,7 +13,7 @@ use ps_client::{
 };
 use ps_identity::Identity;
 use ps_voice::codec::CODEC_CELT_MONO;
-use ps_voice::{AudioEngine, Cue, DeviceInfo, FrameSink, TxMode};
+use ps_voice::{AudioEngine, Cue, DeviceInfo, Ear, Ears, FrameSink, TxMode};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel, Weak};
 
 use crate::bookmarks::{initials, Bookmark, Bookmarks};
@@ -458,6 +458,8 @@ pub struct App {
     voice_blocked: Arc<AtomicBool>,
     /// Which servers were last told they are in the background, to avoid re-locking the mixer.
     background_sent: Vec<(u16, bool)>,
+    /// The ears each connected server was last given, to avoid re-locking the mixer.
+    ears_sent: Vec<(u16, Ears)>,
     tree: Rc<VecModel<TreeRow>>,
     chat: Rc<VecModel<ChatRow>>,
     chat_shown: Option<(u16, ChatTab, u64)>,
@@ -581,6 +583,7 @@ impl App {
             mic_gated: false,
             voice_blocked: Arc::new(AtomicBool::new(false)),
             background_sent: Vec::new(),
+            ears_sent: Vec::new(),
             tree: Rc::new(VecModel::default()),
             chat: Rc::new(VecModel::default()),
             chat_shown: None,
@@ -654,6 +657,8 @@ impl App {
         w.settings.set_auto_gain(self.settings.auto_gain);
         w.settings.set_even_voices(self.settings.even_voices);
         w.settings.set_priority_dim(self.settings.priority_dim);
+        w.settings.set_normal_ear(self.settings.focus_normal_ear);
+        w.settings.set_priority_ear(self.settings.focus_priority_ear);
         w.settings.set_unfocused_db(self.settings.unfocused_db);
         w.settings.set_cue_volume(self.settings.cue_volume);
         w.settings.set_join_leave_cues(self.settings.join_leave_cues);
@@ -1285,6 +1290,8 @@ impl App {
         self.settings.even_voices = even_voices;
         let dim_changed = self.settings.priority_dim != priority_dim;
         self.settings.priority_dim = priority_dim;
+        self.settings.focus_normal_ear = w.settings.get_normal_ear().clamp(0, 2);
+        self.settings.focus_priority_ear = w.settings.get_priority_ear().clamp(0, 2);
         let unfocused = w.settings.get_unfocused_db().clamp(0.0, 24.0);
         if (self.settings.unfocused_db - unfocused).abs() > f32::EPSILON {
             self.settings.unfocused_db = unfocused;
@@ -1327,23 +1334,56 @@ impl App {
         let _ = w.settings.hide();
     }
 
-    fn bookmark_rows(&self, skip_connected: bool) -> Vec<BookmarkRow> {
-        self.bookmarks
-            .items
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| {
-                !skip_connected || !self.sessions.iter().any(|s| same_address(&s.request.address, &b.address))
-            })
-            .map(|(index, b)| BookmarkRow {
+    fn bookmark_rows(&mut self, skip_connected: bool) -> Vec<BookmarkRow> {
+        let now = Instant::now();
+        let mut rows = Vec::new();
+        for (index, b) in self.bookmarks.items.iter().enumerate() {
+            if skip_connected && self.sessions.iter().any(|s| same_address(&s.request.address, &b.address)) {
+                continue;
+            }
+            // Only what is already on disk; a server that is not connected is never asked.
+            let icon = match self.icons.peek(&b.server_uid, b.icon, now) {
+                Lookup::Ready(image) | Lookup::Refresh(image) => Some(image),
+                Lookup::Standard(at) => self.standard_icons.get(at).cloned(),
+                _ => None,
+            }
+            .filter(|image| image.size().width > 0);
+            rows.push(BookmarkRow {
                 index: index as i32,
                 initials: initials(&b.name).into(),
                 name: b.name.as_str().into(),
                 address: b.address.as_str().into(),
                 nickname: b.nickname.as_str().into(),
                 identity_index: self.identity_index(&b.identity_uid).map(|i| i as i32).unwrap_or(-1),
-            })
-            .collect()
+                ear: b.ear,
+                has_icon: icon.is_some(),
+                icon: icon.unwrap_or_default(),
+            });
+        }
+        rows
+    }
+
+    /// Notes each connected server's identity and icon on its bookmark, so the server list can
+    /// show that icon from the cache while the server is not connected.
+    fn remember_server_icons(&mut self, w: &Windows) {
+        let mut changed = false;
+        for s in self.sessions.iter().filter(|s| s.is_connected() && !s.server_uid.is_empty()) {
+            let Some(icon) = s.view.as_ref().map(|view| view.server.icon) else {
+                continue;
+            };
+            let Some(at) = self.bookmarks.find_address(&s.request.address) else {
+                continue;
+            };
+            let bookmark = &mut self.bookmarks.items[at];
+            if bookmark.server_uid != s.server_uid || bookmark.icon != icon {
+                bookmark.server_uid = s.server_uid.clone();
+                bookmark.icon = icon;
+                changed = true;
+            }
+        }
+        if changed {
+            self.save_bookmarks(w);
+        }
     }
 
     fn save_bookmarks(&mut self, w: &Windows) {
@@ -1453,6 +1493,19 @@ impl App {
         }
     }
 
+    /// Picks the ear a bookmarked server plays in from the server list, without opening the editor.
+    pub fn bookmark_ear(&mut self, w: &Windows, index: i32, ear: i32) {
+        let Some(bookmark) = usize::try_from(index).ok().and_then(|i| self.bookmarks.items.get_mut(i)) else {
+            return;
+        };
+        bookmark.ear = ear.clamp(0, 2);
+        if w.settings.get_bm_index() == index {
+            w.settings.set_bm_ear(bookmark.ear);
+        }
+        self.save_bookmarks(w);
+        self.dirty.sessions = true;
+    }
+
     pub fn bookmark_picked(&mut self, w: &Windows, index: i32) {
         let Some(bookmark) = self.bookmarks.items.get(index.max(0) as usize) else {
             return;
@@ -1468,6 +1521,7 @@ impl App {
         w.settings.set_bm_server_password(bookmark.server_password.as_str().into());
         w.settings.set_bm_channel_password(bookmark.channel_password.as_str().into());
         w.settings.set_bm_auto(bookmark.auto_connect);
+        w.settings.set_bm_ear(bookmark.ear);
         self.bm_choice = (bookmark.channel.clone(), bookmark.channel_id);
         self.publish_start_channels(w);
     }
@@ -1482,6 +1536,7 @@ impl App {
         w.settings.set_bm_server_password("".into());
         w.settings.set_bm_channel_password("".into());
         w.settings.set_bm_auto(false);
+        w.settings.set_bm_ear(0);
         self.bm_choice = (String::new(), 0);
         self.publish_start_channels(w);
     }
@@ -1512,8 +1567,18 @@ impl App {
                 w.settings.get_bm_channel_password().to_string()
             },
             auto_connect: w.settings.get_bm_auto(),
+            ear: w.settings.get_bm_ear().clamp(0, 2),
+            server_uid: String::new(),
+            icon: 0,
         };
+        // A bookmark edited without changing its address still points at the same server.
         let index = w.settings.get_bm_index();
+        let bookmark = match usize::try_from(index).ok().and_then(|i| self.bookmarks.items.get(i)) {
+            Some(old) if old.address.trim().eq_ignore_ascii_case(bookmark.address.trim()) => {
+                Bookmark { server_uid: old.server_uid.clone(), icon: old.icon, ..bookmark }
+            }
+            _ => bookmark,
+        };
         let saved_at = if index >= 0 && (index as usize) < self.bookmarks.items.len() {
             let duplicate = self.bookmarks.find_address(&bookmark.address).filter(|other| *other != index as usize);
             if duplicate.is_some() {
@@ -1872,6 +1937,35 @@ impl App {
             self.engine.set_session_background(*id, None);
         }
         self.background_sent = wanted;
+    }
+
+    /// The server in front splits its priority speakers and everyone else between the ears as set
+    /// in the audio settings; every other server plays in the ear chosen in its bookmark.
+    fn place_voices(&mut self) {
+        let wanted: Vec<(u16, Ears)> = self
+            .sessions
+            .iter()
+            .filter(|s| s.is_connected())
+            .map(|s| {
+                let ears = if self.viewed == Some(s.id) {
+                    Ears {
+                        normal: Ear::from_index(self.settings.focus_normal_ear),
+                        priority: Ear::from_index(self.settings.focus_priority_ear),
+                    }
+                } else {
+                    let ear = self.bookmarks.find_address(&s.request.address).map_or(0, |i| self.bookmarks.items[i].ear);
+                    Ears { normal: Ear::from_index(ear), priority: Ear::from_index(ear) }
+                };
+                (s.id, ears)
+            })
+            .collect();
+        if wanted == self.ears_sent {
+            return;
+        }
+        for (id, ears) in &wanted {
+            self.engine.set_session_ears(*id, *ears);
+        }
+        self.ears_sent = wanted;
     }
 
     fn tell_mics(&mut self, now: Instant) {
@@ -3352,6 +3446,7 @@ impl App {
         }
         self.watch_whispers();
         self.favour_focused_server();
+        self.place_voices();
         self.publish_person_heard(w);
 
         let level = self.engine.shared().input_level();
@@ -3521,6 +3616,7 @@ impl App {
 
     fn publish_sessions(&mut self, w: &Windows) {
         let now = Instant::now();
+        self.remember_server_icons(w);
         let ids: Vec<u16> = self.sessions.iter().map(|s| s.id).collect();
         let pictures: Vec<Option<slint::Image>> = ids.iter().map(|id| self.server_picture(*id, now)).collect();
         let viewed_picture =
@@ -3562,6 +3658,8 @@ impl App {
                     self.mic_target == Some(s.id) && s.mic_seems_on,
                     connected_servers,
                 ),
+                bookmark: self.bookmarks.find_address(&s.request.address).map_or(-1, |i| i as i32),
+                ear: self.bookmarks.find_address(&s.request.address).map_or(0, |i| self.bookmarks.items[i].ear),
             })
             .collect();
         let others: Vec<ServerTile> = tiles.iter().filter(|t| !t.viewed).take(HEADER_TILES).cloned().collect();
