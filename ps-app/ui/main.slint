@@ -234,6 +234,9 @@ export component ParrotfishApp inherits Window {
     in property <string> server-initials;
     in property <image> server-icon;
     in property <bool> has-server-icon;
+    /// The viewed server's bookmark, or -1, and the ear chosen there.
+    in property <int> server-bookmark: -1;
+    in property <int> server-ear;
     in property <string> channel-name;
     in-out property <string> notice;
     in property <string> update-text;
@@ -449,6 +452,35 @@ export component ParrotfishApp inherits Window {
                         Dim {
                             text: root.viewing ? root.server-detail : "Choose a server";
                             overflow: elide;
+                        }
+                    }
+
+                    if root.viewing && root.server-bookmark >= 0: HorizontalLayout {
+                        alignment: center;
+                        spacing: 2px;
+
+                        VerticalLayout {
+                            alignment: center;
+
+                            EarToggle {
+                                icon: Icons.ear-left;
+                                on: root.server-ear == 1;
+                                clicked => {
+                                    root.bookmark-ear(root.server-bookmark, root.server-ear == 1 ? 0 : 1);
+                                }
+                            }
+                        }
+
+                        VerticalLayout {
+                            alignment: center;
+
+                            EarToggle {
+                                icon: Icons.ear-right;
+                                on: root.server-ear == 2;
+                                clicked => {
+                                    root.bookmark-ear(root.server-bookmark, root.server-ear == 2 ? 0 : 2);
+                                }
+                            }
                         }
                     }
 

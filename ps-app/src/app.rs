@@ -269,6 +269,14 @@ fn event_age(age: Duration) -> String {
     }
 }
 
+/// The ears a server plays in. Every server has its own ear (0 both, 1 left, 2 right); the one in
+/// front can split its priority speakers and everyone else instead, and where that split is left
+/// at both ears, it keeps its own.
+fn server_ears(in_front: bool, own: i32, normal: i32, priority: i32) -> Ears {
+    let pick = |split: i32| Ear::from_index(if in_front && split != 0 { split } else { own });
+    Ears { normal: pick(normal), priority: pick(priority) }
+}
+
 fn same_address(a: &str, b: &str) -> bool {
     a.trim().eq_ignore_ascii_case(b.trim())
 }
@@ -1939,24 +1947,16 @@ impl App {
         self.background_sent = wanted;
     }
 
-    /// The server in front splits its priority speakers and everyone else between the ears as set
-    /// in the audio settings; every other server plays in the ear chosen in its bookmark.
+    /// Tells the mixer which ears each connected server plays in; see `server_ears`.
     fn place_voices(&mut self) {
         let wanted: Vec<(u16, Ears)> = self
             .sessions
             .iter()
             .filter(|s| s.is_connected())
             .map(|s| {
-                let ears = if self.viewed == Some(s.id) {
-                    Ears {
-                        normal: Ear::from_index(self.settings.focus_normal_ear),
-                        priority: Ear::from_index(self.settings.focus_priority_ear),
-                    }
-                } else {
-                    let ear = self.bookmarks.find_address(&s.request.address).map_or(0, |i| self.bookmarks.items[i].ear);
-                    Ears { normal: Ear::from_index(ear), priority: Ear::from_index(ear) }
-                };
-                (s.id, ears)
+                let own = self.bookmarks.find_address(&s.request.address).map_or(0, |i| self.bookmarks.items[i].ear);
+                let (normal, priority) = (self.settings.focus_normal_ear, self.settings.focus_priority_ear);
+                (s.id, server_ears(self.viewed == Some(s.id), own, normal, priority))
             })
             .collect();
         if wanted == self.ears_sent {
@@ -2708,7 +2708,7 @@ impl App {
             self.engine.remove_talker(id, *client);
         }
         if outcome.forget_all {
-            self.engine.clear_session(id);
+            self.engine.forget_voices(id);
             self.apply_voices(id);
             if let Some(uid) = self.session(id).map(|s| s.server_uid.clone()) {
                 self.icons.forget_pending(&uid);
@@ -3662,6 +3662,9 @@ impl App {
                 ear: self.bookmarks.find_address(&s.request.address).map_or(0, |i| self.bookmarks.items[i].ear),
             })
             .collect();
+        let viewed_tile = tiles.iter().find(|t| t.viewed);
+        w.main.set_server_bookmark(viewed_tile.map_or(-1, |t| t.bookmark));
+        w.main.set_server_ear(viewed_tile.map_or(0, |t| t.ear));
         let others: Vec<ServerTile> = tiles.iter().filter(|t| !t.viewed).take(HEADER_TILES).cloned().collect();
         w.main.set_sessions(ModelRc::new(VecModel::from(tiles)));
         w.main.set_others(ModelRc::new(VecModel::from(others)));
@@ -3870,6 +3873,22 @@ impl App {
             std::thread::sleep(Duration::from_millis(20));
         }
         let _ = self.settings.save();
+    }
+}
+
+#[cfg(test)]
+mod ear_tests {
+    use super::*;
+
+    #[test]
+    fn the_server_in_front_keeps_its_own_ear_where_the_split_is_left_at_both() {
+        let both = Ears { normal: Ear::Both, priority: Ear::Both };
+        assert_eq!(server_ears(true, 2, 0, 0), Ears { normal: Ear::Right, priority: Ear::Right });
+        assert_eq!(server_ears(true, 0, 0, 0), both);
+        assert_eq!(server_ears(true, 2, 0, 1), Ears { normal: Ear::Right, priority: Ear::Left });
+        assert_eq!(server_ears(true, 2, 1, 2), Ears { normal: Ear::Left, priority: Ear::Right });
+        assert_eq!(server_ears(false, 2, 1, 1), Ears { normal: Ear::Right, priority: Ear::Right });
+        assert_eq!(server_ears(false, 0, 1, 2), both);
     }
 }
 

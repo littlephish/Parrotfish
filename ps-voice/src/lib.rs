@@ -210,6 +210,12 @@ impl AudioEngine {
         }
     }
 
+    pub fn forget_voices(&self, session: u16) {
+        if let Ok(mut playback) = self.shared.playback.lock() {
+            playback.forget_voices(session);
+        }
+    }
+
     pub fn clear_session(&self, session: u16) {
         if let Ok(mut playback) = self.shared.playback.lock() {
             playback.clear_session(session);

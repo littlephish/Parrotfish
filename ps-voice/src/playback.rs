@@ -863,13 +863,20 @@ impl Playback {
         self.levelers.remove(&key);
     }
 
-    pub fn clear_session(&mut self, session: u16) {
+    /// Forgets everyone heard on a server and what was set for each of them, but keeps how the
+    /// server itself is played: its ears, how much quieter it is out of focus, and its mute.
+    pub fn forget_voices(&mut self, session: u16) {
         self.talkers.retain(|key, _| Self::session_of(*key) != session);
         self.volumes.retain(|key, _| Self::session_of(*key) != session);
         self.priority.retain(|key| Self::session_of(*key) != session);
         self.unleveled.retain(|key| Self::session_of(*key) != session);
         self.levelers.retain(|key, _| Self::session_of(*key) != session);
         self.dims.remove(&session);
+    }
+
+    /// Forgets a server that is gone altogether.
+    pub fn clear_session(&mut self, session: u16) {
+        self.forget_voices(session);
         self.background.remove(&session);
         self.muted.remove(&session);
         self.ears.remove(&session);
@@ -1854,6 +1861,26 @@ mod tests {
         other.set_session_ears(1, Ears { normal: Ear::Right, priority: Ear::Left });
         let (left, right) = play_both(&mut other, &[says(2, 20, &normal, 0)], 80, |_, _| {});
         assert!(heard(&left, 440.0).abs() < 1.0 && heard(&right, 440.0).abs() < 1.0, "another server stays in both ears");
+    }
+
+    #[test]
+    fn forgetting_a_servers_voices_keeps_how_that_server_is_played() {
+        let normal = tone_at(80, 440.0, 0.2);
+        let mut p = Playback::new();
+        p.set_session_ears(1, Ears { normal: Ear::Right, priority: Ear::Right });
+        p.set_session_background(1, Some(-12.0));
+        p.set_session_muted(2, true);
+        p.forget_voices(1);
+        p.forget_voices(2);
+        let (left, right) = play_both(&mut p, &[says(1, 20, &normal, 0), says(2, 21, &normal, 0)], 80, |_, _| {});
+        let alone = strength(span(&play(&mut Playback::new(), &[says(1, 20, &normal, 0)], 80), 40, 70), 440.0);
+        assert!(db(strength(span(&left, 40, 70), 440.0) / alone) < -40.0, "the first server stays out of the left ear");
+        let kept = db(strength(span(&right, 40, 70), 440.0) / alone);
+        assert!((kept + 12.0).abs() < 1.0, "and stays 12 dB quieter in the right: {kept:.1} dB");
+
+        p.clear_session(1);
+        let (left, _) = play_both(&mut p, &[says(1, 20, &normal, 0)], 80, |_, _| {});
+        assert!(db(strength(span(&left, 40, 70), 440.0) / alone).abs() < 1.0, "a server that is gone leaves nothing behind");
     }
 
     #[test]
