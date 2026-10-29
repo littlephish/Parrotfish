@@ -115,6 +115,9 @@ export component SettingsWindow inherits Window {
     in-out property <float> talk-release;
     in property <string> talk-release-text: "Off";
     in property <string> shortcut-note;
+    /// Why keys do nothing on a Mac that has not allowed Parrotfish under Input Monitoring.
+    in property <string> keys-text;
+    in property <int> keys-offer;
     in property <int> shortcut-note-place;
     in property <[WhisperKeyRow]> whisper-keys;
     in property <bool> can-add-whisper: true;
@@ -182,6 +185,7 @@ export component SettingsWindow inherits Window {
         root.confirm-remove-bookmark = false;
     }
     callback import-identity();
+    callback browse-identity(folder: bool);
     callback bookmark-picked(index: int);
     callback bookmark-new();
     callback bookmark-saved();
@@ -189,6 +193,7 @@ export component SettingsWindow inherits Window {
     callback bookmark-channel-selected();
     callback talk-key-change(index: int);
     callback talk-key-add();
+    callback keys-acted();
     callback talk-key-remove(index: int);
     callback shortcut-changed();
     callback whisper-key-add();
@@ -788,6 +793,20 @@ export component SettingsWindow inherits Window {
                         }
 
                         Btn {
+                            text: "File…";
+                            clicked => {
+                                root.browse-identity(false);
+                            }
+                        }
+
+                        Btn {
+                            text: "Folder…";
+                            clicked => {
+                                root.browse-identity(true);
+                            }
+                        }
+
+                        Btn {
                             text: "Import";
                             clicked => {
                                 root.import-identity();
@@ -1120,6 +1139,37 @@ export component SettingsWindow inherits Window {
                         alignment: start;
                         padding: 20px;
                         spacing: 12px;
+
+                        if root.keys-text != "": Rectangle {
+                            background: Theme.coral.with-alpha(0.12);
+                            border-radius: 8px;
+
+                            HorizontalLayout {
+                                padding: 10px;
+                                spacing: 10px;
+
+                                Text {
+                                    text: root.keys-text;
+                                    color: Theme.foam;
+                                    font-size: Theme.small;
+                                    wrap: word-wrap;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+
+                                if root.keys-offer == 1: VerticalLayout {
+                                    alignment: center;
+
+                                    Btn {
+                                        text: "Open Input Monitoring";
+                                        primary: true;
+                                        clicked => {
+                                            root.keys-acted();
+                                        }
+                                    }
+                                }
+                            }
+                        }
 
                         HorizontalLayout {
                             spacing: 16px;

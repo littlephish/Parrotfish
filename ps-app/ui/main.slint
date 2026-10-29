@@ -240,6 +240,8 @@ export component ParrotfishApp inherits Window {
     in property <string> channel-name;
     in-out property <string> notice;
     in property <string> update-text;
+    in property <string> keys-text;
+    in property <int> keys-offer;
     in property <int> update-offer;
     in property <bool> update-closable: true;
     in property <string> nickname;
@@ -340,6 +342,8 @@ export component ParrotfishApp inherits Window {
     callback channel-priority-changed();
     callback update-acted();
     callback update-hidden();
+    callback keys-acted();
+    callback keys-hidden();
 
     forward-focus: keys;
     init => {
@@ -542,6 +546,53 @@ export component ParrotfishApp inherits Window {
                             height: 28px;
                             clicked => {
                                 root.notice = "";
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.keys-text != "": Rectangle {
+                vertical-stretch: 0;
+                background: Theme.coral.with-alpha(0.12);
+
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 6px;
+                    padding-top: 6px;
+                    padding-bottom: 6px;
+                    spacing: 8px;
+
+                    Text {
+                        text: root.keys-text;
+                        color: Theme.foam;
+                        font-size: Theme.small;
+                        wrap: word-wrap;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    if root.keys-offer == 1: VerticalLayout {
+                        alignment: center;
+
+                        Btn {
+                            text: "Show me";
+                            primary: true;
+                            clicked => {
+                                root.keys-acted();
+                            }
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+
+                        IconButton {
+                            icon: Icons.close;
+                            width: 28px;
+                            height: 28px;
+                            clicked => {
+                                root.keys-hidden();
                             }
                         }
                     }

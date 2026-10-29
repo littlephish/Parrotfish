@@ -500,6 +500,11 @@ pub struct App {
     update_reports: Option<Receiver<update::Report>>,
     update_source: update::Source,
     update_hidden: bool,
+    /// Whether macOS lets Parrotfish read keys in the background, as found when it started
+    /// and as found now; and whether the main window's warning about it was closed.
+    keys_allowed_at_start: bool,
+    keys_allowed: bool,
+    keys_warning_hidden: bool,
     update_news: String,
     update_offer: Offer,
     install_updates: bool,
@@ -624,6 +629,9 @@ impl App {
             update_reports: None,
             update_source: update::Source::chosen(std::env::var_os("PARROTFISH_UPDATE_FROM")),
             update_hidden: false,
+            keys_allowed_at_start: platform::key_access(),
+            keys_allowed: platform::key_access(),
+            keys_warning_hidden: false,
             update_news: String::new(),
             update_offer: Offer::Nothing,
             install_updates: false,
@@ -1112,6 +1120,26 @@ impl App {
             Err(problem) => problem,
         };
         w.settings.set_identity_note(note.into());
+    }
+
+    /// Picks an identity file or a folder of them with the system's own file dialog and imports it.
+    pub fn browse_identity(&mut self, w: &Windows, folder: bool) {
+        let mut dialog = rfd::FileDialog::new()
+            .set_title(if folder { "Choose a folder of TeamSpeak identities" } else { "Choose a TeamSpeak identity" })
+            .set_parent(&w.settings.window().window_handle());
+        if let Some(home) = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }) {
+            dialog = dialog.set_directory(home);
+        }
+        let picked = if folder {
+            dialog.pick_folder()
+        } else {
+            dialog.add_filter("TeamSpeak identity", &["ini"]).add_filter("All files", &["*"]).pick_file()
+        };
+        let Some(path) = picked else {
+            return;
+        };
+        w.settings.set_import_path(path.display().to_string().into());
+        self.import_identity(w);
     }
 
     pub fn import_identity(&mut self, w: &Windows) {
@@ -3429,6 +3457,7 @@ impl App {
         }
         self.fit_pending.retain(|title| !platform::fit_on_screen(title));
         if self.icon_ticks % ICON_EVERY == 0 {
+            self.watch_key_access(w);
             for title in [MAIN_TITLE, SETTINGS_TITLE, SPEAKERS_TITLE] {
                 platform::adopt_icon(title);
             }

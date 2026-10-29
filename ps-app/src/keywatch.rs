@@ -95,6 +95,7 @@ pub struct KeyWatcher {
 
 impl KeyWatcher {
     pub fn start(audio: Arc<ps_voice::Shared>) -> Self {
+        platform::ask_key_access();
         let state = Arc::new(WatchState::default());
         let shared = state.clone();
         let thread = std::thread::Builder::new()
