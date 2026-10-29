@@ -33,6 +33,19 @@ mod imp {
         fn GetLocalTime(time: *mut SystemTime);
     }
 
+    /// Windows lets any program read keys.
+    pub fn ask_key_access() -> bool {
+        true
+    }
+
+    pub fn key_access() -> bool {
+        true
+    }
+
+    pub fn open_key_settings() -> bool {
+        false
+    }
+
     pub fn key_down(vkey: i32) -> bool {
         if vkey <= 0 {
             return false;
@@ -1127,14 +1140,217 @@ mod imp {
     }
 }
 
+/// Keys on a Mac. Shortcuts are stored as Windows key codes everywhere, so each one is turned
+/// into the Mac's own key code and asked of the keyboard state the whole system sees, which
+/// answers while Parrotfish is in the background or minimised. macOS only answers that once
+/// Parrotfish is allowed under Privacy & Security, Input Monitoring.
+#[cfg(target_os = "macos")]
+mod mac_keys {
+    /// The keyboard state of the whole system rather than of this program's own events.
+    const SYSTEM_STATE: i32 = 1;
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceKeyState(state: i32, key: u16) -> bool;
+        fn CGEventSourceButtonState(state: i32, button: u32) -> bool;
+        fn CGPreflightListenEventAccess() -> bool;
+        fn CGRequestListenEventAccess() -> bool;
+    }
+
+    /// The Mac key code for a Windows key code, for the keys a Mac keyboard has.
+    pub fn mac_code(vk: u16) -> Option<u16> {
+        let code = match vk {
+            0x08 => 0x33,
+            0x09 => 0x30,
+            0x0D => 0x24,
+            0x14 => 0x39,
+            0x1B => 0x35,
+            0x20 => 0x31,
+            0x21 => 0x74,
+            0x22 => 0x79,
+            0x23 => 0x77,
+            0x24 => 0x73,
+            0x25 => 0x7B,
+            0x26 => 0x7E,
+            0x27 => 0x7C,
+            0x28 => 0x7D,
+            0x2D => 0x72,
+            0x2E => 0x75,
+            0x30 => 0x1D,
+            0x31 => 0x12,
+            0x32 => 0x13,
+            0x33 => 0x14,
+            0x34 => 0x15,
+            0x35 => 0x17,
+            0x36 => 0x16,
+            0x37 => 0x1A,
+            0x38 => 0x1C,
+            0x39 => 0x19,
+            0x41 => 0x00,
+            0x42 => 0x0B,
+            0x43 => 0x08,
+            0x44 => 0x02,
+            0x45 => 0x0E,
+            0x46 => 0x03,
+            0x47 => 0x05,
+            0x48 => 0x04,
+            0x49 => 0x22,
+            0x4A => 0x26,
+            0x4B => 0x28,
+            0x4C => 0x25,
+            0x4D => 0x2E,
+            0x4E => 0x2D,
+            0x4F => 0x1F,
+            0x50 => 0x23,
+            0x51 => 0x0C,
+            0x52 => 0x0F,
+            0x53 => 0x01,
+            0x54 => 0x11,
+            0x55 => 0x20,
+            0x56 => 0x09,
+            0x57 => 0x0D,
+            0x58 => 0x07,
+            0x59 => 0x10,
+            0x5A => 0x06,
+            0x5B => 0x37,
+            0x5C => 0x36,
+            0x60 => 0x52,
+            0x61 => 0x53,
+            0x62 => 0x54,
+            0x63 => 0x55,
+            0x64 => 0x56,
+            0x65 => 0x57,
+            0x66 => 0x58,
+            0x67 => 0x59,
+            0x68 => 0x5B,
+            0x69 => 0x5C,
+            0x6A => 0x43,
+            0x6B => 0x45,
+            0x6D => 0x4E,
+            0x6E => 0x41,
+            0x6F => 0x4B,
+            0x70 => 0x7A,
+            0x71 => 0x78,
+            0x72 => 0x63,
+            0x73 => 0x76,
+            0x74 => 0x60,
+            0x75 => 0x61,
+            0x76 => 0x62,
+            0x77 => 0x64,
+            0x78 => 0x65,
+            0x79 => 0x6D,
+            0x7A => 0x67,
+            0x7B => 0x6F,
+            0x7C => 0x69,
+            0x7D => 0x6B,
+            0x7E => 0x71,
+            0x7F => 0x6A,
+            0x80 => 0x40,
+            0x81 => 0x4F,
+            0x82 => 0x50,
+            0x83 => 0x5A,
+            0x90 => 0x47,
+            0xA0 => 0x38,
+            0xA1 => 0x3C,
+            0xA2 => 0x3B,
+            0xA3 => 0x3E,
+            0xA4 => 0x3A,
+            0xA5 => 0x3D,
+            0xBA => 0x29,
+            0xBB => 0x18,
+            0xBC => 0x2B,
+            0xBD => 0x1B,
+            0xBE => 0x2F,
+            0xBF => 0x2C,
+            0xC0 => 0x32,
+            0xDB => 0x21,
+            0xDC => 0x2A,
+            0xDD => 0x1E,
+            0xDE => 0x27,
+            _ => return None,
+        };
+        Some(code)
+    }
+
+    pub fn key_down(vkey: i32) -> bool {
+        let Ok(vk) = u16::try_from(vkey) else {
+            return false;
+        };
+        // The middle button and the two side buttons; macOS numbers them from the left button.
+        if let 0x04..=0x06 = vk {
+            return unsafe { CGEventSourceButtonState(SYSTEM_STATE, u32::from(vk) - 2) };
+        }
+        mac_code(vk).is_some_and(|code| unsafe { CGEventSourceKeyState(SYSTEM_STATE, code) })
+    }
+
+    /// The character a key prints, as on a US keyboard, for naming shortcuts.
+    pub fn key_char(vk: u16) -> Option<char> {
+        let c = match vk {
+            0x30..=0x39 | 0x41..=0x5A => return char::from_u32(u32::from(vk)),
+            0xBA => ';',
+            0xBB => '=',
+            0xBC => ',',
+            0xBD => '-',
+            0xBE => '.',
+            0xBF => '/',
+            0xC0 => '`',
+            0xDB => '[',
+            0xDC => '\\',
+            0xDD => ']',
+            0xDE => '\'',
+            _ => return None,
+        };
+        Some(c)
+    }
+
+    /// Asks macOS, once, to let Parrotfish read keys while it is in the background. The first
+    /// time this puts Parrotfish in Input Monitoring and offers to open System Settings.
+    pub fn ask_key_access() -> bool {
+        unsafe { CGPreflightListenEventAccess() || CGRequestListenEventAccess() }
+    }
+
+    /// Whether Parrotfish is allowed under Input Monitoring, without asking.
+    pub fn key_access() -> bool {
+        unsafe { CGPreflightListenEventAccess() }
+    }
+
+    /// Opens System Settings at Privacy & Security, Input Monitoring.
+    pub fn open_key_settings() -> bool {
+        std::process::Command::new("/usr/bin/open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+}
+
 #[cfg(not(windows))]
 mod imp {
+    #[cfg(target_os = "macos")]
+    pub use super::mac_keys::{ask_key_access, key_access, key_char, key_down, open_key_settings};
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn key_access() -> bool {
+        true
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn open_key_settings() -> bool {
+        false
+    }
+
+    #[cfg(not(target_os = "macos"))]
     pub fn key_down(_vkey: i32) -> bool {
         false
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub fn key_char(_vk: u16) -> Option<char> {
         None
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn ask_key_access() -> bool {
+        true
     }
 
     pub fn overlay_style(_title: &str, _alpha: u8, _pass_clicks: bool, _refresh_taskbar: bool) -> bool {
@@ -1258,9 +1474,9 @@ pub enum Front {
 }
 
 pub use imp::{
-    adopt_icon, allow_front, bring_front, change_stored_number, change_stored_text, clear_link_handler, key_char, key_down,
+    adopt_icon, allow_front, ask_key_access, bring_front, change_stored_number, change_stored_text, clear_link_handler, key_access, key_char, key_down,
     fit_on_screen, front_program, link_handler, local_hms, on_a_screen, open_link, overlay_raise, overlay_restore, overlay_seen, overlay_style,
-    own_front_window, protect, round_corners, set_link_handler, settle_scale_changes, show_own_window, stored_number, stored_text,
+    open_key_settings, own_front_window, protect, round_corners, set_link_handler, settle_scale_changes, show_own_window, stored_number, stored_text,
     unprotect, web_get,
 };
 

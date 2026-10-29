@@ -28,6 +28,8 @@
 	<string>@MINIMUM@</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSAppSleepDisabled</key>
+	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026 The Parrotfish contributors. MIT or Apache-2.0.</string>
 	<key>NSMicrophoneUsageDescription</key>

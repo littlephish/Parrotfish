@@ -44,6 +44,19 @@ impl Chord {
 }
 
 pub fn key_name(vk: u16, character: &dyn Fn(u16) -> Option<char>) -> String {
+    // A Mac keyboard calls the Windows and Alt keys Command and Option.
+    let mac = match vk {
+        0x2D => "Help",
+        0x5B => "Left Cmd",
+        0x5C => "Right Cmd",
+        0x90 => "Clear",
+        0xA4 => "Left Option",
+        0xA5 => "Right Option",
+        _ => "",
+    };
+    if cfg!(target_os = "macos") && !mac.is_empty() {
+        return mac.to_string();
+    }
     let fixed = match vk {
         0x04 => "Mouse 3",
         0x05 => "Mouse 4",

@@ -186,6 +186,12 @@ fn main() -> Result<(), slint::PlatformError> {
     let a = app.clone();
     ui.on_update_hidden(move || with_app(&a, |s, w| s.update_hidden(w)));
     let a = app.clone();
+    ui.on_keys_acted(move || with_app(&a, |s, w| s.keys_acted(w, false)));
+    let a = app.clone();
+    ui.on_keys_hidden(move || with_app(&a, |s, w| s.keys_hidden(w)));
+    let a = app.clone();
+    settings_window.on_keys_acted(move || with_app(&a, |s, w| s.keys_acted(w, true)));
+    let a = app.clone();
     settings_window.on_update_acted(move || with_app(&a, |s, w| s.update_acted(w)));
     let a = app.clone();
     settings_window.on_update_check(move || with_app(&a, |s, w| s.look_for_update(w)));
@@ -204,6 +210,8 @@ fn main() -> Result<(), slint::PlatformError> {
     settings_window.on_remove_identity(move |index| with_app(&a, |s, w| s.remove_identity(w, index)));
     let a = app.clone();
     settings_window.on_import_identity(move || with_app(&a, |s, w| s.import_identity(w)));
+    let a = app.clone();
+    settings_window.on_browse_identity(move |folder| with_app(&a, |s, w| s.browse_identity(w, folder)));
     let a = app.clone();
     settings_window.on_bookmark_picked(move |index| with_app(&a, |s, w| s.bookmark_picked(w, index)));
     let a = app.clone();

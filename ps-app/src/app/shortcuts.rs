@@ -862,6 +862,43 @@ impl App {
         self.close_editor();
     }
 
+    /// Notices Parrotfish being let into Input Monitoring, or out of it, while it runs.
+    pub(super) fn watch_key_access(&mut self, w: &Windows) {
+        let allowed = platform::key_access();
+        if allowed != self.keys_allowed {
+            self.keys_allowed = allowed;
+            self.keys_warning_hidden = false;
+            self.publish_key_access(w);
+        }
+    }
+
+    pub(super) fn publish_key_access(&self, w: &Windows) {
+        let (text, offer) = key_access_wording(self.keys_allowed_at_start, self.keys_allowed);
+        w.settings.set_keys_text(text.into());
+        w.settings.set_keys_offer(offer);
+        w.main.set_keys_text(if self.keys_warning_hidden { "" } else { text }.into());
+        w.main.set_keys_offer(offer);
+    }
+
+    /// The main window's button opens the Shortcuts tab; the one there opens System Settings.
+    pub fn keys_acted(&mut self, w: &Windows, from_settings: bool) {
+        if !from_settings {
+            self.open_settings(w, SHORTCUTS_TAB);
+            return;
+        }
+        if !platform::open_key_settings() {
+            w.settings.set_keys_text(
+                "System Settings did not open. Open it from the Apple menu, go to Privacy & Security, Input Monitoring, and turn on Parrotfish."
+                    .into(),
+            );
+        }
+    }
+
+    pub fn keys_hidden(&mut self, w: &Windows) {
+        self.keys_warning_hidden = true;
+        self.publish_key_access(w);
+    }
+
     pub(super) fn publish_shortcuts(&mut self, w: &Windows) {
         let name = |chord: &Chord| chord_name(chord, &platform::key_char);
         let talk: Vec<String> = self.settings.talk_keys.iter().map(name).collect();
@@ -873,6 +910,7 @@ impl App {
         w.settings.set_talk_release_text(release_text(self.settings.talk_release_ms).into());
         w.settings.set_shortcut_note(self.shortcut_note.1.as_str().into());
         w.settings.set_shortcut_note_place(self.shortcut_note.0);
+        self.publish_key_access(w);
         let keys: Vec<WhisperKeyRow> = self
             .whisper_keys
             .items
@@ -927,8 +965,32 @@ impl App {
     }
 }
 
+/// What to say about Input Monitoring, and whether to offer a button to it (1) or not (0).
+/// macOS only lets a program read keys in the background once it is allowed there, and only
+/// from the next time the program starts.
+fn key_access_wording(at_start: bool, now: bool) -> (&'static str, i32) {
+    match (at_start, now) {
+        (true, true) => ("", 0),
+        (false, true) => ("Parrotfish is now allowed under Input Monitoring. Quit Parrotfish and open it again so your keys work.", 0),
+        _ => (
+            "macOS is not letting Parrotfish see your keys, so talk keys and shortcuts do nothing. Open System Settings, go to Privacy & Security, Input Monitoring, turn on Parrotfish, then quit Parrotfish and open it again.",
+            1,
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn input_monitoring_is_explained_until_parrotfish_restarts_with_it() {
+        assert_eq!(super::key_access_wording(true, true), ("", 0));
+        let (missing, offer) = super::key_access_wording(false, false);
+        assert!(missing.contains("Input Monitoring") && offer == 1);
+        let (restart, offer) = super::key_access_wording(false, true);
+        assert!(restart.contains("open it again") && offer == 0);
+        assert_eq!(super::key_access_wording(true, false).1, 1);
+    }
+
     use super::*;
     use ps_client::{Channel, ChannelNode, ClientInfo, ServerInfo};
 
